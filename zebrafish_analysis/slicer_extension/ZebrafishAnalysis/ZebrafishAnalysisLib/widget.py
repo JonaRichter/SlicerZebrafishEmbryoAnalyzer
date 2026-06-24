@@ -6,6 +6,7 @@ Right panel: QTabWidget with Gallery / Detail / Results / Exclude tabs.
 """
 
 import importlib.util
+import logging
 import os
 import sys
 
@@ -487,7 +488,16 @@ class ZebrafishAnalysisMainWidget:
         }
         if include_eyes and eye_file:
             params["eye_model_path"] = _local_model_path(eye_file)
-        t = threading.Thread(target=preload_models, args=(params,), daemon=True)
+
+        def _preload_safe():
+            # Best-effort prewarm: a failure here must not block starting analysis,
+            # and we must not raise a dialog from a background thread.
+            try:
+                preload_models(params)
+            except Exception:
+                logging.exception("ZebrafishAnalysis: model preload failed")
+
+        t = threading.Thread(target=_preload_safe, daemon=True)
         t.start()
         return t
 
@@ -730,51 +740,60 @@ class ZebrafishAnalysisMainWidget:
         self._run_progress.setRange(0, 100)
         self._run_progress.setValue(100)
         self._run_progress.setFormat("Loading models…")
-        self._run_stack.setCurrentIndex(1)
+        self._run_stack.setCurrentIndex(1)   # switch to running view (hides Run button)
         slicer.app.processEvents()
 
-        _mrq_t0 = _time.time()
-        preload_t = self._start_preload()
-        # Run until preload done AND at least 0.5 s elapsed so animation is
-        # always visible, even when models were already in RAM.
-        while True:
-            _mrq_elapsed = _time.time() - _mrq_t0
-            if _mrq_elapsed >= 0.5 and (preload_t is None or not preload_t.is_alive()):
-                break
-            slicer.app.processEvents()
-            _time.sleep(0.05)
-            bar_w = max(self._run_progress.width, 100)
-            chunk_px = bar_w // 4
-            # pos_px: -chunk_px (fully off left) → bar_w (fully off right), then wraps
-            total_range = bar_w + chunk_px
-            pos_px = int(_mrq_elapsed * (total_range / 2.5) % total_range) - chunk_px
-            left_px = max(0, pos_px)
-            right_px = max(0, bar_w - pos_px - chunk_px)
-            self._run_progress.setStyleSheet(_mrq_chunk % (left_px, right_px))
-        self._run_progress.setStyleSheet(_mrq_base)
+        ok = False
+        try:
+            _mrq_t0 = _time.time()
+            preload_t = self._start_preload()
+            # Run until preload done AND at least 0.5 s elapsed so animation is
+            # always visible, even when models were already in RAM.
+            while True:
+                _mrq_elapsed = _time.time() - _mrq_t0
+                if _mrq_elapsed >= 0.5 and (preload_t is None or not preload_t.is_alive()):
+                    break
+                slicer.app.processEvents()
+                _time.sleep(0.05)
+                bar_w = max(self._run_progress.width, 100)
+                chunk_px = bar_w // 4
+                # pos_px: -chunk_px (fully off left) → bar_w (fully off right), then wraps
+                total_range = bar_w + chunk_px
+                pos_px = int(_mrq_elapsed * (total_range / 2.5) % total_range) - chunk_px
+                left_px = max(0, pos_px)
+                right_px = max(0, bar_w - pos_px - chunk_px)
+                self._run_progress.setStyleSheet(_mrq_chunk % (left_px, right_px))
+            self._run_progress.setStyleSheet(_mrq_base)
 
-        self._run_progress.setRange(0, n)
-        self._run_progress.setValue(0)
-        slicer.app.processEvents()
-
-        _t0 = _time.time()
-
-        def _set_btn_progress(i, total):
-            self._run_progress.setValue(i)
-            elapsed = _time.time() - _t0
-            if i > 0 and total > i:
-                remaining = elapsed / i * (total - i)
-                eta = (f"~{int(remaining // 60)}m {int(remaining % 60):02d}s left"
-                       if remaining >= 60 else f"~{int(remaining)}s left")
-                self._run_progress.setFormat(f"Image {i} / {total}  ·  {eta}")
-            else:
-                self._run_progress.setFormat(f"Image {i} / {total}")
+            self._run_progress.setRange(0, n)
+            self._run_progress.setValue(0)
             slicer.app.processEvents()
 
-        self._results = analyse_images(self._image_paths, params, _set_btn_progress)
+            _t0 = _time.time()
 
-        self._run_stack.setCurrentIndex(0)
-        self._on_results_ready()
+            def _set_btn_progress(i, total):
+                self._run_progress.setValue(i)
+                elapsed = _time.time() - _t0
+                if i > 0 and total > i:
+                    remaining = elapsed / i * (total - i)
+                    eta = (f"~{int(remaining // 60)}m {int(remaining % 60):02d}s left"
+                           if remaining >= 60 else f"~{int(remaining)}s left")
+                    self._run_progress.setFormat(f"Image {i} / {total}  ·  {eta}")
+                else:
+                    self._run_progress.setFormat(f"Image {i} / {total}")
+                slicer.app.processEvents()
+
+            self._results = analyse_images(self._image_paths, params, _set_btn_progress)
+            ok = True
+        except Exception as exc:
+            logging.exception("ZebrafishAnalysis: analysis failed")
+            slicer.util.errorDisplay(f"Analysis failed:\n\n{exc}")
+        finally:
+            # Always restore the idle view so the Run button comes back, even on failure.
+            self._run_stack.setCurrentIndex(0)
+
+        if ok:
+            self._on_results_ready()
 
     def _get_correction_params(self):
         """Return current hitl/threshold settings for manual correction curvature recompute."""

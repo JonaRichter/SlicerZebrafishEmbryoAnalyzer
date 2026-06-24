@@ -6,7 +6,6 @@ import torch
 import os
 import numpy as np
 import cv2
-import matplotlib.pyplot as plt
 from skimage import measure
 from scipy.ndimage import binary_erosion, convolve, distance_transform_edt
 from scipy.spatial.distance import cdist
@@ -799,6 +798,7 @@ def load_model():
 
 
 def plot_edges_with_curvature(mask, min_contour_length, window_size_ratio):
+    import matplotlib.pyplot as plt  # optional debug visualization only; not needed for analysis
     # Compute edge properties
     edge_pixels, curvature_values = compute_curvature_profile(mask, min_contour_length, window_size_ratio)
 

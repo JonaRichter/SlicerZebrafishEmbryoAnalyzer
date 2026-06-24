@@ -32,6 +32,15 @@ pr/slicer-extension
 
 2026-06-24
 
+## Local modifications after vendoring
+
+The SHAs and commit above record the **vendored snapshot** that was copied in.
+Files under `zebrafish_analysis/` and `tests/` may since contain local fixes
+applied on top of that snapshot (e.g. the optional-matplotlib import fix and
+analysis error-handling). The working tree is therefore **no longer
+byte-identical** to commit `0c98df2`; the recorded commit is provenance, not a
+guarantee of the current contents.
+
 ## Notes
 
 Relocation only — runtime behavior is preserved. Imports, `sys.path` handling,
