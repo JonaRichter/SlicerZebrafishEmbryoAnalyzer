@@ -1,13 +1,12 @@
 scm git
-scmurl https://github.com/JonaRichter/Zebrafish_Analysis
-scmrevision main
+scmurl https://github.com/MarkDanielArndt/SlicerZebrafishEmbryoAnalyzer.git
+scmrevision master
 depends NA
 build_subdirectory .
-homepage https://github.com/JonaRichter/Zebrafish_Analysis
-iconurl https://raw.githubusercontent.com/JonaRichter/Zebrafish_Analysis/main/zebrafish_analysis/slicer_extension/ZebrafishAnalysis/Resources/Icons/ZebrafishAnalysis.png
+homepage https://github.com/MarkDanielArndt/SlicerZebrafishEmbryoAnalyzer
+iconurl https://raw.githubusercontent.com/MarkDanielArndt/SlicerZebrafishEmbryoAnalyzer/master/ZebrafishAnalysis/Resources/Icons/ZebrafishAnalysis.png
 category Quantification
 status beta
 description Automated zebrafish body length, curvature classification, and eye metrics from 2D microscopy images. Uses deep learning (U-Net + ConvNeXt) with models hosted on Hugging Face Hub.
-screenshoturls https://raw.githubusercontent.com/JonaRichter/Zebrafish_Analysis/main/Documentation_images/slicer_screenshot.png
 contributors Jona Richter, Mark Daniel Arndt
 acknowledgements KIT — Karlsruhe Institute of Technology
