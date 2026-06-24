@@ -14,6 +14,8 @@ import qt
 import ctk
 import slicer
 
+from ZebrafishAnalysisLib.errors import AnalysisInputError
+
 
 _ZEBRAFISH_MODEL_CACHE = os.path.join(os.path.expanduser("~"), ".cache", "zebrafish_models")
 
@@ -772,6 +774,9 @@ class ZebrafishAnalysisMainWidget:
 
             self._results = self._logic.run_analysis(self._image_paths, params, _set_btn_progress)
             ok = True
+        except AnalysisInputError as exc:
+            logging.warning("ZebrafishAnalysis: %s", exc)
+            slicer.util.warningDisplay(str(exc))
         except Exception as exc:
             logging.exception("ZebrafishAnalysis: analysis failed")
             slicer.util.errorDisplay(f"Analysis failed:\n\n{exc}")
