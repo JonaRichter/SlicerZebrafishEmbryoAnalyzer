@@ -25,6 +25,7 @@ TABLE_SCHEMA = [
 ]
 
 ROLE_RESULTS_TABLE = "ResultsTable"
+ROLE_CURRENT_IMAGE = "CurrentImage"
 
 # String columns whose values are always preserved verbatim, even on error rows.
 _PRESERVE_ON_ERROR = frozenset({"filename", "error"})
@@ -148,3 +149,101 @@ def populate_table_node(rows, node):
     """
     table = build_vtk_table(rows)
     node.SetAndObserveTable(table)
+
+
+def image_geometry(h_orig: int, w_orig: int, um_per_px: float):
+    """Return (dims, spacing, origin) for a vtkMRMLVectorVolumeNode.
+
+    dims    = (w_orig, h_orig, 1)              VTK IJK order
+    spacing = (um_per_px/1000, um_per_px/1000, 1.0)  mm, isotropic
+    origin  = (0.0, 0.0, 0.0)
+
+    Pure Python — no vtk or slicer imports. Testable with standard pytest.
+
+    Raises ValueError for non-positive h_orig, w_orig, or um_per_px
+    (including zero, negative, NaN, and inf).
+    """
+    if not isinstance(h_orig, int) or h_orig <= 0:
+        raise ValueError(f"h_orig must be a positive integer, got {h_orig!r}")
+    if not isinstance(w_orig, int) or w_orig <= 0:
+        raise ValueError(f"w_orig must be a positive integer, got {w_orig!r}")
+    if not math.isfinite(um_per_px) or um_per_px <= 0:
+        raise ValueError(f"um_per_px must be finite and positive, got {um_per_px!r}")
+    spacing_mm = um_per_px / 1000.0
+    dims = (w_orig, h_orig, 1)
+    spacing = (spacing_mm, spacing_mm, 1.0)
+    origin = (0.0, 0.0, 0.0)
+    return dims, spacing, origin
+
+
+def get_or_create_image_node(param_node, scene):
+    """Return the existing CurrentImage node or create exactly one new node.
+
+    Looks up by reference role ROLE_CURRENT_IMAGE (not display name).
+    Creates a new vtkMRMLVectorVolumeNode named "ZebrafishAnalysis Current Image"
+    if no valid reference exists. Stores new node ID in param_node.
+    A wrong-type foreign node is left in scene unchanged; a new node is created.
+    """
+    existing = param_node.GetNodeReference(ROLE_CURRENT_IMAGE)
+    if existing is not None and existing.IsA("vtkMRMLVectorVolumeNode"):
+        return existing
+    node = scene.AddNewNodeByClass(
+        "vtkMRMLVectorVolumeNode", "ZebrafishAnalysis Current Image"
+    )
+    param_node.SetNodeReferenceID(ROLE_CURRENT_IMAGE, node.GetID())
+    return node
+
+
+def update_image_node(image_rgb, um_per_px, node):
+    """Write a uint8 RGB array into an existing vtkMRMLVectorVolumeNode.
+
+    image_rgb must be uint8, shape (H, W, 3).
+    um_per_px is the original-image physical scale in micrometers per pixel.
+    result["spacing"] must NOT be used here (it is calibrated to 256x256 mask space).
+
+    NOTE: _on_detect_scale / show_raw_image is out of scope for E2b.
+    The MRML node intentionally reflects the last gallery selection, not the
+    scalebar debug overlay.
+
+    VTK step order:
+      1. derive h_orig, w_orig from image_rgb.shape
+      2. compute geometry via image_geometry()
+      3. flipud + fliplr + copy (corrects VTK bottom-left origin and Slicer radiological convention)
+      4. reshape and convert to VTK array (no AllocateScalars)
+      5. build vtkImageData: SetDimensions, GetPointData().SetScalars()
+      6. reset direction cosines to identity
+      7. set spacing and origin on node (before SetAndObserveImageData)
+      8. SetAndObserveImageData as final step
+    """
+    import vtk
+    from vtk.util import numpy_support
+    import numpy as np
+
+    h_orig, w_orig = int(image_rgb.shape[0]), int(image_rgb.shape[1])
+    if image_rgb.ndim != 3 or image_rgb.shape[2] != 3:
+        raise ValueError(
+            f"image_rgb must have shape (H, W, 3), got {image_rgb.shape}"
+        )
+    dims, spacing, origin = image_geometry(h_orig, w_orig, um_per_px)
+
+    # flipud: numpy row 0 (image top) → VTK last row (visual top)
+    # fliplr: compensates for Slicer's radiological convention (R axis → left of screen)
+    # .copy() restores C-contiguity after the non-contiguous views
+    flipped = np.flipud(np.fliplr(image_rgb)).copy()
+    flat = flipped.reshape(-1, 3)
+
+    vtk_array = numpy_support.numpy_to_vtk(
+        flat, deep=True, array_type=vtk.VTK_UNSIGNED_CHAR
+    )
+    vtk_array.SetNumberOfComponents(3)
+    vtk_array.SetName("ImageScalars")
+
+    image_data = vtk.vtkImageData()
+    image_data.SetDimensions(dims)
+    image_data.GetPointData().SetScalars(vtk_array)  # no AllocateScalars
+
+    identity = vtk.vtkMatrix4x4()
+    node.SetIJKToRASDirectionMatrix(identity)
+    node.SetSpacing(*spacing)
+    node.SetOrigin(*origin)
+    node.SetAndObserveImageData(image_data)  # final step — fires observers with complete geometry

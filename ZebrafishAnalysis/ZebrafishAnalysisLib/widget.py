@@ -853,6 +853,19 @@ class ZebrafishAnalysisMainWidget:
                 5000,
             )
 
+    def _try_update_mrml_image(self, result):
+        # NOTE: _on_detect_scale / show_raw_image does NOT call this method (E2b scope).
+        # The MRML node intentionally reflects the last gallery selection, not the
+        # scalebar debug overlay. Re-sync by clicking any gallery item.
+        try:
+            self._logic.update_current_image_node(result, self._um_per_px.value)
+        except MRMLAdapterError as exc:
+            logging.warning("ZebrafishAnalysis: MRML image node update failed: %s", exc)
+            slicer.util.showStatusMessage(
+                "Image node update failed. Check the application log.",
+                5000,
+            )
+
     def _get_correction_params(self):
         """Return current hitl/threshold settings for manual correction curvature recompute."""
         return {
@@ -865,6 +878,8 @@ class ZebrafishAnalysisMainWidget:
         self._tabs.setCurrentIndex(1)
         self._detail.show_result(index, self._results)
         self._detail.setFocus()
+        if index < len(self._results):
+            self._try_update_mrml_image(self._results[index])
 
     def _navigate_detail(self, delta: int):
         if not self._results:

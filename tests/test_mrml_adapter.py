@@ -205,3 +205,124 @@ def test_mrml_module_importable_without_slicer_or_vtk():
     assert hasattr(mrml, "get_or_create_table_node")
     assert hasattr(mrml, "build_vtk_table")
     assert hasattr(mrml, "populate_table_node")
+
+
+# ---------------------------------------------------------------------------
+# image_geometry — pure Python geometry helper
+# ---------------------------------------------------------------------------
+
+def test_image_geometry_basic_dimensions():
+    from ZebrafishAnalysisLib.mrml import image_geometry
+    dims, spacing, origin = image_geometry(480, 640, 22.99)
+    assert dims == (640, 480, 1)
+
+
+def test_image_geometry_spacing_mm():
+    from ZebrafishAnalysisLib.mrml import image_geometry
+    _, spacing, _ = image_geometry(480, 640, 22.99)
+    assert spacing == pytest.approx((22.99 / 1000.0, 22.99 / 1000.0, 1.0))
+
+
+def test_image_geometry_spacing_z():
+    from ZebrafishAnalysisLib.mrml import image_geometry
+    _, spacing, _ = image_geometry(100, 100, 10.0)
+    assert spacing[2] == 1.0
+
+
+def test_image_geometry_origin_zero():
+    from ZebrafishAnalysisLib.mrml import image_geometry
+    _, _, origin = image_geometry(100, 100, 10.0)
+    assert origin == (0.0, 0.0, 0.0)
+
+
+@pytest.mark.parametrize("h,w,um", [
+    (0, 100, 10.0),
+    (100, 0, 10.0),
+    (-1, 100, 10.0),
+    (100, -1, 10.0),
+    (100, 100, 0.0),
+    (100, 100, -1.0),
+    (100, 100, float("nan")),
+    (100, 100, float("inf")),
+    (100, 100, float("-inf")),
+])
+def test_image_geometry_raises_for_invalid(h, w, um):
+    from ZebrafishAnalysisLib.mrml import image_geometry
+    with pytest.raises(ValueError):
+        image_geometry(h, w, um)
+
+
+def test_image_geometry_non_square():
+    from ZebrafishAnalysisLib.mrml import image_geometry
+    dims, _, _ = image_geometry(120, 160, 5.0)
+    assert dims == (160, 120, 1)
+
+
+def test_flipud_and_fliplr_pixel_ordering():
+    """Verify that flipud+fliplr (180° rotation) maps corners correctly for VTK+Slicer."""
+    import numpy as np
+    H, W = 4, 3
+    arr = np.zeros((H, W, 3), dtype="uint8")
+    # Mark each corner with a distinct value
+    arr[0, 0, :] = 10    # top-left
+    arr[0, W-1, :] = 20  # top-right
+    arr[H-1, 0, :] = 30  # bottom-left
+    arr[H-1, W-1, :] = 40  # bottom-right
+    flipped = np.flipud(np.fliplr(arr)).copy()
+    flat = flipped.reshape(-1, 3)
+    # After 180° rotation:
+    # VTK point 0 (first row, first col) = original bottom-right (40)
+    assert flat[0, 0] == 40
+    # VTK point W-1 (first row, last col) = original bottom-left (30)
+    assert flat[W-1, 0] == 30
+    # VTK point W*(H-1) (last row, first col) = original top-right (20)
+    assert flat[W*(H-1), 0] == 20
+    # VTK point W*H-1 (last row, last col) = original top-left (10)
+    assert flat[W*H-1, 0] == 10
+
+
+def test_flipud_and_fliplr_produces_c_contiguous():
+    """flipud+fliplr produces non-C-contiguous views; .copy() must restore contiguity."""
+    import numpy as np
+    arr = np.zeros((10, 10, 3), dtype="uint8")
+    flipped = np.flipud(np.fliplr(arr)).copy()
+    assert flipped.flags["C_CONTIGUOUS"]
+
+
+def test_fliplr_and_flipud_both_applied():
+    """Verify that both flipud and fliplr are applied before reshape."""
+    import numpy as np
+    H, W = 4, 6
+    arr = np.zeros((H, W, 3), dtype="uint8")
+    # Mark the top-left corner distinctly
+    arr[0, 0, :] = 10   # top-left
+    arr[0, W-1, :] = 20  # top-right
+    arr[H-1, 0, :] = 30  # bottom-left
+    arr[H-1, W-1, :] = 40  # bottom-right
+
+    # After flipud+fliplr (180° rotation):
+    # top-left (10) → bottom-right in VTK (last row, last col)
+    # top-right (20) → bottom-left in VTK (last row, first col)
+    flipped = np.flipud(np.fliplr(arr)).copy()
+    flat = flipped.reshape(-1, 3)
+
+    # VTK point 0 = first row, first col = original bottom-right (40)
+    assert flat[0, 0] == 40
+    # VTK point W-1 = first row, last col = original bottom-left (30)
+    assert flat[W-1, 0] == 30
+    # VTK point W*(H-1) = last row, first col = original top-right (20)
+    assert flat[W*(H-1), 0] == 20
+    # VTK point W*H-1 = last row, last col = original top-left (10)
+    assert flat[W*H-1, 0] == 10
+
+
+def test_image_geometry_accepts_numpy_int64_when_converted():
+    """update_image_node must convert numpy shape values to int before calling image_geometry."""
+    import numpy as np
+    from ZebrafishAnalysisLib.mrml import image_geometry
+    # numpy.int64 values directly should fail image_geometry (isinstance check)
+    h, w = np.array([10, 8], dtype=np.int64)
+    # Demonstrate the problem: numpy.int64 fails isinstance(h, int) in numpy < 2
+    # The fix is to convert in update_image_node, not in image_geometry
+    dims, _, _ = image_geometry(int(h), int(w), 22.99)
+    assert dims == (8, 10, 1)

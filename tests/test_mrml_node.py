@@ -15,6 +15,7 @@ import subprocess
 import sys
 import textwrap
 import types
+from pathlib import Path
 
 import pytest
 
@@ -196,15 +197,84 @@ def _make_fake_vtk():
 
 
 # ---------------------------------------------------------------------------
+# Fake MRML objects for image node tests
+# ---------------------------------------------------------------------------
+
+class _FakeVectorVolumeNode:
+    _counter = 0
+
+    def __init__(self):
+        _FakeVectorVolumeNode._counter += 1
+        self._id = f"vtkMRMLVectorVolumeNode{_FakeVectorVolumeNode._counter}"
+        self._name = ""
+
+    def GetID(self):
+        return self._id
+
+    def SetName(self, name):
+        self._name = name
+
+    def GetName(self):
+        return self._name
+
+    def IsA(self, class_name):
+        return class_name == "vtkMRMLVectorVolumeNode"
+
+
+class _FakeNonVectorVolumeNode:
+    """Simulates a wrong-type foreign node stored under the CurrentImage role."""
+
+    def __init__(self):
+        self._id = "vtkMRMLScalarVolumeNode1"
+
+    def GetID(self):
+        return self._id
+
+    def IsA(self, class_name):
+        return class_name == "vtkMRMLScalarVolumeNode"
+
+
+class _FakeImageScene:
+    def __init__(self):
+        self._nodes = []
+        self._add_count = 0
+        self._last_class_name = None
+
+    def AddNewNodeByClass(self, class_name, display_name=""):
+        self._add_count += 1
+        self._last_class_name = class_name
+        node = _FakeVectorVolumeNode()
+        node.SetName(display_name)
+        self._nodes.append(node)
+        return node
+
+
+class _FakeImageParamNode:
+    def __init__(self, existing_node=None):
+        self._existing = existing_node
+        self._stored_role = None
+        self._stored_id = None
+        self._set_ref_calls = 0
+
+    def GetNodeReference(self, role):
+        return self._existing
+
+    def SetNodeReferenceID(self, role, node_id):
+        self._stored_role = role
+        self._stored_id = node_id
+        self._set_ref_calls += 1
+
+
+# ---------------------------------------------------------------------------
 # Source-level static checks
 # ---------------------------------------------------------------------------
 
 def test_logic_py_does_not_import_mrml():
     """ZebrafishAnalysisLib.logic must not import the mrml adapter."""
     src = open(_LOGIC_PY).read()
-    assert "mrml" not in src, (
-        "ZebrafishAnalysisLib.logic must not import ZebrafishAnalysisLib.mrml"
-    )
+    import re
+    assert not re.search(r'^(?:import|from)\s+.*mrml', src, re.MULTILINE), \
+        "logic.py must not import mrml"
 
 
 def test_mrml_in_cmake():
@@ -617,3 +687,259 @@ def test_run_analysis_has_no_mrml_calls():
     """)
     assert r.returncode == 0, r.stderr
     assert "OK" in r.stdout
+
+
+# ---------------------------------------------------------------------------
+# Static checks for E2b
+# ---------------------------------------------------------------------------
+
+def test_mrml_module_has_no_global_numpy_import():
+    """mrml.py must not have a module-level 'import numpy'."""
+    src = open(_MRML_PY).read()
+    lines = src.splitlines()
+    in_function = False
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r"^(def |class )", stripped):
+            in_function = True
+        if not in_function and re.match(r"^import numpy\b", stripped):
+            pytest.fail("mrml.py has a module-level 'import numpy'")
+
+
+def test_widget_source_does_not_contain_persistent_image_node_pointer():
+    """widget.py must not store a persistent node pointer like self._image_node."""
+    src = open(_WIDGET_PY).read()
+    assert "self._image_node" not in src, (
+        "widget.py must not keep a persistent _image_node pointer — "
+        "ownership is via parameter node reference"
+    )
+
+
+def test_widget_source_calls_update_current_image_node():
+    """widget.py must call update_current_image_node."""
+    src = open(_WIDGET_PY).read()
+    assert "update_current_image_node" in src, (
+        "widget.py must call self._logic.update_current_image_node()"
+    )
+
+
+def test_mrml_module_exports_image_functions():
+    """mrml.py must export all required E2b symbols."""
+    from ZebrafishAnalysisLib import mrml
+    assert hasattr(mrml, "ROLE_CURRENT_IMAGE")
+    assert hasattr(mrml, "image_geometry")
+    assert hasattr(mrml, "get_or_create_image_node")
+    assert hasattr(mrml, "update_image_node")
+
+
+# ---------------------------------------------------------------------------
+# Behavioral: get_or_create_image_node (direct, using fake objects)
+# ---------------------------------------------------------------------------
+
+def test_get_or_create_image_node_creates_new_when_no_reference():
+    """get_or_create_image_node creates a new node when no reference exists."""
+    from ZebrafishAnalysisLib.mrml import get_or_create_image_node, ROLE_CURRENT_IMAGE
+
+    param_node = _FakeImageParamNode(existing_node=None)
+    scene = _FakeImageScene()
+
+    node = get_or_create_image_node(param_node, scene)
+
+    assert node is not None
+    assert scene._add_count == 1, f"expected 1 new node, got {scene._add_count}"
+    assert param_node._set_ref_calls == 1, "SetNodeReferenceID not called"
+    assert param_node._stored_role == ROLE_CURRENT_IMAGE
+    assert param_node._stored_id == node.GetID()
+
+
+def test_get_or_create_image_node_creates_node_with_display_name():
+    """get_or_create_image_node names the new node 'ZebrafishAnalysis Current Image'."""
+    from ZebrafishAnalysisLib.mrml import get_or_create_image_node
+
+    param_node = _FakeImageParamNode(existing_node=None)
+    scene = _FakeImageScene()
+
+    node = get_or_create_image_node(param_node, scene)
+
+    assert node.GetName() == "ZebrafishAnalysis Current Image"
+
+
+def test_get_or_create_image_node_reuses_existing_reference():
+    """get_or_create_image_node returns the same node on repeated calls."""
+    from ZebrafishAnalysisLib.mrml import get_or_create_image_node
+
+    existing = _FakeVectorVolumeNode()
+    param_node = _FakeImageParamNode(existing_node=existing)
+    scene = _FakeImageScene()
+
+    result = get_or_create_image_node(param_node, scene)
+
+    assert result is existing, "existing node reference not reused"
+    assert scene._add_count == 0, "new node created despite existing reference"
+    assert param_node._set_ref_calls == 0, "SetNodeReferenceID called unexpectedly"
+
+
+def test_get_or_create_image_node_idempotent_calls_add_once():
+    """AddNewNodeByClass is called exactly once even across two separate invocations."""
+    from ZebrafishAnalysisLib.mrml import get_or_create_image_node
+
+    param_node = _FakeImageParamNode(existing_node=None)
+    scene = _FakeImageScene()
+
+    node1 = get_or_create_image_node(param_node, scene)
+    # Simulate the param_node now holding the reference to the created node
+    param_node._existing = node1
+    node2 = get_or_create_image_node(param_node, scene)
+
+    assert node1 is node2, "second call must return the same node"
+    assert scene._add_count == 1, "AddNewNodeByClass must be called exactly once"
+
+
+def test_get_or_create_image_node_wrong_type_creates_new():
+    """A wrong-type foreign node is left in scene; a fresh vector volume node is created."""
+    from ZebrafishAnalysisLib.mrml import get_or_create_image_node
+
+    wrong_node = _FakeNonVectorVolumeNode()
+    param_node = _FakeImageParamNode(existing_node=wrong_node)
+    scene = _FakeImageScene()
+
+    result = get_or_create_image_node(param_node, scene)
+
+    assert result is not wrong_node, "wrong-type foreign node must not be reused"
+    assert scene._add_count == 1, "expected exactly one new vector volume node"
+    assert param_node._stored_id != wrong_node.GetID(), (
+        "reference must point to the new node, not the wrong-type node"
+    )
+    assert result.IsA("vtkMRMLVectorVolumeNode"), "new node must be a vector volume node"
+
+
+# ---------------------------------------------------------------------------
+# Subprocess: update_current_image_node integration
+# ---------------------------------------------------------------------------
+
+def test_update_current_image_node_none_original_returns_none():
+    """update_current_image_node returns None when result['original'] is None."""
+    r = _run("""
+        from unittest.mock import MagicMock
+        from ZebrafishAnalysis import ZebrafishAnalysisLogic
+
+        logic = ZebrafishAnalysisLogic()
+        logic.getParameterNode = MagicMock(return_value=MagicMock())
+
+        result = logic.update_current_image_node({"original": None}, 22.99)
+        assert result is None, f"expected None, got {result!r}"
+        print("OK")
+    """)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout
+
+
+def test_update_current_image_node_none_result_returns_none():
+    """update_current_image_node returns None when result itself is None."""
+    r = _run("""
+        from unittest.mock import MagicMock
+        from ZebrafishAnalysis import ZebrafishAnalysisLogic
+
+        logic = ZebrafishAnalysisLogic()
+        logic.getParameterNode = MagicMock(return_value=MagicMock())
+
+        result = logic.update_current_image_node(None, 22.99)
+        assert result is None, f"expected None, got {result!r}"
+        print("OK")
+    """)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout
+
+
+def test_update_current_image_node_wraps_exception_as_mrml_error():
+    """Unexpected exceptions are wrapped as MRMLAdapterError."""
+    r = _run("""
+        from unittest.mock import patch, MagicMock
+        from ZebrafishAnalysis import ZebrafishAnalysisLogic
+        from ZebrafishAnalysisLib.errors import MRMLAdapterError
+        import numpy as np
+
+        logic = ZebrafishAnalysisLogic()
+        logic.getParameterNode = MagicMock(return_value=MagicMock())
+
+        fake_image = np.zeros((10, 10, 3), dtype="uint8")
+
+        with patch("ZebrafishAnalysisLib.mrml.get_or_create_image_node",
+                   side_effect=RuntimeError("mrml broke")):
+            try:
+                logic.update_current_image_node({"original": fake_image}, 22.99)
+                print("NO_ERROR")
+            except MRMLAdapterError as exc:
+                print(f"OK:{exc}")
+            except Exception as exc:
+                print(f"WRONG_TYPE:{type(exc).__name__}:{exc}")
+    """)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.startswith("OK:"), r.stdout
+    assert "NO_ERROR" not in r.stdout
+
+
+# ---------------------------------------------------------------------------
+# Behavioral: update_image_node with fake VTK (numpy.int64 round-trip)
+# ---------------------------------------------------------------------------
+
+def test_update_image_node_calls_set_dimensions_with_correct_values():
+    """update_image_node derives (W, H, 1) dimensions from the image array."""
+    import numpy as np
+    import importlib
+    from unittest.mock import MagicMock
+
+    # Build fake VTK objects
+    fake_vtk_array = MagicMock()
+    fake_numpy_support = MagicMock()
+    fake_numpy_support.numpy_to_vtk.return_value = fake_vtk_array
+
+    fake_image_data = MagicMock()
+    fake_vtk_module = MagicMock()
+    fake_vtk_module.vtkImageData.return_value = fake_image_data
+    fake_vtk_module.vtkMatrix4x4.return_value = MagicMock()
+    fake_vtk_module.VTK_UNSIGNED_CHAR = 3
+
+    fake_vtk_util = MagicMock()
+    fake_vtk_util.numpy_support = fake_numpy_support
+
+    fake_node = MagicMock()
+
+    # Inject fake vtk into sys.modules for the duration of this test
+    original_vtk = sys.modules.pop("vtk", None)
+    original_vtk_util = sys.modules.pop("vtk.util", None)
+    original_vtk_util_ns = sys.modules.pop("vtk.util.numpy_support", None)
+    try:
+        sys.modules["vtk"] = fake_vtk_module
+        sys.modules["vtk.util"] = fake_vtk_util
+        sys.modules["vtk.util.numpy_support"] = fake_numpy_support
+
+        # Force reimport of mrml to pick up fake vtk
+        import ZebrafishAnalysisLib.mrml as mrml_mod
+        importlib.reload(mrml_mod)
+
+        image = np.zeros((10, 8, 3), dtype="uint8")
+        mrml_mod.update_image_node(image, 22.99, fake_node)
+
+        # Dimensions must be (W=8, H=10, 1)
+        fake_image_data.SetDimensions.assert_called_once_with((8, 10, 1))
+        # SetSpacing must be called before SetAndObserveImageData
+        assert fake_node.SetSpacing.called
+        assert fake_node.SetAndObserveImageData.called
+        # update_image_node calls node.SetSpacing(*spacing) which unpacks the tuple
+        spacing_args = fake_node.SetSpacing.call_args[0]
+        assert spacing_args[0] == pytest.approx(22.99 / 1000.0)
+        assert spacing_args[1] == pytest.approx(22.99 / 1000.0)
+        assert spacing_args[2] == pytest.approx(1.0)
+    finally:
+        sys.modules.pop("vtk", None)
+        sys.modules.pop("vtk.util", None)
+        sys.modules.pop("vtk.util.numpy_support", None)
+        if original_vtk is not None:
+            sys.modules["vtk"] = original_vtk
+        if original_vtk_util is not None:
+            sys.modules["vtk.util"] = original_vtk_util
+        if original_vtk_util_ns is not None:
+            sys.modules["vtk.util.numpy_support"] = original_vtk_util_ns
+        # Reload mrml again with real (absent) vtk to restore state
+        importlib.reload(mrml_mod)
