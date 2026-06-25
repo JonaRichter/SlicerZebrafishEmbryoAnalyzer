@@ -187,6 +187,23 @@ class DetailTab(qt.QWidget):
         self._jobs.clear()
         self._pending.clear()
 
+    def reset(self):
+        """Clear all visible and internal state after scene close. Poll timer keeps running."""
+        self.invalidate_cache()
+        self._results = []
+        self._current_idx = 0
+        self._full_pixmap = None
+        self._manual_mode = False
+        self._manual_points = []
+        self._view.show_placeholder("Select an image from the Gallery.")
+        self._view.set_manual_mode(False)
+        self._metrics_label.setText("")
+        self._nav_label.setText("")
+        self._btn_prev.setEnabled(False)
+        self._btn_next.setEnabled(False)
+        self._manual_row_widget.setVisible(False)
+        self._manual_status.setVisible(False)
+
     def cleanup(self):
         """Invalidate background workers and stop the poll timer."""
         self.invalidate_cache()

@@ -7,6 +7,7 @@ Right panel: QTabWidget with Gallery / Detail / Results / Exclude tabs.
 
 import importlib.util
 import logging
+import math
 import os
 import sys
 
@@ -15,6 +16,43 @@ import ctk
 import slicer
 
 from ZebrafishAnalysisLib.errors import AnalysisInputError
+
+
+# ---------------------------------------------------------------------------
+# Model registry — (display_label, stable_id, (body_file, encoder, eye_file))
+# ---------------------------------------------------------------------------
+
+_MODEL_ENTRIES = [
+    ("General Model",   "general", ("best_model_body_3400_vgg19.pth", "vgg19", None)),
+    ("Fine-tuned DESY", "desy",    ("best_model_body_finetuned.pth",  "vgg19", "best_model_eye_finetuned.pth")),
+]
+_MODEL_BY_ID  = {mid: data for _, mid, data in _MODEL_ENTRIES}
+_DEFAULT_MODEL_ID = "general"
+
+
+# ---------------------------------------------------------------------------
+# Parameter node schema — names and string-encoded defaults
+# ---------------------------------------------------------------------------
+
+PARAM_LENGTH_ENABLED               = "lengthEnabled"
+PARAM_CURVATURE_ENABLED            = "curvatureEnabled"
+PARAM_RATIO_ENABLED                = "ratioEnabled"
+PARAM_EYES_ENABLED                 = "eyesEnabled"
+PARAM_CONFIDENCE_THRESHOLD_ENABLED = "confidenceThresholdEnabled"
+PARAM_CONFIDENCE_THRESHOLD         = "confidenceThreshold"
+PARAM_UM_PER_PX                    = "micrometersPerPixel"
+PARAM_MODEL_ID                     = "selectedModelId"
+
+PARAM_DEFAULTS = {
+    PARAM_LENGTH_ENABLED:               "true",
+    PARAM_CURVATURE_ENABLED:            "true",
+    PARAM_RATIO_ENABLED:                "true",
+    PARAM_EYES_ENABLED:                 "false",
+    PARAM_CONFIDENCE_THRESHOLD_ENABLED: "false",
+    PARAM_CONFIDENCE_THRESHOLD:         "0.85",
+    PARAM_UM_PER_PX:                    "22.99",
+    PARAM_MODEL_ID:                     _DEFAULT_MODEL_ID,
+}
 
 
 _ZEBRAFISH_MODEL_CACHE = os.path.join(os.path.expanduser("~"), ".cache", "zebrafish_models")
@@ -141,6 +179,8 @@ class ZebrafishAnalysisMainWidget:
         self._excluded = set()
         self._image_paths = []
         self._current_detail_idx = 0
+        self._updatingGUIFromParameterNode = False
+        self._on_settings_changed = None  # callable set by ZebrafishAnalysisWidget
 
         self._build_ui(parent_layout)
         self._connect_signals()
@@ -241,8 +281,8 @@ class ZebrafishAnalysisMainWidget:
         m_layout = qt.QFormLayout(model_box)
 
         self._model_combo = qt.QComboBox()
-        self._model_combo.addItem("General Model",   ("best_model_body_3400_vgg19.pth", "vgg19", None))
-        self._model_combo.addItem("Fine-tuned DESY", ("best_model_body_finetuned.pth",  "vgg19", "best_model_eye_finetuned.pth"))
+        for _label, _mid, _ in _MODEL_ENTRIES:
+            self._model_combo.addItem(_label, _mid)
         m_layout.addRow("Segmentation model:", self._model_combo)
 
         scale_box = ctk.ctkCollapsibleButton()
@@ -349,6 +389,19 @@ class ZebrafishAnalysisMainWidget:
         self._btn_excel.clicked.connect(self._on_export_excel)
         self._btn_csv.clicked.connect(self._on_export_csv)
         self._model_combo.currentIndexChanged.connect(self._start_preload)
+
+        # Notify parameter node owner whenever any analysis setting changes.
+        for _signal in (
+            self._chk_length.toggled,
+            self._chk_curvature.toggled,
+            self._chk_ratio.toggled,
+            self._chk_eyes.toggled,
+            self._chk_hitl.toggled,
+        ):
+            _signal.connect(self._notify_settings_changed)
+        self._threshold_slider.valueChanged.connect(self._notify_settings_changed)
+        self._um_per_px.valueChanged.connect(self._notify_settings_changed)
+        self._model_combo.currentIndexChanged.connect(self._notify_settings_changed)
 
     def _on_load_folder(self):
         settings = qt.QSettings()
@@ -458,7 +511,8 @@ class ZebrafishAnalysisMainWidget:
         Returns the Thread if started, None if skipped.
         """
         import threading
-        model_data = self._model_combo.currentData
+        model_id   = self._model_combo.currentData or _DEFAULT_MODEL_ID
+        model_data = _MODEL_BY_ID.get(model_id)
         if not model_data:
             return None
         body_file, body_enc, eye_file = model_data
@@ -689,8 +743,8 @@ class ZebrafishAnalysisMainWidget:
             slicer.util.warningDisplay("No images loaded.")
             return
 
-        model_data = self._model_combo.currentData
-        body_file, body_enc, eye_file = model_data
+        model_id = self._model_combo.currentData or _DEFAULT_MODEL_ID
+        body_file, body_enc, eye_file = _MODEL_BY_ID.get(model_id, _MODEL_BY_ID[_DEFAULT_MODEL_ID])
 
         params = {
             "length":              self._chk_length.isChecked(),
@@ -807,6 +861,81 @@ class ZebrafishAnalysisMainWidget:
         if idx != self._current_detail_idx:
             self._on_gallery_select(idx)
 
+    def _notify_settings_changed(self, *args):
+        """Forward any setting control change to the parameter node owner."""
+        if not self._updatingGUIFromParameterNode and callable(self._on_settings_changed):
+            self._on_settings_changed()
+
+    def updateGUIFromParameterNode(self, node):
+        """Read parameter values from node and apply to all setting controls."""
+        if node is None:
+            return
+        self._updatingGUIFromParameterNode = True
+        try:
+            def _b(key, default_bool):
+                v = node.GetParameter(key)
+                if v == "true":
+                    return True
+                if v == "false":
+                    return False
+                return default_bool
+
+            def _f_clamp(key, lo, hi, fallback):
+                v = node.GetParameter(key)
+                try:
+                    f = float(v)
+                    if math.isfinite(f) and lo <= f <= hi:
+                        return f
+                except (ValueError, TypeError):
+                    pass
+                return fallback
+
+            def _s_model(key):
+                v = node.GetParameter(key)
+                return v if v in _MODEL_BY_ID else _DEFAULT_MODEL_ID
+
+            self._chk_length.setChecked(_b(PARAM_LENGTH_ENABLED, True))
+            self._chk_curvature.setChecked(_b(PARAM_CURVATURE_ENABLED, True))
+            self._chk_ratio.setChecked(_b(PARAM_RATIO_ENABLED, True))
+            self._chk_eyes.setChecked(_b(PARAM_EYES_ENABLED, False))
+            self._chk_hitl.setChecked(_b(PARAM_CONFIDENCE_THRESHOLD_ENABLED, False))
+            self._threshold_slider.value = _f_clamp(PARAM_CONFIDENCE_THRESHOLD, 0.0, 1.0, 0.85)
+            self._um_per_px.value = _f_clamp(PARAM_UM_PER_PX, 0.001, 9999.0, 22.99)
+
+            model_id = _s_model(PARAM_MODEL_ID)
+            for i in range(self._model_combo.count):
+                if self._model_combo.itemData(i) == model_id:
+                    self._model_combo.setCurrentIndex(i)
+                    break
+        finally:
+            self._updatingGUIFromParameterNode = False
+
+    def updateParameterNodeFromGUI(self, node):
+        """Write all setting control values to the parameter node."""
+        if node is None or self._updatingGUIFromParameterNode:
+            return
+        wasModified = node.StartModify()
+        try:
+            node.SetParameter(PARAM_LENGTH_ENABLED,
+                              "true" if self._chk_length.isChecked() else "false")
+            node.SetParameter(PARAM_CURVATURE_ENABLED,
+                              "true" if self._chk_curvature.isChecked() else "false")
+            node.SetParameter(PARAM_RATIO_ENABLED,
+                              "true" if self._chk_ratio.isChecked() else "false")
+            node.SetParameter(PARAM_EYES_ENABLED,
+                              "true" if self._chk_eyes.isChecked() else "false")
+            node.SetParameter(PARAM_CONFIDENCE_THRESHOLD_ENABLED,
+                              "true" if self._chk_hitl.isChecked() else "false")
+            node.SetParameter(PARAM_CONFIDENCE_THRESHOLD,
+                              str(round(float(self._threshold_slider.value), 4)))
+            node.SetParameter(PARAM_UM_PER_PX,
+                              str(round(float(self._um_per_px.value), 6)))
+            model_id = self._model_combo.currentData or _DEFAULT_MODEL_ID
+            node.SetParameter(PARAM_MODEL_ID,
+                              model_id if model_id in _MODEL_BY_ID else _DEFAULT_MODEL_ID)
+        finally:
+            node.EndModify(wasModified)
+
     def _cancel_workers(self):
         """Invalidate running background workers without touching the UI.
 
@@ -819,14 +948,20 @@ class ZebrafishAnalysisMainWidget:
 
     def reset_for_scene_close(self):
         """Clear all session state after the MRML scene is closed."""
-        self._cancel_workers()
+        self._results = []          # stop _load_originals_bg workers
         self._image_paths = []
         self._excluded = set()
+        self._detail.reset()        # clear visual state + invalidate workers; timer stays active
         self._queue_list.clear()
         self._gallery.populate([])
         self._results_tab.populate([])
         self._exclude_tab.populate([])
         self._run_stack.setCurrentIndex(0)
+        # Scale-bar temporary state. _um_per_px is intentionally not reset here;
+        # the caller syncs it from the new parameter node immediately after.
+        self._scale_status.setText("Load images first.")
+        self._scale_status.setStyleSheet("color: #888; font-size: 11px;")
+        self._bar_um_edit.setText("")
 
     def cleanup(self):
         """Stop persistent resources before the widget is torn down."""

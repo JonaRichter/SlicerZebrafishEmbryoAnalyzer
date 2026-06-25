@@ -55,6 +55,10 @@ class _TrackingMixin:
     def addObserver(self, node, event, method):
         self._obs.append(event)
 
+    def removeObserver(self, node, event, method=None):
+        if event in self._obs:
+            self._obs.remove(event)
+
     def removeObservers(self, method=None):
         self._obs.clear()
 
@@ -70,6 +74,11 @@ sys.modules["slicer.ScriptedLoadableModule"] = types.SimpleNamespace(
 sys.modules["slicer.util"] = types.SimpleNamespace(
     VTKObservationMixin=_TrackingMixin,
 )
+# vtk is imported at the top of ZebrafishAnalysis.py
+_vtk = types.ModuleType("vtk")
+_vtk.vtkCommand = types.SimpleNamespace(ModifiedEvent=33)
+sys.modules["vtk"] = _vtk
+import vtk  # noqa
 """
 
 
@@ -298,11 +307,34 @@ def test_detail_tab_has_cleanup():
     )
 
 
+def test_detail_tab_has_reset_method():
+    """DetailTab must define a reset() method for scene-close visual cleanup."""
+    assert _has_method(_DETAIL_PY, "DetailTab", "reset"), (
+        "DetailTab must define a reset() method"
+    )
+
+
 def test_detail_tab_cleanup_calls_invalidate_cache():
     """DetailTab.cleanup() must call invalidate_cache() to discard stale worker results."""
     body = _method_source(_DETAIL_PY, "DetailTab", "cleanup")
     assert "invalidate_cache" in body, (
         "DetailTab.cleanup() must call self.invalidate_cache() before stopping the timer"
+    )
+
+
+def test_detail_tab_reset_calls_invalidate_cache():
+    """DetailTab.reset() must call invalidate_cache() to discard stale worker results."""
+    body = _method_source(_DETAIL_PY, "DetailTab", "reset")
+    assert "invalidate_cache" in body, (
+        "DetailTab.reset() must call self.invalidate_cache()"
+    )
+
+
+def test_detail_tab_reset_does_not_stop_timer():
+    """DetailTab.reset() must not stop the poll timer — only cleanup() does."""
+    body = _method_source(_DETAIL_PY, "DetailTab", "reset")
+    assert "stop" not in body, (
+        "DetailTab.reset() must not stop the poll timer; only cleanup() does"
     )
 
 
@@ -344,6 +376,8 @@ def test_reset_for_scene_close_clears_results_and_paths():
         w._results_tab = MagicMock()
         w._exclude_tab = MagicMock()
         w._run_stack   = MagicMock()
+        w._scale_status = MagicMock()
+        w._bar_um_edit  = MagicMock()
 
         w.reset_for_scene_close()
 
@@ -356,8 +390,8 @@ def test_reset_for_scene_close_clears_results_and_paths():
     assert "OK" in r.stdout
 
 
-def test_reset_for_scene_close_invalidates_cache_and_clears_gallery():
-    """reset_for_scene_close() calls invalidate_cache() and gallery.populate([])."""
+def test_reset_for_scene_close_calls_detail_reset_and_clears_gallery():
+    """reset_for_scene_close() calls detail.reset() and gallery.populate([])."""
     r = _run("""
         from unittest.mock import MagicMock
         from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
@@ -372,10 +406,12 @@ def test_reset_for_scene_close_invalidates_cache_and_clears_gallery():
         w._results_tab = MagicMock()
         w._exclude_tab = MagicMock()
         w._run_stack   = MagicMock()
+        w._scale_status = MagicMock()
+        w._bar_um_edit  = MagicMock()
 
         w.reset_for_scene_close()
 
-        w._detail.invalidate_cache.assert_called_once()
+        w._detail.reset.assert_called_once()
 
         populate_call = w._gallery.populate.call_args
         assert populate_call is not None, "gallery.populate was not called"
@@ -418,6 +454,7 @@ def test_cleanup_is_safe_before_setup():
         # Create without calling __init__ or setup()
         w = object.__new__(ZebrafishAnalysisWidget)
         w._main = None
+        w._parameterNode = None
         w._obs  = []   # _TrackingMixin state (normally set by __init__)
 
         w.cleanup()
@@ -435,8 +472,9 @@ def test_cleanup_clears_registered_observers():
 
         w = object.__new__(ZebrafishAnalysisWidget)
         w._main = None
-        # Simulate two observers having been registered (StartClose, EndClose)
-        w._obs  = [1001, 1002]
+        w._parameterNode = None
+        # Simulate three observers registered (StartClose, EndClose, EndImport)
+        w._obs  = [1001, 1002, 1003]
 
         w.cleanup()
 
@@ -455,6 +493,7 @@ def test_prewarm_timer_stopped_on_cleanup():
 
         w = object.__new__(ZebrafishAnalysisWidget)
         w._main = None
+        w._parameterNode = None
         w._obs  = []
         mock_timer = MagicMock()
         w._prewarm_timer = mock_timer
@@ -484,8 +523,9 @@ def test_observer_registration_is_idempotent():
         w._register_scene_observers()
         count_after_second = len(w._obs)
 
-        assert count_after_first == 2, f"Expected 2 observers after first call, got {count_after_first}"
-        assert count_after_second == 2, (
+        # StartCloseEvent + EndCloseEvent + EndImportEvent = 3 observers
+        assert count_after_first == 3, f"Expected 3 observers after first call, got {count_after_first}"
+        assert count_after_second == 3, (
             f"Second call must not add duplicates; got {count_after_second} observers"
         )
         print("OK")
@@ -502,7 +542,8 @@ def test_cleanup_resets_observer_registration_flag():
 
         w = object.__new__(ZebrafishAnalysisWidget)
         w._main = None
-        w._obs  = [1001, 1002]
+        w._parameterNode = None
+        w._obs  = [1001, 1002, 1003]
         w._sceneObserversRegistered = True
 
         w.cleanup()
@@ -512,8 +553,9 @@ def test_cleanup_resets_observer_registration_flag():
         )
         # Re-registration must work exactly once after a cleanup
         w._register_scene_observers()
-        assert len(w._obs) == 2, (
-            f"Re-registration should add 2 observers; got {len(w._obs)}"
+        # StartCloseEvent + EndCloseEvent + EndImportEvent = 3 observers
+        assert len(w._obs) == 3, (
+            f"Re-registration should add 3 observers; got {len(w._obs)}"
         )
         assert w._sceneObserversRegistered is True
         print("OK")
@@ -564,6 +606,265 @@ def test_detail_tab_cleanup_is_idempotent():
 
         d.cleanup()
         d.cleanup()   # second call must not raise
+        print("OK")
+    """)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout
+
+
+def test_detail_tab_reset_shows_placeholder():
+    """DetailTab.reset() must call show_placeholder() on the view — clears visible image."""
+    r = _run_detail("""
+        from unittest.mock import MagicMock
+        from ZebrafishAnalysisLib.detail_tab import DetailTab
+
+        d = object.__new__(DetailTab)
+        d._generation = 0
+        d._cache   = {"old": "pixmap"}
+        d._jobs    = {0}
+        d._pending = {}
+        d._results = [{"filename": "fish.png"}]
+        d._current_idx = 0
+        d._full_pixmap = MagicMock()
+        d._manual_mode = True
+        d._manual_points = [(1, 2)]
+        mock_view = MagicMock()
+        d._view = mock_view
+        d._metrics_label = MagicMock()
+        d._nav_label = MagicMock()
+        d._btn_prev = MagicMock()
+        d._btn_next = MagicMock()
+        d._manual_row_widget = MagicMock()
+        d._manual_status = MagicMock()
+
+        d.reset()
+
+        mock_view.show_placeholder.assert_called_once()
+        call_text = mock_view.show_placeholder.call_args[0][0]
+        assert isinstance(call_text, str) and len(call_text) > 0, (
+            f"show_placeholder must be called with a non-empty string, got {call_text!r}"
+        )
+        print("OK")
+    """)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout
+
+
+def test_detail_tab_reset_clears_texts_and_labels():
+    """DetailTab.reset() must clear metrics_label and nav_label."""
+    r = _run_detail("""
+        from unittest.mock import MagicMock
+        from ZebrafishAnalysisLib.detail_tab import DetailTab
+
+        d = object.__new__(DetailTab)
+        d._generation = 0
+        d._cache = {}; d._jobs = set(); d._pending = {}
+        d._results = []
+        d._current_idx = 0
+        d._full_pixmap = None
+        d._manual_mode = False
+        d._manual_points = []
+        d._view = MagicMock()
+        metrics = MagicMock()
+        nav = MagicMock()
+        d._metrics_label = metrics
+        d._nav_label = nav
+        d._btn_prev = MagicMock()
+        d._btn_next = MagicMock()
+        d._manual_row_widget = MagicMock()
+        d._manual_status = MagicMock()
+
+        d.reset()
+
+        metrics.setText.assert_called_with("")
+        nav.setText.assert_called_with("")
+        print("OK")
+    """)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout
+
+
+def test_detail_tab_reset_disables_navigation_and_clears_index():
+    """DetailTab.reset() disables both nav buttons and resets _current_idx to 0."""
+    r = _run_detail("""
+        from unittest.mock import MagicMock
+        from ZebrafishAnalysisLib.detail_tab import DetailTab
+
+        d = object.__new__(DetailTab)
+        d._generation = 0
+        d._cache = {}; d._jobs = set(); d._pending = {}
+        d._results = [{"filename": "a.png"}, {"filename": "b.png"}]
+        d._current_idx = 1   # non-zero to verify reset
+        d._full_pixmap = None
+        d._manual_mode = False
+        d._manual_points = []
+        d._view = MagicMock()
+        d._metrics_label = MagicMock()
+        d._nav_label = MagicMock()
+        btn_prev = MagicMock()
+        btn_next = MagicMock()
+        d._btn_prev = btn_prev
+        d._btn_next = btn_next
+        d._manual_row_widget = MagicMock()
+        d._manual_status = MagicMock()
+
+        d.reset()
+
+        assert d._current_idx == 0, f"_current_idx must be 0 after reset; got {d._current_idx}"
+        btn_prev.setEnabled.assert_called_with(False)
+        btn_next.setEnabled.assert_called_with(False)
+        print("OK")
+    """)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout
+
+
+def test_detail_tab_reset_invalidates_cache_and_generation():
+    """DetailTab.reset() increments generation and clears cache, jobs, and pending."""
+    r = _run_detail("""
+        from unittest.mock import MagicMock
+        from ZebrafishAnalysisLib.detail_tab import DetailTab
+
+        d = object.__new__(DetailTab)
+        d._generation = 3
+        d._cache   = {0: "pixmap_a", 1: "pixmap_b"}
+        d._jobs    = {2, 3}
+        d._pending = {(0, 3): "rgb", (1, 3): "rgb2"}
+        d._results = []
+        d._current_idx = 0
+        d._full_pixmap = None
+        d._manual_mode = False
+        d._manual_points = []
+        d._view = MagicMock()
+        d._metrics_label = MagicMock()
+        d._nav_label = MagicMock()
+        d._btn_prev = MagicMock()
+        d._btn_next = MagicMock()
+        d._manual_row_widget = MagicMock()
+        d._manual_status = MagicMock()
+
+        d.reset()
+
+        assert d._generation == 4, f"Generation not incremented: {d._generation}"
+        assert d._cache   == {}, f"Cache not cleared: {d._cache}"
+        assert d._jobs    == set(), f"Jobs not cleared: {d._jobs}"
+        assert d._pending == {}, f"Pending not cleared: {d._pending}"
+        print("OK")
+    """)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout
+
+
+def test_detail_tab_stale_worker_result_discarded():
+    """_poll_pending() discards results whose generation does not match the current one."""
+    r = _run_detail("""
+        from unittest.mock import MagicMock, patch
+        from ZebrafishAnalysisLib.detail_tab import DetailTab
+
+        d = object.__new__(DetailTab)
+        d._generation = 7   # current generation
+        d._cache   = {}
+        d._jobs    = {0}
+        d._current_idx = 0
+        d._full_pixmap = None
+        # Inject a stale result from generation 6
+        d._pending = {(0, 6): None}  # old generation
+        d._view = MagicMock()
+        d._pending_reset_zoom = False
+
+        # Patch _numpy_to_qpixmap so the poll doesn't crash on None
+        import ZebrafishAnalysisLib.detail_tab as _dt
+        _orig = _dt._numpy_to_qpixmap
+        _dt._numpy_to_qpixmap = lambda arr: MagicMock()
+
+        d._poll_pending()
+
+        _dt._numpy_to_qpixmap = _orig
+
+        # Stale result must be consumed but NOT stored in cache
+        assert d._cache == {}, f"Stale result must not enter cache: {d._cache}"
+        d._view.set_pixmap.assert_not_called()
+        print("OK")
+    """)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout
+
+
+def test_detail_tab_reset_poll_timer_keeps_running():
+    """DetailTab.reset() must not stop the poll timer — timer.stop() must not be called."""
+    r = _run_detail("""
+        from unittest.mock import MagicMock
+        from ZebrafishAnalysisLib.detail_tab import DetailTab
+
+        d = object.__new__(DetailTab)
+        d._generation = 0
+        d._cache = {}; d._jobs = set(); d._pending = {}
+        d._results = []
+        d._current_idx = 0
+        d._full_pixmap = None
+        d._manual_mode = False
+        d._manual_points = []
+        d._view = MagicMock()
+        d._metrics_label = MagicMock()
+        d._nav_label = MagicMock()
+        d._btn_prev = MagicMock()
+        d._btn_next = MagicMock()
+        d._manual_row_widget = MagicMock()
+        d._manual_status = MagicMock()
+        mock_timer = MagicMock()
+        d._poll_timer = mock_timer
+
+        d.reset()
+
+        mock_timer.stop.assert_not_called()
+        print("OK")
+    """)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout
+
+
+def test_detail_tab_accepts_new_results_after_reset():
+    """After reset(), show_result() must update internal state with fresh results."""
+    r = _run_detail("""
+        from unittest.mock import MagicMock
+        from ZebrafishAnalysisLib.detail_tab import DetailTab
+
+        d = object.__new__(DetailTab)
+        d._generation = 0
+        d._cache = {}; d._jobs = set(); d._pending = {}
+        d._results = []
+        d._current_idx = 0
+        d._full_pixmap = None
+        d._manual_mode = False
+        d._manual_points = []
+        mock_view = MagicMock()
+        d._view = mock_view
+        d._metrics_label = MagicMock()
+        d._nav_label = MagicMock()
+        d._btn_prev = MagicMock()
+        d._btn_next = MagicMock()
+        d._manual_row_widget = MagicMock()
+        d._manual_status = MagicMock()
+        d._on_navigate = None
+        d._pending_reset_zoom = True
+        d._params_getter = None
+        d._logic = MagicMock()
+        d._btn_revert_auto = MagicMock()
+        d._btn_manual_adjust = MagicMock()
+
+        # Reset first, then call show_result with fresh data
+        d.reset()
+
+        fresh_results = [{"filename": "new_fish.png", "length": 1.2, "curvature": "straight"}]
+        # Patch _start_job so it does not spawn a real thread (no overlay needed)
+        d._start_job = MagicMock()
+        d._schedule_preload = MagicMock()
+        d.show_result(0, fresh_results)
+
+        assert d._results is fresh_results, "_results must be updated to fresh list"
+        assert d._current_idx == 0
+        # view must have been asked to show a placeholder (loading state, since no cache)
+        mock_view.show_placeholder.assert_called()
         print("OK")
     """)
     assert r.returncode == 0, r.stderr

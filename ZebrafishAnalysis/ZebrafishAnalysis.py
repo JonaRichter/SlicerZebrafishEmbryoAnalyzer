@@ -1,6 +1,7 @@
 import sys
 
 import qt
+import vtk
 import slicer
 from slicer.ScriptedLoadableModule import (
     ScriptedLoadableModule,
@@ -57,6 +58,7 @@ class ZebrafishAnalysisWidget(ScriptedLoadableModuleWidget, VTKObservationMixin)
         ScriptedLoadableModuleWidget.__init__(self, parent)
         VTKObservationMixin.__init__(self)
         self._main = None
+        self._parameterNode = None
         self._sceneObserversRegistered = False
 
     def setup(self):
@@ -70,8 +72,10 @@ class ZebrafishAnalysisWidget(ScriptedLoadableModuleWidget, VTKObservationMixin)
 
         from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
         self._main = ZebrafishAnalysisMainWidget(self.layout, logic=self.logic)
+        self._main._on_settings_changed = self._on_settings_changed
 
         self._register_scene_observers()
+        self.initializeParameterNode()
 
         if hasattr(self, "_prewarm_timer"):
             self._prewarm_timer.stop()
@@ -82,7 +86,7 @@ class ZebrafishAnalysisWidget(ScriptedLoadableModuleWidget, VTKObservationMixin)
         self._prewarm_timer.start()
 
     def _register_scene_observers(self):
-        """Register MRML scene close observers exactly once per setup."""
+        """Register MRML scene observers exactly once per setup."""
         if self._sceneObserversRegistered:
             return
         self.addObserver(
@@ -95,15 +99,22 @@ class ZebrafishAnalysisWidget(ScriptedLoadableModuleWidget, VTKObservationMixin)
             slicer.mrmlScene.EndCloseEvent,
             self._on_scene_end_close,
         )
+        self.addObserver(
+            slicer.mrmlScene,
+            slicer.mrmlScene.EndImportEvent,
+            self._on_scene_end_import,
+        )
         self._sceneObserversRegistered = True
 
     def enter(self):
-        pass
+        if hasattr(self, "logic"):
+            self.initializeParameterNode()
 
     def exit(self):
         pass
 
     def cleanup(self):
+        self.setParameterNode(None)
         if hasattr(self, "_prewarm_timer"):
             self._prewarm_timer.stop()
         self.removeObservers()
@@ -111,16 +122,103 @@ class ZebrafishAnalysisWidget(ScriptedLoadableModuleWidget, VTKObservationMixin)
         if self._main is not None:
             self._main.cleanup()
 
+    # ------------------------------------------------------------------
+    # Parameter node
+    # ------------------------------------------------------------------
+
+    def initializeParameterNode(self):
+        """Get the scene parameter node, fill missing params and normalize invalid ones."""
+        import math
+        from ZebrafishAnalysisLib.widget import (
+            PARAM_DEFAULTS, _MODEL_BY_ID, _DEFAULT_MODEL_ID,
+            PARAM_LENGTH_ENABLED, PARAM_CURVATURE_ENABLED, PARAM_RATIO_ENABLED,
+            PARAM_EYES_ENABLED, PARAM_CONFIDENCE_THRESHOLD_ENABLED,
+            PARAM_CONFIDENCE_THRESHOLD, PARAM_UM_PER_PX, PARAM_MODEL_ID,
+        )
+        node = self.logic.getParameterNode()
+        wasModified = node.StartModify()
+        try:
+            for name, default in PARAM_DEFAULTS.items():
+                if not node.GetParameter(name):
+                    node.SetParameter(name, default)
+            for key in (PARAM_LENGTH_ENABLED, PARAM_CURVATURE_ENABLED, PARAM_RATIO_ENABLED,
+                        PARAM_EYES_ENABLED, PARAM_CONFIDENCE_THRESHOLD_ENABLED):
+                if node.GetParameter(key) not in ("true", "false"):
+                    node.SetParameter(key, PARAM_DEFAULTS[key])
+            v = node.GetParameter(PARAM_CONFIDENCE_THRESHOLD)
+            try:
+                f = float(v)
+                if not (math.isfinite(f) and 0.0 <= f <= 1.0):
+                    raise ValueError
+            except (ValueError, TypeError):
+                node.SetParameter(PARAM_CONFIDENCE_THRESHOLD, PARAM_DEFAULTS[PARAM_CONFIDENCE_THRESHOLD])
+            v = node.GetParameter(PARAM_UM_PER_PX)
+            try:
+                f = float(v)
+                if not (math.isfinite(f) and 0.001 <= f <= 9999.0):
+                    raise ValueError
+            except (ValueError, TypeError):
+                node.SetParameter(PARAM_UM_PER_PX, PARAM_DEFAULTS[PARAM_UM_PER_PX])
+            if node.GetParameter(PARAM_MODEL_ID) not in _MODEL_BY_ID:
+                node.SetParameter(PARAM_MODEL_ID, _DEFAULT_MODEL_ID)
+        finally:
+            node.EndModify(wasModified)
+        # Compute before setParameterNode so we can detect early return for same node.
+        same_node = node is self._parameterNode
+        self.setParameterNode(node)
+        # setParameterNode early-returns for the same node (no GUI update inside).
+        # Always update here so enter() re-entering is reflected in the UI.
+        if same_node and self._main is not None:
+            self._main.updateGUIFromParameterNode(node)
+
+    def setParameterNode(self, node):
+        """Connect to a new parameter node and disconnect from the old one."""
+        if node is self._parameterNode:
+            return
+        if self._parameterNode is not None:
+            self.removeObserver(
+                self._parameterNode,
+                vtk.vtkCommand.ModifiedEvent,
+                self._on_parameter_node_modified,
+            )
+        self._parameterNode = node
+        if node is not None:
+            self.addObserver(
+                node,
+                vtk.vtkCommand.ModifiedEvent,
+                self._on_parameter_node_modified,
+            )
+            if self._main is not None:
+                self._main.updateGUIFromParameterNode(node)
+
+    def _on_parameter_node_modified(self, caller=None, event=None):
+        if self._main is not None:
+            self._main.updateGUIFromParameterNode(self._parameterNode)
+
+    def _on_settings_changed(self):
+        if self._parameterNode is not None and self._main is not None:
+            self._main.updateParameterNodeFromGUI(self._parameterNode)
+
+    # ------------------------------------------------------------------
+    # Scene events
+    # ------------------------------------------------------------------
+
     def _on_scene_start_close(self, caller=None, event=None):
-        # Invalidate background workers early so they discard results for the
-        # closing scene; the UI reset happens in _on_scene_end_close once the
-        # scene is fully closed.
+        # Disconnect parameter node before scene objects are destroyed.
+        # Also invalidate background workers early.
+        self.setParameterNode(None)
         if self._main is not None:
             self._main._cancel_workers()
 
     def _on_scene_end_close(self, caller=None, event=None):
+        # Reset session UI state, then connect to the fresh scene's parameter node.
         if self._main is not None:
             self._main.reset_for_scene_close()
+        self.initializeParameterNode()
+
+    def _on_scene_end_import(self, caller=None, event=None):
+        # Pick up parameter node values from the newly loaded scene.
+        self.initializeParameterNode()
 
     def _prewarm_imports(self):
         import sys

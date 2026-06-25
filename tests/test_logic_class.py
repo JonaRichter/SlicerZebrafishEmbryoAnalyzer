@@ -48,6 +48,11 @@ sys.modules["slicer.ScriptedLoadableModule"] = types.SimpleNamespace(
 sys.modules["slicer.util"] = types.SimpleNamespace(
     VTKObservationMixin=_VTKObservationMixinStub,
 )
+# vtk is imported at the top of ZebrafishAnalysis.py
+_vtk = types.ModuleType("vtk")
+_vtk.vtkCommand = types.SimpleNamespace(ModifiedEvent=33)
+sys.modules["vtk"] = _vtk
+import vtk  # noqa
 """
 
 
