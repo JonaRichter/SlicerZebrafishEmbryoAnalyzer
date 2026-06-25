@@ -866,6 +866,16 @@ class ZebrafishAnalysisMainWidget:
                 5000,
             )
 
+    def _try_update_mrml_segmentation(self, result):
+        try:
+            self._logic.update_current_segmentation_node(result, self._um_per_px.value)
+        except MRMLAdapterError as exc:
+            logging.warning("ZebrafishAnalysis: MRML segmentation node update failed: %s", exc)
+            slicer.util.showStatusMessage(
+                "Segmentation node update failed. Check the application log.",
+                5000,
+            )
+
     def _get_correction_params(self):
         """Return current hitl/threshold settings for manual correction curvature recompute."""
         return {
@@ -880,6 +890,7 @@ class ZebrafishAnalysisMainWidget:
         self._detail.setFocus()
         if index < len(self._results):
             self._try_update_mrml_image(self._results[index])
+            self._try_update_mrml_segmentation(self._results[index])
 
     def _navigate_detail(self, delta: int):
         if not self._results:

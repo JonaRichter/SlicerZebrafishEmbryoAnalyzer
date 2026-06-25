@@ -26,6 +26,7 @@ TABLE_SCHEMA = [
 
 ROLE_RESULTS_TABLE = "ResultsTable"
 ROLE_CURRENT_IMAGE = "CurrentImage"
+ROLE_CURRENT_SEGMENTATION = "CurrentSegmentation"
 
 # String columns whose values are always preserved verbatim, even on error rows.
 _PRESERVE_ON_ERROR = frozenset({"filename", "error"})
@@ -247,3 +248,140 @@ def update_image_node(image_rgb, um_per_px, node):
     node.SetSpacing(*spacing)
     node.SetOrigin(*origin)
     node.SetAndObserveImageData(image_data)  # final step — fires observers with complete geometry
+
+
+def resample_mask_to_original(mask_2d, h_orig, w_orig):
+    """Resample a 2-D mask to (h_orig, w_orig) with nearest-neighbour interpolation.
+
+    Pure Python (cv2 + numpy only) — no vtk or slicer. Testable with standard pytest.
+
+    Parameters
+    ----------
+    mask_2d : ndarray
+        2-D array of any dtype. Values > 0 are treated as body / eye pixels.
+    h_orig : int
+        Target height in pixels.
+    w_orig : int
+        Target width in pixels.
+
+    Returns
+    -------
+    ndarray
+        uint8 array of shape (h_orig, w_orig) with values 0 or 1.
+    """
+    import cv2
+    import numpy as np
+
+    binary = (mask_2d > 0).astype(np.uint8)
+    # cv2.resize expects (width, height)
+    return cv2.resize(binary, (w_orig, h_orig), interpolation=cv2.INTER_NEAREST)
+
+
+def get_or_create_segmentation_node(param_node, scene):
+    """Return the existing CurrentSegmentation node or create exactly one new node.
+
+    Looks up by reference role ROLE_CURRENT_SEGMENTATION (not display name).
+    Creates a new vtkMRMLSegmentationNode named
+    "ZebrafishAnalysis Current Segmentation" if no valid reference exists.
+    Stores new node ID in param_node.
+    A wrong-type foreign node is left in scene unchanged; a new node is created.
+    """
+    existing = param_node.GetNodeReference(ROLE_CURRENT_SEGMENTATION)
+    if existing is not None and existing.IsA("vtkMRMLSegmentationNode"):
+        return existing
+    node = scene.AddNewNodeByClass(
+        "vtkMRMLSegmentationNode", "ZebrafishAnalysis Current Segmentation"
+    )
+    node.CreateDefaultDisplayNodes()
+    param_node.SetNodeReferenceID(ROLE_CURRENT_SEGMENTATION, node.GetID())
+    return node
+
+
+def update_segmentation_node(result, um_per_px, node, image_node=None):
+    """Write body and eye masks from a result dict into an existing vtkMRMLSegmentationNode.
+
+    result["original"]: uint8 ndarray shape (H_orig, W_orig, 3).
+    result["mask"]: 2-D ndarray shape (256, 256) — body mask (>0 means body).
+    result["eye_mask"]: 2-D bool ndarray shape (256, 256) or None — eye mask.
+    um_per_px: physical scale of the original image in micrometres per pixel.
+    image_node: optional vtkMRMLVectorVolumeNode — used to set reference geometry
+        so Slicer can position the segmentation in slice views.
+
+    VTK step order:
+      1. Lazy-import vtk, numpy, slicer, vtkSegmentationCore inside function.
+      2. Derive h_orig, w_orig from result["original"].shape; skip gracefully if absent.
+      3. Resample body mask and eye mask (if applicable) to (h_orig, w_orig).
+      4. Compute geometry via image_geometry(h_orig, w_orig, um_per_px).
+      5. Build vtkOrientedImageData for each segment (uint8, values 0/1).
+         - flipud + fliplr + ascontiguousarray to match VTK coordinate convention.
+      6. Set master representation to binary labelmap.
+      7. Wrap full modification in StartModify/EndModify to suppress intermediate events.
+      8. node.GetSegmentation().RemoveAllSegments()
+      9. Add "Body" segment (green) — always.
+      10. Add "Eye" segment (red) — only when eye_mask is not None and eye_mask.any().
+      11. Populate each segment via SetBinaryLabelmapToSegment.
+      12. Set reference image geometry from image_node if provided.
+    """
+    import vtk
+    from vtk.util import numpy_support
+    import numpy as np
+    import slicer
+    import vtkSegmentationCore
+
+    original = result.get("original") if result else None
+    if original is None:
+        return
+
+    h_orig, w_orig = int(original.shape[0]), int(original.shape[1])
+    dims, spacing, origin = image_geometry(h_orig, w_orig, um_per_px)
+    spacing_mm = spacing[0]
+
+    mask_2d = result.get("mask")
+    eye_mask_2d = result.get("eye_mask")
+
+    body_2d = resample_mask_to_original(mask_2d, h_orig, w_orig) if mask_2d is not None else None
+    has_eye = (
+        eye_mask_2d is not None
+        and hasattr(eye_mask_2d, "any")
+        and eye_mask_2d.any()
+    )
+    eye_2d = resample_mask_to_original(eye_mask_2d, h_orig, w_orig) if has_eye else None
+
+    def _make_oriented_image(arr_2d):
+        """Build a vtkOrientedImageData from a 2-D uint8 (0/1) array."""
+        flipped = np.ascontiguousarray(np.flipud(np.fliplr(arr_2d)))
+        flat = flipped.reshape(-1)
+        vtk_array = numpy_support.numpy_to_vtk(flat, deep=True, array_type=vtk.VTK_UNSIGNED_CHAR)
+        vtk_array.SetNumberOfComponents(1)
+        oid = vtkSegmentationCore.vtkOrientedImageData()
+        oid.SetDimensions(w_orig, h_orig, 1)
+        oid.GetPointData().SetScalars(vtk_array)
+        oid.SetSpacing(spacing_mm, spacing_mm, 1.0)
+        oid.SetOrigin(0.0, 0.0, 0.0)
+        return oid
+
+    node.GetSegmentation().SetSourceRepresentationName(
+        slicer.vtkSegmentationConverter.GetSegmentationBinaryLabelmapRepresentationName()
+    )
+
+    was_modifying = node.StartModify()
+    try:
+        seg = node.GetSegmentation()
+        seg.RemoveAllSegments()
+
+        if body_2d is not None:
+            body_id = seg.AddEmptySegment("Body", "Body", [0.0, 1.0, 0.0])
+            slicer.vtkSlicerSegmentationsModuleLogic.SetBinaryLabelmapToSegment(
+                _make_oriented_image(body_2d), node, body_id
+            )
+
+        if eye_2d is not None:
+            eye_id = seg.AddEmptySegment("Eye", "Eye", [1.0, 0.0, 0.0])
+            slicer.vtkSlicerSegmentationsModuleLogic.SetBinaryLabelmapToSegment(
+                _make_oriented_image(eye_2d), node, eye_id
+            )
+
+        if image_node is not None:
+            node.SetReferenceImageGeometryParameterFromVolumeNode(image_node)
+    finally:
+        node.EndModify(was_modifying)

@@ -5,10 +5,17 @@ directory to sys.path, so ZebrafishAnalysisLib.mrml imports without slicer or vt
 """
 
 import math
+import os
+import re
 
 import pytest
 
 from ZebrafishAnalysisLib.mrml import results_to_rows, TABLE_SCHEMA, ROLE_RESULTS_TABLE
+
+_MRML_PY = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "ZebrafishAnalysis", "ZebrafishAnalysisLib", "mrml.py",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +212,20 @@ def test_mrml_module_importable_without_slicer_or_vtk():
     assert hasattr(mrml, "get_or_create_table_node")
     assert hasattr(mrml, "build_vtk_table")
     assert hasattr(mrml, "populate_table_node")
+
+
+def test_mrml_module_no_global_slicer_import_still_holds():
+    """Regression: mrml.py still has no module-level 'import slicer' after E2c."""
+    import re
+    src = open(_MRML_PY).read()
+    lines = src.splitlines()
+    in_function = False
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r"^(def |class )", stripped):
+            in_function = True
+        if not in_function and re.match(r"^import slicer\b", stripped):
+            pytest.fail("mrml.py has a module-level 'import slicer' after E2c")
 
 
 # ---------------------------------------------------------------------------

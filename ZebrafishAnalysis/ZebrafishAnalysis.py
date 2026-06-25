@@ -398,3 +398,32 @@ class ZebrafishAnalysisLogic(ScriptedLoadableModuleLogic):
             raise MRMLAdapterError(
                 f"Failed to update current image node: {exc}"
             ) from exc
+
+    def update_current_segmentation_node(self, result, um_per_px):
+        """Create or update the MRML segmentation node for the current image's masks.
+
+        Returns None silently if result["original"] is None (stub or error row).
+        Raises MRMLAdapterError on MRML or VTK failure.
+        Must be called on the Slicer main thread only.
+        """
+        original = result.get("original") if result else None
+        if original is None:
+            return None
+        try:
+            from ZebrafishAnalysisLib.errors import MRMLAdapterError
+            import slicer
+            from ZebrafishAnalysisLib.mrml import (
+                get_or_create_segmentation_node,
+                update_segmentation_node,
+            )
+            param_node = self.getParameterNode()
+            image_node = param_node.GetNodeReference("CurrentImage")
+            node = get_or_create_segmentation_node(param_node, slicer.mrmlScene)
+            update_segmentation_node(result, um_per_px, node, image_node=image_node)
+            return node
+        except MRMLAdapterError:
+            raise
+        except Exception as exc:
+            raise MRMLAdapterError(
+                f"Failed to update current segmentation node: {exc}"
+            ) from exc

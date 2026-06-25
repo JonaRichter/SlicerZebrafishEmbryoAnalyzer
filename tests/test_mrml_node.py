@@ -733,6 +733,48 @@ def test_mrml_module_exports_image_functions():
 
 
 # ---------------------------------------------------------------------------
+# Static checks for E2c
+# ---------------------------------------------------------------------------
+
+def test_mrml_module_exports_segmentation_symbols():
+    """mrml.py must export all required E2c symbols."""
+    from ZebrafishAnalysisLib import mrml
+    assert hasattr(mrml, "ROLE_CURRENT_SEGMENTATION")
+    assert hasattr(mrml, "resample_mask_to_original")
+    assert hasattr(mrml, "get_or_create_segmentation_node")
+    assert hasattr(mrml, "update_segmentation_node")
+
+
+def test_widget_source_does_not_contain_persistent_segmentation_node_pointer():
+    """widget.py must not store a persistent node pointer like self._segmentation_node."""
+    src = open(_WIDGET_PY).read()
+    assert "self._segmentation_node" not in src, (
+        "widget.py must not keep a persistent _segmentation_node pointer — "
+        "ownership is via parameter node reference"
+    )
+
+
+def test_widget_source_calls_try_update_mrml_segmentation():
+    """widget.py must contain _try_update_mrml_segmentation."""
+    src = open(_WIDGET_PY).read()
+    assert "_try_update_mrml_segmentation" in src, (
+        "widget.py must define and call _try_update_mrml_segmentation()"
+    )
+
+
+def test_on_gallery_select_calls_segmentation_after_image():
+    """_on_gallery_select must call _try_update_mrml_segmentation after _try_update_mrml_image."""
+    src = open(_WIDGET_PY).read()
+    img_pos = src.find("_try_update_mrml_image(self._results[index])")
+    seg_pos = src.find("_try_update_mrml_segmentation(self._results[index])")
+    assert img_pos != -1, "_try_update_mrml_image call not found in _on_gallery_select"
+    assert seg_pos != -1, "_try_update_mrml_segmentation call not found in _on_gallery_select"
+    assert seg_pos > img_pos, (
+        "_try_update_mrml_segmentation must appear after _try_update_mrml_image"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Behavioral: get_or_create_image_node (direct, using fake objects)
 # ---------------------------------------------------------------------------
 
