@@ -510,6 +510,9 @@ class ZebrafishAnalysisMainWidget:
 
         Returns the Thread if started, None if skipped.
         """
+        import sys
+        if "torch" not in sys.modules:
+            return None
         import threading
         model_id   = self._model_combo.currentData or _DEFAULT_MODEL_ID
         model_data = _MODEL_BY_ID.get(model_id)
