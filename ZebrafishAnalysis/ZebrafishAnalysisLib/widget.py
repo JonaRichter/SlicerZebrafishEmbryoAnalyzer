@@ -15,7 +15,7 @@ import qt
 import ctk
 import slicer
 
-from ZebrafishAnalysisLib.errors import AnalysisInputError
+from ZebrafishAnalysisLib.errors import AnalysisInputError, MRMLAdapterError
 
 
 # ---------------------------------------------------------------------------
@@ -840,6 +840,18 @@ class ZebrafishAnalysisMainWidget:
 
         if ok:
             self._on_results_ready()
+            self._try_update_mrml_table(self._results)
+
+    def _try_update_mrml_table(self, results):
+        """Update the MRML results table; log and show a status warning on failure."""
+        try:
+            self._logic.update_results_table(results)
+        except MRMLAdapterError as exc:
+            logging.warning("ZebrafishAnalysis: MRML table update failed: %s", exc)
+            slicer.util.showStatusMessage(
+                "Analysis complete — results table update failed. Check the application log.",
+                5000,
+            )
 
     def _get_correction_params(self):
         """Return current hitl/threshold settings for manual correction curvature recompute."""

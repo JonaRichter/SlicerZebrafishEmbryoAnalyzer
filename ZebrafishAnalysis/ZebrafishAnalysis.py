@@ -16,6 +16,7 @@ from slicer.util import VTKObservationMixin
 
 _LIB_MODULES = (
     "ZebrafishAnalysisLib.errors",
+    "ZebrafishAnalysisLib.mrml",
     "ZebrafishAnalysisLib.widget",
     "ZebrafishAnalysisLib.gallery_tab",
     "ZebrafishAnalysisLib.detail_tab",
@@ -334,3 +335,37 @@ class ZebrafishAnalysisLogic(ScriptedLoadableModuleLogic):
     def revert_manual_correction(self, result):
         from ZebrafishAnalysisLib.logic import revert_manual_correction
         return revert_manual_correction(result)
+
+    def update_results_table(self, results):
+        """Create or update the MRML table node with raw analysis results.
+
+        Separate from run_analysis() so that a table update failure cannot
+        discard a successful analysis.  Raises MRMLAdapterError on failure;
+        the existing table content is preserved when possible.
+
+        Returns
+        -------
+        vtkMRMLTableNode
+        """
+        from ZebrafishAnalysisLib.errors import MRMLAdapterError
+        try:
+            import slicer
+            from ZebrafishAnalysisLib.mrml import (
+                results_to_rows,
+                build_vtk_table,
+                get_or_create_table_node,
+            )
+            rows = results_to_rows(results)
+            # Build the vtk table before touching the MRML scene: if this fails,
+            # no node is created and no reference is stored.
+            completed_table = build_vtk_table(rows)
+            param_node = self.getParameterNode()
+            table_node = get_or_create_table_node(param_node, slicer.mrmlScene)
+            table_node.SetAndObserveTable(completed_table)
+            return table_node
+        except MRMLAdapterError:
+            raise
+        except Exception as exc:
+            raise MRMLAdapterError(
+                f"Failed to update results table: {exc}"
+            ) from exc
