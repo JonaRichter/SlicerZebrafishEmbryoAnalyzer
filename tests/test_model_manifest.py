@@ -283,15 +283,16 @@ def test_size_bytes_is_positive_int(model_id, entry):
     assert sb > 0, f"MODELS[{model_id!r}]['size_bytes'] must be > 0"
 
 
-def test_curvature_smaller_than_segmentation_models():
-    """Curvature model is ~340 MB; segmentation models are ~530 MB."""
-    assert MODELS["curvature"]["size_bytes"] < MODELS["general_body"]["size_bytes"]
+def test_curvature_larger_than_segmentation_models():
+    """Curvature model (~352 MB) is larger than body (~116 MB) and eye (~95 MB) models."""
+    assert MODELS["curvature"]["size_bytes"] > MODELS["general_body"]["size_bytes"]
+    assert MODELS["curvature"]["size_bytes"] > MODELS["general_eye"]["size_bytes"]
 
 
 def test_size_bytes_reasonable_range():
-    """All size estimates fall within 100 MB – 2 GB (sanity bounds)."""
+    """All size estimates fall within 50 MB – 2 GB (sanity bounds)."""
     for model_id, entry in MODELS.items():
         sb = entry["size_bytes"]
-        assert 100_000_000 <= sb <= 2_000_000_000, (
+        assert 50_000_000 <= sb <= 2_000_000_000, (
             f"MODELS[{model_id!r}]['size_bytes']={sb} outside plausible range"
         )

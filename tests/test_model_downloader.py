@@ -263,9 +263,10 @@ def test_progress_total_does_not_drop_below_prompt_estimate(md, monkeypatch):
     reply.downloadProgress.emit(10 * mib, 980 * mib)
 
     label = controller._dialog.labels[-1]
-    assert "10.0 / 1400.0 MB estimated total" in label
-    assert "Current file: 10.0 / 980.0 MB" in label
+    assert "10.0 / 1400.0 MB" in label
     assert "MB/s" in label
+    assert "Current file" not in label
+    assert "estimated total" not in label
 
 
 def test_absolute_https_redirect(md, tmp_path):

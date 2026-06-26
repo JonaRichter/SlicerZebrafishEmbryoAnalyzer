@@ -596,13 +596,8 @@ class ModelDownloadController:
             suffix = self._progress_suffix(aggregate_done, aggregate_total)
             details = (
                 f"Downloading {label}...\n"
-                f"{aggregate_done / 1_048_576:.1f} / {aggregate_total / 1_048_576:.1f} MB estimated total"
+                f"{aggregate_done / 1_048_576:.1f} / {aggregate_total / 1_048_576:.1f} MB"
             )
-            if self.current_total > 0:
-                details += (
-                    f"\nCurrent file: {self.current_received / 1_048_576:.1f} / "
-                    f"{self.current_total / 1_048_576:.1f} MB"
-                )
             self._dialog.setLabelText(f"{details}{suffix}")
         else:
             self._dialog.setRange(0, 0)

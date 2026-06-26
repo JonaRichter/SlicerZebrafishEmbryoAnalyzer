@@ -319,10 +319,11 @@ class ZebrafishAnalysisMainWidget:
 
     def _on_load_folder(self):
         settings = qt.QSettings()
-        last = settings.value("ZebrafishAnalysis/lastFolder", "")
+        last = str(settings.value("ZebrafishAnalysis/lastFolder", "")) or ""
         folder = qt.QFileDialog.getExistingDirectory(None, "Select image folder", last)
         if not folder:
             return
+        folder = str(folder)
         settings.setValue("ZebrafishAnalysis/lastFolder", folder)
         import os
         exts = {".png", ".tif", ".tiff", ".jpg", ".jpeg"}
