@@ -349,6 +349,7 @@ def test_set_queue_cancels_active_runner(widget_module):
     """_set_queue must cancel any in-flight InferenceController."""
     w = object.__new__(widget_module.ZebrafishAnalysisMainWidget)
     w._run_token = 0
+    w._deps_ok = True
     w._results = []
     w._run_stack = MagicMock()
     runner = MagicMock()
@@ -357,6 +358,7 @@ def test_set_queue_cancels_active_runner(widget_module):
     w._queue_list = MagicMock()
     w._detail = MagicMock()
     w._tabs = MagicMock()
+    w._btn_run = MagicMock()
     w._load_originals = MagicMock()
 
     w._set_queue([])
@@ -374,12 +376,14 @@ def test_set_queue_bumps_token_before_cancel(widget_module):
 
     w = object.__new__(widget_module.ZebrafishAnalysisMainWidget)
     w._run_token = 1
+    w._deps_ok = True
     w._results = []
     w._run_stack = MagicMock()
     w._gallery = MagicMock()
     w._queue_list = MagicMock()
     w._detail = MagicMock()
     w._tabs = MagicMock()
+    w._btn_run = MagicMock()
     w._load_originals = MagicMock()
     runner = MagicMock()
     runner.cancel.side_effect = _cancel
@@ -394,6 +398,7 @@ def test_set_queue_increments_run_token(widget_module):
     """_set_queue must increment _run_token as its first action."""
     w = object.__new__(widget_module.ZebrafishAnalysisMainWidget)
     w._run_token = 5
+    w._deps_ok = True
     w._image_paths = []
     w._queue_list = MagicMock()
     w._results = []
@@ -401,6 +406,7 @@ def test_set_queue_increments_run_token(widget_module):
     w._gallery = MagicMock()
     w._tabs = MagicMock()
     w._um_per_px = MagicMock()
+    w._btn_run = MagicMock()
 
     # _load_originals needs to be a no-op (it calls cv2 etc.)
     w._load_originals = MagicMock()

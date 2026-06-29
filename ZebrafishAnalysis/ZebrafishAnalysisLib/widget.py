@@ -69,6 +69,7 @@ class ZebrafishAnalysisMainWidget:
         self._active_runner = None
         self._disposed = False
         self._run_token = 0
+        self._deps_ok = True
 
         self._saved_layout_id = None
         self._saved_central_visible = None
@@ -78,6 +79,7 @@ class ZebrafishAnalysisMainWidget:
 
         self._build_ui(parent_layout)
         self._connect_signals()
+        self._refresh_run_button()
 
     def _expand_panel(self):
         mw = slicer.util.mainWindow()
@@ -475,6 +477,7 @@ class ZebrafishAnalysisMainWidget:
                 pass
 
         self._load_originals(paths, stubs)
+        self._refresh_run_button()
 
     def _load_originals(self, paths, stubs):
         """Load original images after an explicit user action."""
@@ -599,9 +602,6 @@ class ZebrafishAnalysisMainWidget:
     def _on_run(self):
         self._run_token += 1
         token = self._run_token
-        if not self._image_paths:
-            slicer.util.warningDisplay("No images loaded.")
-            return
 
         model_id = self._model_combo.currentData or _DEFAULT_MODEL_ID
 
@@ -715,9 +715,8 @@ class ZebrafishAnalysisMainWidget:
                 if not success:
                     self._run_stack.setCurrentIndex(0)
                     if state not in ("cancelled", "disposed"):
-                        slicer.util.errorDisplay(
-                            f"Analysis failed:\n{message or 'Unknown error'}"
-                        )
+                        ui_message = self._categorize_inference_error(message, controller)
+                        slicer.util.errorDisplay(ui_message)
                     return
                 self._results = controller.results
                 self._run_stack.setCurrentIndex(0)
@@ -869,16 +868,45 @@ class ZebrafishAnalysisMainWidget:
         finally:
             node.EndModify(wasModified)
 
+    def _refresh_run_button(self):
+        """Enable Run button only when deps are OK and at least one image is queued."""
+        enabled = self._deps_ok and len(self._image_paths) > 0
+        self._btn_run.setEnabled(enabled)
+        if not enabled:
+            if not self._deps_ok:
+                self._btn_run.setToolTip("Install missing ML dependencies first.")
+            else:
+                self._btn_run.setToolTip("Load images before running analysis.")
+        else:
+            self._btn_run.setToolTip("")
+
     def refresh_dependency_status(self):
         ml = self._logic.dependency_status()  # {"torch": bool, "cv2": bool, ...}
         missing_ml = [k for k, v in ml.items() if not v]
 
-        deps_ok = not bool(missing_ml)
-        self._btn_run.setEnabled(deps_ok)
-        if not deps_ok:
-            self._btn_run.setToolTip("Install missing ML dependencies first.")
-        else:
-            self._btn_run.setToolTip("")
+        self._deps_ok = not bool(missing_ml)
+        self._refresh_run_button()
+
+    def _categorize_inference_error(self, message, controller):
+        """Return a user-facing error string based on exit_code; suppress raw tracebacks."""
+        exit_code = getattr(controller, "exit_code", None)
+        msg = message or ""
+
+        # Raw Python traceback: log full text, show generic UI message.
+        if "Traceback" in msg:
+            logging.warning("ZebrafishAnalysis: inference traceback:\n%s", msg)
+            return "Analysis failed. Check the application log for details."
+
+        if exit_code == 1:
+            first_line = msg.split("\n")[0].strip() if msg else ""
+            return f"Analysis failed: {first_line}" if first_line else "Analysis failed."
+        if exit_code == 2:
+            return "Required models are not loaded. Run the analysis again to trigger a download."
+        if exit_code == 3:
+            return "Internal error: bad analysis request. Check the application log."
+        if exit_code == 4:
+            return "Internal error: could not write temporary results. Check disk space."
+        return "Analysis failed. Check the application log."
 
     def prompt_install_if_missing(self):
         """Show a startup popup if required dependencies are absent. Guarded by testingEnabled."""

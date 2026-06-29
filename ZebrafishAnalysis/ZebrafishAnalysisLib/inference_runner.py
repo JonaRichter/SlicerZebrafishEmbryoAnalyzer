@@ -62,6 +62,7 @@ class InferenceController:
         self.cancelled = False
         self.disposed = False
         self.results = []
+        self.exit_code = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -189,6 +190,8 @@ class InferenceController:
         if self.cancelled:
             self._finish_once("cancelled", False, None)
             return
+
+        self.exit_code = exit_code
 
         if exit_code == 0:
             try:
