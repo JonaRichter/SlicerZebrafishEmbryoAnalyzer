@@ -400,8 +400,6 @@ def apply_manual_correction(result, point1_orig, point2_orig, params=None):
 
     import numpy as np  # deferred: only needed at call time
     from ZebrafishAnalysisCore.manual import compute_manual_length
-    from ZebrafishAnalysisCore.length import classification_curvature
-
     # Snapshot auto values on first correction only
     if "_auto_length" not in result:
         result["_auto_length"] = result.get("length")
@@ -433,21 +431,6 @@ def apply_manual_correction(result, point1_orig, point2_orig, params=None):
     result["ratio"] = float(length / straight_length) if straight_length > 0 else None
     result["path_points"] = path_pts
     result["straight_line_points"] = sl_pts
-
-    # Recompute curvature if model is loaded
-    curv_model = _MODEL_CACHE.get("curvature")
-    if curv_model is not None:
-        try:
-            use_thr = params.get("hitl", False)
-            thr = float(params.get("threshold", 0.85))
-            _, cls = classification_curvature(
-                result["original"], result["grown"], curv_model, use_thr, thr
-            )
-            result["curvature"] = int(cls.item())
-        except Exception as exc:
-            print(f"apply_manual_correction: curvature recompute failed ({exc})")
-    else:
-        print("apply_manual_correction: curvature model not in cache — skipping")
 
     result["manual_corrected"] = True
     return result
