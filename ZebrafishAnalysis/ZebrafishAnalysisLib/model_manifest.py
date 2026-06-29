@@ -14,7 +14,25 @@ import hashlib
 import os
 from pathlib import Path
 
-_CACHE_DIR = Path.home() / ".cache" / "zebrafish_models"
+
+def _default_cache_dir() -> Path:
+    """Return a platform-appropriate cache directory for model files.
+
+    Prefers ``platformdirs.user_cache_dir`` (cross-platform).  Falls back to
+    ``~/.cache/zebrafish_models`` if platformdirs is not installed so that
+    existing deployments on macOS/Linux keep working without an additional
+    dependency.
+    """
+    try:
+        from platformdirs import user_cache_dir
+        return Path(user_cache_dir("zebrafish_models"))
+    except Exception:
+        # Catch ImportError (platformdirs absent) and runtime errors such as
+        # PermissionError / OSError on Windows with a restricted LOCALAPPDATA.
+        return Path.home() / ".cache" / "zebrafish_models"
+
+
+_CACHE_DIR = _default_cache_dir()
 
 # ---------------------------------------------------------------------------
 # All known model entries

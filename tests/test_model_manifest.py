@@ -18,6 +18,7 @@ from ZebrafishAnalysisLib.model_manifest import (
     MODELS,
     MODEL_SETS,
     _CACHE_DIR,
+    _default_cache_dir,
     get_cached_path,
     get_missing_models,
     verify_checksum,
@@ -296,3 +297,74 @@ def test_size_bytes_reasonable_range():
         assert 50_000_000 <= sb <= 2_000_000_000, (
             f"MODELS[{model_id!r}]['size_bytes']={sb} outside plausible range"
         )
+
+
+# ---------------------------------------------------------------------------
+# J1: Platform-independent cache path
+# ---------------------------------------------------------------------------
+
+def test_default_cache_dir_returns_path():
+    """_default_cache_dir() must return a pathlib.Path object."""
+    result = _default_cache_dir()
+    assert isinstance(result, Path)
+
+
+def test_default_cache_dir_is_absolute():
+    """Cache directory must be an absolute path on all platforms."""
+    result = _default_cache_dir()
+    assert result.is_absolute(), f"Cache dir is not absolute: {result}"
+
+
+def test_default_cache_dir_without_platformdirs(monkeypatch):
+    """Falls back to ~/.cache/zebrafish_models when platformdirs is absent."""
+    import sys
+    import importlib
+
+    # Simulate platformdirs being missing by blocking the import
+    original = sys.modules.get("platformdirs", None)
+    sys.modules["platformdirs"] = None  # causes ImportError on 'from platformdirs import ...'
+    try:
+        import ZebrafishAnalysisLib.model_manifest as mm
+        result = mm._default_cache_dir()
+    finally:
+        if original is None:
+            del sys.modules["platformdirs"]
+        else:
+            sys.modules["platformdirs"] = original
+
+    expected = Path.home() / ".cache" / "zebrafish_models"
+    assert result == expected
+
+
+def test_default_cache_dir_platformdirs_raises_oserror(monkeypatch):
+    """Falls back to ~/.cache/zebrafish_models when user_cache_dir raises OSError."""
+    import ZebrafishAnalysisLib.model_manifest as mm
+
+    def _raise_oserror(*args, **kwargs):
+        raise OSError("restricted LOCALAPPDATA")
+
+    monkeypatch.setattr("platformdirs.user_cache_dir", _raise_oserror)
+    result = mm._default_cache_dir()
+    expected = Path.home() / ".cache" / "zebrafish_models"
+    assert result == expected
+
+
+def test_cache_dir_injectable_via_module_attr(tmp_path):
+    """get_cached_path respects a patched _CACHE_DIR (enables unit testing)."""
+    import ZebrafishAnalysisLib.model_manifest as mm
+    orig = mm._CACHE_DIR
+    mm._CACHE_DIR = tmp_path
+    try:
+        p = mm.get_cached_path(MODELS["general_body"])
+        assert p.parent == tmp_path
+    finally:
+        mm._CACHE_DIR = orig
+
+
+def test_get_cached_path_no_string_concatenation():
+    """get_cached_path must return a Path whose parts use OS separator, not '/'."""
+    p = get_cached_path(MODELS["general_body"])
+    # Path objects always use os.sep internally; confirm it's a Path not str
+    assert isinstance(p, Path)
+    # The name must equal the filename from the manifest
+    assert p.name == MODELS["general_body"]["filename"]

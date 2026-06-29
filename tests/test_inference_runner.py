@@ -430,3 +430,79 @@ def test_on_finished_accepts_single_arg(tmp_path):
     controller._on_finished(0)  # no exit_status argument
 
     assert finished_calls == [True]
+
+
+# ---------------------------------------------------------------------------
+# J1: Platform-independent Python executable discovery
+# ---------------------------------------------------------------------------
+
+def test_python_exe_windows_fallback_scripts_python_exe(tmp_path, monkeypatch):
+    """On Windows with empty sys.executable, discovers Scripts/python.exe."""
+    import sys
+    from pathlib import Path
+
+    # Create fake Scripts/python.exe inside tmp_path acting as sys.prefix
+    scripts_dir = tmp_path / "Scripts"
+    scripts_dir.mkdir()
+    fake_exe = scripts_dir / "python.exe"
+    fake_exe.write_text("")  # must exist so .exists() returns True
+
+    monkeypatch.setattr(sys, "executable", "")
+    monkeypatch.setattr(sys, "prefix", str(tmp_path))
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    proc = FakeProcess()
+    calls = []
+
+    from ZebrafishAnalysisLib.inference_runner import InferenceController
+    fqt = FakeQt()
+    fqt._fake_process = proc
+    controller = InferenceController(
+        image_paths=["/tmp/fish.png"],
+        model_id="general",
+        params={},
+        originals=[None],
+        on_finished=lambda s, st, m, c: calls.append((s, st, m)),
+        qt_module=fqt,
+        process_factory=lambda: proc,
+    )
+    controller.start()
+
+    # Process must have been started (not failed with "Cannot find Python executable")
+    assert calls == [], f"Should not have failed early; calls={calls}"
+    assert str(fake_exe) in proc.started_args
+
+
+def test_python_exe_unix_fallback_bin_python(tmp_path, monkeypatch):
+    """On Unix with empty sys.executable, discovers bin/python when python3 absent."""
+    import sys
+    from pathlib import Path
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_exe = bin_dir / "python"
+    fake_exe.write_text("")
+
+    monkeypatch.setattr(sys, "executable", "")
+    monkeypatch.setattr(sys, "prefix", str(tmp_path))
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    proc = FakeProcess()
+    calls = []
+
+    from ZebrafishAnalysisLib.inference_runner import InferenceController
+    fqt = FakeQt()
+    fqt._fake_process = proc
+    controller = InferenceController(
+        image_paths=["/tmp/fish.png"],
+        model_id="general",
+        params={},
+        originals=[None],
+        on_finished=lambda s, st, m, c: calls.append((s, st, m)),
+        qt_module=fqt,
+        process_factory=lambda: proc,
+    )
+    controller.start()
+
+    assert calls == [], f"Should not have failed early; calls={calls}"
+    assert str(fake_exe) in proc.started_args

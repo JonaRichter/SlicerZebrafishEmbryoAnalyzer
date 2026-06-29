@@ -93,9 +93,14 @@ class InferenceController:
 
         python_exe = sys.executable or ""
         if not python_exe:
-            candidate = str(Path(sys.prefix) / "bin" / "python3")
-            if Path(candidate).exists():
-                python_exe = candidate
+            _is_win = sys.platform == "win32"
+            _scripts = "Scripts" if _is_win else "bin"
+            _names = ("python.exe",) if _is_win else ("python3", "python")
+            for _name in _names:
+                candidate = Path(sys.prefix) / _scripts / _name
+                if candidate.exists():
+                    python_exe = str(candidate)
+                    break
         if not python_exe:
             self._finish_once("failed", False, "Cannot find Python executable")
             return self
