@@ -1,1 +1,12 @@
-# Slicer extension tests — to be implemented
+set(KIT_PYTHON_SCRIPTS
+  Python/ZebrafishAnalysisTest.py
+)
+
+set(KIT_PYTHON_RESOURCES)
+
+foreach(script ${KIT_PYTHON_SCRIPTS})
+  slicer_add_python_unittest(
+    SCRIPT ${script}
+    SLICER_ARGS --disable-cli-modules
+  )
+endforeach()
