@@ -1,10 +1,8 @@
 # 🐟 Zebrafish Embryo Analyzer
 
 A 3D Slicer extension for batch offline zebrafish embryo morphometry from 2-D
-microscopy images. Deep-learning models run entirely on your machine — no cloud,
-no data upload.
+microscopy images. Deep-learning models run entirely on your machine. No cloud, no data upload.
 
-![CI](https://github.com/MarkDanielArndt/SlicerZebrafishEmbryoAnalyzer/actions/workflows/ci.yml/badge.svg)
 
 **Research use only. Not a medical device.**
 
@@ -21,15 +19,15 @@ no data upload.
   - [Setting the scale](#setting-the-scale)
   - [Choosing measurements](#choosing-measurements)
   - [Running analysis](#running-analysis)
-  - [Browsing results — Gallery tab](#browsing-results--gallery-tab)
-  - [Inspecting a single image — Detail tab](#inspecting-a-single-image--detail-tab)
+  - [Browsing results (Gallery tab)](#browsing-results-gallery-tab)
+  - [Inspecting a single image (Detail tab)](#inspecting-a-single-image-detail-tab)
   - [Manual point correction](#manual-point-correction)
   - [Excluding images](#excluding-images)
   - [Exporting results](#exporting-results)
 - [Measurements reference](#measurements-reference)
 - [Curvature classes](#curvature-classes)
-- [MRML integration](#mrml-integration)
-- [Tests](#tests)
+- [Slicer integration](#slicer-integration)
+- [Development](#development)
 - [Platform support](#platform-support)
 - [Known limitations](#known-limitations)
 - [Contributors](#contributors)
@@ -47,8 +45,7 @@ no data upload.
   eye area (µm²), and eye diameter (µm)
 - Shows results in four tabs: **Gallery**, **Detail**, **Results**, **Exclude**
 - Exports the measurements table to CSV and Excel
-- Creates MRML nodes (table, volume, segmentation) that are visible in Slicer's
-  **Data** module and slice views
+- Makes results accessible in Slicer's **Data** module and slice views for downstream Slicer workflows
 
 ---
 
@@ -56,8 +53,7 @@ no data upload.
 
 ### Installation
 
-The extension is loaded from a source checkout — it is not yet distributed
-through the Extensions Manager.
+The extension is not yet available through the Extensions Manager and must be installed manually from this repository.
 
 1. Open **3D Slicer** (version 5.x).
 2. Go to **Edit → Application Settings → Modules**.
@@ -69,9 +65,6 @@ through the Extensions Manager.
    installs silently.
 6. After installation finishes, restart Slicer a second time.
 7. Open the **ZebrafishAnalysis** module from the **Modules** dropdown.
-
-<!-- TODO: add screenshot -->
-![Module selected in the Modules dropdown](Documentation_images/placeholder.png)
 
 ---
 
@@ -87,20 +80,19 @@ On first open you will be prompted to install:
 | `numpy<2` | Pinned for torch compatibility |
 | `platformdirs` | Cache path lookup (soft dependency, falls back gracefully) |
 
-Total download is several GB (torch alone is approximately 2 GB). Installation
-can take several minutes depending on your connection.
+Total download is several GB (PyTorch alone ~2 GB). Takes several minutes.
+
+<img src="Documentation_images/setup_dialog.png" width="500" alt="Setup dialog showing packages and optional model download">
+
+You can also pre-download models here to skip the prompt on first run.
 
 ---
 
 ### Model download
 
-Models are **not** downloaded at startup. When you click **Run Analysis** for
-the first time, a dialog lists the required models and their file sizes. The
-download begins only after you confirm. Models are cached locally; no further
-network access is needed for subsequent runs.
+If you pre-downloaded models during setup, skip this. Otherwise you will be prompted when clicking **Run Analysis** with a missing model. Models are cached after the first download.
 
-<!-- TODO: add screenshot -->
-![Model download confirmation dialog](Documentation_images/placeholder.png)
+<img src="Documentation_images/model_download.png" width="420" alt="Model download confirmation dialog">
 
 ---
 
@@ -108,27 +100,24 @@ network access is needed for subsequent runs.
 
 Add one or more microscopy images for batch processing.
 
-1. Click **Add images** in the module panel.
-2. Select the image files you want to analyze (multiple selection is
-   supported).
-3. The loaded images appear in the image list. You can add more files at any
-   time before running the analysis.
+1. Click **Load Images** or **Load Folder** in the module panel.
+2. Select images (multiple selection supported).
+3. The loaded images appear in the list. Loading again replaces the previous selection.
 
-<!-- TODO: add screenshot -->
-![Image list after loading several files](Documentation_images/placeholder.png)
+![Image list after loading several files](Documentation_images/image_list.png)
 
 ---
 
 ### Setting the scale
 
-Every measurement is reported in micrometres. The extension needs to know the
-physical size of one pixel.
+All measurements are in micrometres. Set the pixel size before running analysis.
 
 1. Enter the **µm/px** value in the scale field, or use the **scalebar
    detection** option to have the extension read the scale from an embedded
    scalebar in the image.
-2. Verify the displayed scale before running analysis — all length and area
-   measurements depend on it.
+2. Verify the scale. All measurements depend on it.
+
+![Scale bar detected with calibration applied](Documentation_images/scale_bar.png)
 
 ---
 
@@ -136,97 +125,76 @@ physical size of one pixel.
 
 Toggle the measurements you need before running:
 
-- **Length** — body length in µm along the midline
-- **Curvature** — curvature class (1–4; see [Curvature classes](#curvature-classes))
-- **Ratio** — body length divided by the straight-line head-to-tail distance
-- **Eye segmentation** — eye area (µm²) and eye diameter (µm)
+- **Length**: body length in µm along the midline
+- **Curvature**: curvature class (1–4; see [Curvature classes](#curvature-classes))
+- **Ratio**: body length divided by the straight-line head-to-tail distance
+- **Eye segmentation**: eye area (µm²) and eye diameter (µm)
 
-You can also set a **confidence threshold** and select the inference model
-(**General** or a fine-tuned variant) to match your imaging conditions.
+You can also set a **confidence threshold** and select the inference model via
+the **Model** accordion:
+
+- **General**: the default model, suitable for standard brightfield imaging
+  conditions. Recommended as a starting point.
+- **DESY variants**: fine-tuned for specific imaging setups at DESY.
 
 ---
 
 ### Running analysis
 
 1. Click **Run Analysis**.
-2. On the first run the extension loads models into memory — expect **10–30 s**
-   before per-image progress begins. Subsequent runs start immediately.
-3. A progress indicator shows which image is being processed.
-4. When analysis is complete, the **Gallery**, **Results**, and other tabs
-   populate automatically.
+2. The first run loads models into memory and takes **10–30 s** to start.
+3. When complete, the **Gallery**, **Results**, and other tabs populate automatically.
 
-<!-- TODO: add screenshot -->
-![Progress indicator during analysis](Documentation_images/placeholder.png)
+![Progress indicator during analysis](Documentation_images/progress.png)
 
 ---
 
-### Browsing results — Gallery tab
+### Browsing results (Gallery tab)
 
-The **Gallery** tab shows a thumbnail grid of every analyzed image with its
-overlay drawn on top.
+The **Gallery** tab shows all analyzed images with overlays. Click a thumbnail to open it in the **Detail** tab.
 
-1. Switch to the **Gallery** tab after analysis completes.
-2. Scroll through the thumbnails to get an overview of all results.
-3. Click any thumbnail to open that image in the **Detail** tab.
-
-<!-- TODO: add screenshot -->
-![Gallery tab with thumbnail grid](Documentation_images/placeholder.png)
+![Gallery tab with thumbnail grid](Documentation_images/gallery.png)
 
 ---
 
-### Inspecting a single image — Detail tab
+### Inspecting a single image (Detail tab)
 
-The **Detail** tab shows the selected image at full resolution with the
-segmentation overlay and detected body axis.
+The **Detail** tab shows the selected image at full resolution with the segmentation overlay, body axis, and measurements. Open it by clicking a thumbnail in the **Gallery**.
 
-1. Open the **Detail** tab (or click a thumbnail in the Gallery).
-2. The overlay shows the segmented body outline, eye regions, and head/tail
-   endpoints.
-3. The measurement values for the selected image are displayed alongside the
-   image.
-
-<!-- TODO: add screenshot -->
-![Detail tab with segmentation overlay](Documentation_images/placeholder.png)
+![Detail tab with segmentation overlay](Documentation_images/detail.png)
 
 ---
 
 ### Manual point correction
 
-If the automatic head/tail detection is incorrect for a particular image, you
-can set the endpoints manually.
+If automatic head/tail detection is wrong, correct it manually.
 
-1. Open the image in the **Detail** tab.
-2. Click on the image to place the **head** endpoint, then click again to place
-   the **tail** endpoint.
-3. Click **Apply Manual Points** to recompute the measurements using the
-   corrected endpoints.
+1. In the **Detail** tab, click **→ Manual Adjust**.
+2. Click the **head** position, then the **tail**. Applied automatically.
+
+![Manual Adjust mode: click the head position first](Documentation_images/manual_head.png)
+
+![Corrected axis after placing both points](Documentation_images/manual_correction.png)
+
+Click **Revert to Auto** to undo.
 
 ---
 
 ### Excluding images
 
-Images that failed quality control can be excluded from the summary statistics
-without deleting them from the session.
+Exclude images from exports without removing them from the session.
 
 1. Open the **Exclude** tab.
 2. Check the box next to each image you want to exclude.
-3. Excluded rows are marked in the **Results** tab and are omitted from CSV and
-   Excel exports.
-
-<!-- TODO: add screenshot -->
-![Exclude tab with checkboxes](Documentation_images/placeholder.png)
+3. Excluded images are omitted from CSV and Excel exports.
 
 ---
 
 ### Exporting results
 
-1. Click **Export CSV** to save the measurements table as a comma-separated
-   file, or click **Export Excel** to save as an `.xlsx` workbook.
-2. Both exports respect the exclusions you set in the **Exclude** tab —
-   excluded images are not written to the output file.
+Click **Export CSV** or **Export Excel**. Excluded images are omitted from both.
 
-<!-- TODO: add screenshot -->
-![Export buttons in the module panel](Documentation_images/placeholder.png)
+![Export buttons in the module panel](Documentation_images/export_buttons.png)
 
 ---
 
@@ -235,8 +203,8 @@ without deleting them from the session.
 | Measurement | Unit | Description |
 |-------------|------|-------------|
 | Body length | µm | Length along the detected midline |
-| Curvature class | — | 1 (most severe) to 4 (minimal) |
-| Length/straight-line ratio | — | Midline length ÷ head-to-tail distance |
+| Curvature class | - | 1 (most severe) to 4 (minimal) |
+| Length/straight-line ratio | - | Midline length ÷ head-to-tail distance |
 | Eye area | µm² | Area of each segmented eye region |
 | Eye diameter | µm | Diameter of each segmented eye region |
 
@@ -251,50 +219,34 @@ without deleting them from the session.
 | 3 | Mild |
 | 4 | Minimal curvature (most healthy) |
 
-Classes are determined automatically from the body shape detected by the
-segmentation model.
+---
+
+## Slicer integration
+
+After each analysis the extension creates or updates the following data nodes,
+visible in Slicer's **Data** module and slice views:
+
+| Data | Type |
+|------|------|
+| Measurements table | Table |
+| Currently selected image | Volume |
+| Body and eye segmentation | Segmentation |
+
+Nodes can be saved with the scene. After reopening, the Gallery, Detail, and Results tabs will be empty. Re-run the analysis to repopulate them.
 
 ---
 
-## MRML integration
+## Development
 
-After each analysis the extension creates or updates the following nodes,
-which appear in Slicer's **Data** module and slice views:
-
-| Node type | Content |
-|-----------|---------|
-| `vtkMRMLTableNode` | Full measurements table |
-| `vtkMRMLVectorVolumeNode` | Currently selected image |
-| `vtkMRMLSegmentationNode` | Body and eye segments |
-
-These nodes can be used in downstream Slicer workflows or saved with the scene.
-Note: saving and reloading a scene restores the MRML nodes but not the
-Gallery/Detail/Results tab state — this is expected behavior.
-
----
-
-## Tests
-
-The suite under `tests/` runs outside Slicer using plain Python:
+The test suite under `tests/` can be run without Slicer:
 
 ```bash
 python -m pytest tests/ -q
 ```
 
-Lightweight dependencies only:
+Slicer integration tests live in `ZebrafishAnalysis/Testing/Python/`.
 
-```
-pytest
-numpy<2
-opencv-python-headless
-platformdirs
-```
-
-Slicer integration tests live in `ZebrafishAnalysis/Testing/Python/` and
-require a running Slicer instance.
-
-CI runs the plain-Python suite on Ubuntu, macOS, and Windows with Python 3.11
-and 3.12 via GitHub Actions.
+CI runs on Ubuntu, macOS, and Windows (Python 3.11 and 3.12) via GitHub Actions.
 
 ---
 
@@ -302,17 +254,16 @@ and 3.12 via GitHub Actions.
 
 | Platform | Status |
 |----------|--------|
-| macOS | Development platform — verified |
-| Windows | Plain-Python CI green; full Slicer runtime not yet verified |
-| Linux | Plain-Python CI green; full Slicer runtime not yet verified |
+| macOS | Verified (development platform) |
+| Windows | Not yet tested with Slicer |
+| Linux | Not yet tested with Slicer |
 
 ---
 
 ## Known limitations
 
 - First analysis run is slow (10–30 s) due to model loading into memory.
-- Scene save/reload restores MRML nodes but not tab state.
-- Windows and Linux Slicer runtime not yet fully verified.
+- After reopening a saved scene, the Gallery, Detail, and Results tabs will be empty. Re-run the analysis to restore them.
 
 ---
 
