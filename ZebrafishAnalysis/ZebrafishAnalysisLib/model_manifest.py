@@ -156,6 +156,22 @@ def verify_checksum(path, sha256: str) -> bool:
         return False
 
 
+def collect_all_model_entries() -> dict:
+    """Return all unique model entries across all MODEL_SETS, deduplicated by id.
+
+    Returns
+    -------
+    dict
+        Mapping of entry id -> model_entry for every entry that appears in any
+        MODEL_SET.  Entries shared across sets (e.g. curvature) appear once.
+    """
+    result = {}
+    for variant in MODEL_SETS.values():
+        for entry in variant.values():
+            result.setdefault(entry["id"], entry)
+    return result
+
+
 def get_missing_models(model_set_dict: dict) -> list:
     """
     Return model entries whose cached path does not exist or is empty.
@@ -163,7 +179,7 @@ def get_missing_models(model_set_dict: dict) -> list:
     Parameters
     ----------
     model_set_dict : dict
-        Mapping of role -> model_entry, e.g. ``MODEL_SETS["general"]``.
+        Mapping of str -> model_entry, e.g. ``MODEL_SETS["general"]``.
 
     Returns
     -------

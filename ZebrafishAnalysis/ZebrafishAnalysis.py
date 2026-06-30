@@ -1,6 +1,5 @@
 import sys
 
-import qt
 import vtk
 import slicer
 from slicer.ScriptedLoadableModule import (
@@ -77,14 +76,6 @@ class ZebrafishAnalysisWidget(ScriptedLoadableModuleWidget, VTKObservationMixin)
         self._main._on_settings_changed = self._on_settings_changed
         self._main.refresh_dependency_status()
 
-        if hasattr(self, "_dep_check_timer"):
-            self._dep_check_timer.stop()
-        self._dep_check_timer = qt.QTimer()
-        self._dep_check_timer.setSingleShot(True)
-        self._dep_check_timer.setInterval(200)
-        self._dep_check_timer.timeout.connect(self._check_deps_on_start)
-        self._dep_check_timer.start()
-
         self._register_scene_observers()
         self.initializeParameterNode()
 
@@ -117,19 +108,14 @@ class ZebrafishAnalysisWidget(ScriptedLoadableModuleWidget, VTKObservationMixin)
             self.initializeParameterNode()
         if self._main is not None:
             self._main.apply_shell_layout()
+            self._main.prompt_install_if_missing()
 
     def exit(self):
         if self._main is not None:
             self._main.restore_shell_layout()
 
-    def _check_deps_on_start(self):
-        if self._main is not None:
-            self._main.prompt_install_if_missing()
-
     def cleanup(self):
         self.setParameterNode(None)
-        if hasattr(self, "_dep_check_timer"):
-            self._dep_check_timer.stop()
         self.removeObservers()
         self._sceneObserversRegistered = False
         if self._main is not None:

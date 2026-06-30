@@ -550,7 +550,7 @@ class ZebrafishAnalysisMainWidget:
             body += f"\n\nTotal: ~{_mb_label(total_bytes)} MB"
         body += "\n\nDownload now? (first run only, requires internet)"
 
-        msg = qt.QMessageBox()
+        msg = qt.QMessageBox(slicer.util.mainWindow())
         msg.setWindowTitle("Download Required")
         msg.setText(body)
         msg.setStandardButtons(qt.QMessageBox.Yes | qt.QMessageBox.No)
@@ -922,7 +922,7 @@ class ZebrafishAnalysisMainWidget:
         return "Analysis failed. Check the application log."
 
     def prompt_install_if_missing(self):
-        """Show a startup popup if required dependencies are absent. Guarded by testingEnabled."""
+        """Show a startup dialog if required dependencies are absent. Guarded by testingEnabled."""
         try:
             import slicer
             if slicer.app.testingEnabled():
@@ -935,7 +935,7 @@ class ZebrafishAnalysisMainWidget:
         if not any(missing.values()):
             return
 
-        # Build item list
+        # Build package item list
         items = []
         if missing["torch"]:
             items.append("torch + torchvision (CPU build from pytorch.org)")
@@ -944,17 +944,57 @@ class ZebrafishAnalysisMainWidget:
             items.append("numpy<2 (pin for PyTorch compatibility)")
 
         import qt
-        msg = qt.QMessageBox()
-        msg.setWindowTitle("ZebrafishAnalysis — Dependencies Required")
-        msg.setText(
+        from ZebrafishAnalysisLib.model_manifest import collect_all_model_entries, get_missing_models
+        all_entries = collect_all_model_entries()
+        missing_models = get_missing_models(all_entries)
+
+        dlg = qt.QDialog(slicer.util.mainWindow())
+        dlg.setWindowTitle("ZebrafishAnalysis — Setup")
+        layout = qt.QVBoxLayout(dlg)
+
+        # Packages section
+        pkg_label = qt.QLabel(
             "The following packages are required and not yet installed:\n\n"
             + "\n".join(f"  • {i}" for i in items)
             + "\n\nInstallation requires an internet connection and takes a few minutes. "
-            "Slicer must be restarted afterwards.\n\nInstall now?"
+            "Slicer must be restarted afterwards."
         )
-        msg.setStandardButtons(qt.QMessageBox.Yes | qt.QMessageBox.No)
-        msg.setDefaultButton(qt.QMessageBox.Yes)
-        if msg.exec_() != qt.QMessageBox.Yes:
+        pkg_label.setWordWrap(True)
+        layout.addWidget(pkg_label)
+
+        # Models section (only if uncached models exist)
+        model_checkboxes = []
+        if missing_models:
+            layout.addWidget(qt.QLabel("\nOptionally download missing models now:"))
+            for entry in missing_models:
+                size_mb = round(entry.get("size_bytes", 0) / 1_048_576)
+                label = f"{entry['label']} (~{size_mb} MB)"
+                cb = qt.QCheckBox(label)
+                cb.setChecked(False)
+                cb.setProperty("model_entry_id", entry["id"])
+                layout.addWidget(cb)
+                model_checkboxes.append((cb, entry))
+
+        # Buttons
+        btn_layout = qt.QHBoxLayout()
+        btn_install = qt.QPushButton("Install")
+        btn_skip = qt.QPushButton("Skip")
+        btn_layout.addWidget(btn_install)
+        btn_layout.addWidget(btn_skip)
+        layout.addLayout(btn_layout)
+
+        selected_entries = []
+
+        def _on_install():
+            selected_entries.extend(
+                entry for cb, entry in model_checkboxes if cb.isChecked()
+            )
+            dlg.accept()
+
+        btn_install.connect("clicked()", _on_install)
+        btn_skip.connect("clicked()", dlg.reject)
+
+        if dlg.exec_() != qt.QDialog.Accepted:
             return
 
         try:
@@ -963,8 +1003,82 @@ class ZebrafishAnalysisMainWidget:
             import logging
             logging.exception("Dependency install failed: %s", exc)
             slicer.util.errorDisplay(f"Installation failed: {exc}")
+            return
+
+        if selected_entries:
+            self._start_initial_model_download(selected_entries)
+        else:
+            self._show_restart_dialog()
+
+    def _show_restart_dialog(self):
+        """Show restart-required dialog after package installation."""
+        import qt
+        dlg = qt.QDialog(slicer.util.mainWindow())
+        dlg.setWindowTitle("Restart Required")
+        layout = qt.QVBoxLayout(dlg)
+
+        msg_label = qt.QLabel(
+            "Installation complete. Slicer must be restarted."
+        )
+        msg_label.setWordWrap(True)
+        layout.addWidget(msg_label)
+
+        btn_layout = qt.QHBoxLayout()
+        btn_restart = qt.QPushButton("Restart Now")
+        btn_later = qt.QPushButton("Later")
+        btn_layout.addWidget(btn_restart)
+        btn_layout.addWidget(btn_later)
+        layout.addLayout(btn_layout)
+
+        btn_restart.connect("clicked()", dlg.accept)
+        btn_later.connect("clicked()", dlg.reject)
+
+        result = dlg.exec_()
+
+        if result == qt.QDialog.Accepted:
+            try:
+                slicer.util.restart()
+            except AttributeError:
+                slicer.app.restart()
+            return
 
         self.refresh_dependency_status()
+
+    def _start_initial_model_download(self, entries):
+        """Start asynchronous download of initial model files.
+
+        Mirrors _start_model_download() but on completion only refreshes
+        dependency status — no inference is started.
+        """
+        if self._active_downloader is not None:
+            return
+
+        try:
+            self._run_status_label.setText("Downloading models…")
+            self._run_progress.setRange(0, 100)
+            self._run_progress.setValue(0)
+            self._run_progress.setFormat("")
+            self._run_stack.setCurrentIndex(1)
+
+            from ZebrafishAnalysisLib.model_downloader import start_model_download
+
+            def _finished(success, state, message, controller):
+                if self._disposed or controller is not self._active_downloader:
+                    return
+                self._active_downloader = None
+                self._run_stack.setCurrentIndex(0)
+                self._show_restart_dialog()
+
+            self._active_downloader = start_model_download(
+                entries,
+                _finished,
+                parent=slicer.util.mainWindow(),
+            )
+        except Exception as exc:
+            self._run_stack.setCurrentIndex(0)
+            self._active_downloader = None
+            logging.exception("ZebrafishAnalysis: failed to start initial model download")
+            slicer.util.errorDisplay(f"Could not start model download:\n{exc}")
 
     def _cancel_workers(self):
         """Cancel active asynchronous operations and invalidate transient state."""
