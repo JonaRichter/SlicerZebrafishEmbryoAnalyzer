@@ -83,8 +83,14 @@ def run_worker(request_path: str) -> int:
             import numpy as np
             for k in _ARRAY_KEYS:
                 v = r.get(k)
-                if v is not None and isinstance(v, np.ndarray):
-                    arrays[k] = v
+                if v is None:
+                    continue
+                if not isinstance(v, np.ndarray):
+                    try:
+                        v = np.asarray(v, dtype=float)
+                    except Exception:
+                        continue
+                arrays[k] = v
         except Exception:
             pass
 
