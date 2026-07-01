@@ -52,21 +52,32 @@ def get_missing_packages() -> dict:
 
 
 def _pip_install(args_str: str) -> None:
-    """Run pip install via subprocess, bypassing slicer.util.pip_install.
+    """Run pip install via subprocess, keeping the Qt event loop alive.
 
-    This avoids the automatic Slicer pip-progress dialog that appears in
-    Slicer 5.12+ when slicer.util.pip_install is called.
+    Uses Popen + polling so the progress dialog stays responsive during long
+    installs (Windows hides frozen dialogs; Linux shows 'not responding').
+    Outside Slicer (unit tests), falls back to a blocking wait.
     Raises RuntimeError on non-zero exit.
     """
     import subprocess
     import sys
-    result = subprocess.run(
+    proc = subprocess.Popen(
         [sys.executable, "-m", "pip", "install"] + args_str.split(),
-        capture_output=True,
-        text=True,
+        stdout=subprocess.DEVNULL,  # discard pip progress output; prevents pipe-buffer deadlock
+        stderr=subprocess.PIPE,
     )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr[-2000:] if result.stderr else result.stdout[-2000:])
+    try:
+        import slicer as _slicer
+        import time
+        while proc.poll() is None:
+            _slicer.app.processEvents()
+            time.sleep(0.05)
+    except ImportError:
+        proc.wait()  # outside Slicer (unit tests) — blocking wait is fine
+    out, err = proc.communicate()
+    if proc.returncode != 0:
+        detail = (err or b"").decode(errors="replace")
+        raise RuntimeError(detail[-2000:])
 
 
 def install_packages(missing: dict, pip_fn=None) -> None:
