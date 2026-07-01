@@ -718,6 +718,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 self._run_progress.setFormat("")
 
             def _on_runner_finished(success, state, message, controller):
+                logging.debug("ZebrafishEmbryoAnalyzer: _on_runner_finished state=%s success=%s token=%s run_token=%s", state, success, token, self._run_token)
                 if self._disposed or controller is not self._active_runner:
                     return
                 self._active_runner = None
@@ -732,8 +733,13 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                     return
                 self._results = controller.results
                 self._run_stack.setCurrentIndex(0)
-                self._on_results_ready()
-                self._try_update_mrml_table(self._results)
+                logging.debug("ZebrafishEmbryoAnalyzer: results ready, count=%d", len(self._results))
+                try:
+                    self._on_results_ready()
+                    self._try_update_mrml_table(self._results)
+                except Exception:
+                    logging.exception("ZebrafishEmbryoAnalyzer: exception in _on_results_ready")
+                    raise
 
             from ZebrafishEmbryoAnalyzerLib.inference_runner import start_inference
             self._active_runner = start_inference(
