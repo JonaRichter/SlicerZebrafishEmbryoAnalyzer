@@ -64,6 +64,7 @@ MODELS: dict = {
         "license": "LICENSE_PENDING",
         "preprocessing_compat": "v1",
     },
+    # Not yet wired into any MODEL_SET; kept for future edema analysis support.
     "general_edema": {
         "id": "general_edema",
         "repo_id": "markdanielarndt/Zebrafish_Segmentation",

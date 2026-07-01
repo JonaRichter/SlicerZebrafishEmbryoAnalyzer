@@ -24,7 +24,6 @@ _LIB_MODULES = (
     "ZebrafishAnalysisLib.gallery_tab",
     "ZebrafishAnalysisLib.detail_tab",
     "ZebrafishAnalysisLib.results_tab",
-    "ZebrafishAnalysisLib.exclude_tab",
     "ZebrafishAnalysisLib.logic",
     "ZebrafishAnalysisLib.overlay",
     "ZebrafishAnalysisLib.export",
