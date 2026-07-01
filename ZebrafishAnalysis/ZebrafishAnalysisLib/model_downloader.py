@@ -19,6 +19,7 @@ from pathlib import Path
 
 from ZebrafishAnalysisLib.model_manifest import (
     _CACHE_DIR,
+    checksum_mismatch_error,
     get_cached_path,
     verify_checksum,
 )
@@ -283,7 +284,7 @@ class ModelDownloadController:
 
         self.state = "verifying"
         if not self._verify_and_replace_current():
-            return
+            return  # _verify_and_replace_current already called _finish_once
 
         self.completed_bytes += max(
             self.current_received,
@@ -384,9 +385,24 @@ class ModelDownloadController:
                 self._finish_once("failed", False, "Model download failed: size mismatch.",
                                   abort_reply=False)
                 return False
-            sha256 = self.current_entry.get("sha256", "PENDING")
-            if not verify_checksum(tmp, sha256):
-                self._finish_once("failed", False, "Model download failed: checksum mismatch.",
+            sha256 = self.current_entry.get("sha256", "")
+            try:
+                ok = verify_checksum(tmp, sha256)
+            except ValueError as exc:
+                self._finish_once("failed", False, str(exc), abort_reply=False)
+                return False
+            if not ok:
+                import hashlib as _hashlib
+                h = _hashlib.sha256()
+                try:
+                    with open(tmp, "rb") as _f:
+                        for _chunk in iter(lambda: _f.read(65536), b""):
+                            h.update(_chunk)
+                    actual = h.hexdigest()
+                except OSError:
+                    actual = "<unreadable>"
+                msg = checksum_mismatch_error(self.current_entry, str(tmp), actual)
+                self._finish_once("failed", False, f"Model download failed: {msg}",
                                   abort_reply=False)
                 return False
             self._commit_verified_file(tmp, final)

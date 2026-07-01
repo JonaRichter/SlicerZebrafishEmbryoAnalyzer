@@ -19,6 +19,7 @@ from ZebrafishAnalysisLib.model_manifest import (
     MODEL_SETS,
     _CACHE_DIR,
     _default_cache_dir,
+    checksum_mismatch_error,
     get_cached_path,
     get_missing_models,
     verify_checksum,
@@ -126,19 +127,29 @@ def test_different_entries_different_paths():
 
 
 # ---------------------------------------------------------------------------
-# AC4: verify_checksum — PENDING always returns True
+# AC4: verify_checksum — PENDING raises ValueError (BLK-05)
 # ---------------------------------------------------------------------------
 
-def test_verify_checksum_pending_returns_true_no_file():
-    """PENDING sha256 must return True even when file does not exist."""
-    result = verify_checksum("/nonexistent/path/model.pth", "PENDING")
-    assert result is True
+def test_verify_checksum_pending_raises_value_error_no_file():
+    """PENDING sha256 must raise ValueError (configuration error)."""
+    with pytest.raises(ValueError, match="placeholder or missing"):
+        verify_checksum("/nonexistent/path/model.pth", "PENDING")
 
 
-def test_verify_checksum_pending_returns_true_with_file(tmp_path):
+def test_verify_checksum_pending_raises_value_error_with_file(tmp_path):
+    """PENDING sha256 raises ValueError even when file exists."""
     f = tmp_path / "model.pth"
     f.write_bytes(b"dummy weights")
-    assert verify_checksum(str(f), "PENDING") is True
+    with pytest.raises(ValueError, match="placeholder or missing"):
+        verify_checksum(str(f), "PENDING")
+
+
+def test_verify_checksum_empty_sha256_raises_value_error(tmp_path):
+    """Empty sha256 string raises ValueError."""
+    f = tmp_path / "model.pth"
+    f.write_bytes(b"dummy weights")
+    with pytest.raises(ValueError, match="placeholder or missing"):
+        verify_checksum(str(f), "")
 
 
 # ---------------------------------------------------------------------------
@@ -368,3 +379,66 @@ def test_get_cached_path_no_string_concatenation():
     assert isinstance(p, Path)
     # The name must equal the filename from the manifest
     assert p.name == MODELS["general_body"]["filename"]
+
+
+# ---------------------------------------------------------------------------
+# HIGH-01: All revisions must be immutable commit SHAs (not floating "main")
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("model_id,entry", list(MODELS.items()))
+def test_revision_is_not_main(model_id, entry):
+    """No MODELS entry may use the floating 'main' branch as revision."""
+    revision = entry["revision"]
+    assert revision != "main", (
+        f"MODELS[{model_id!r}]['revision'] is still 'main' — use an immutable commit SHA."
+    )
+
+
+@pytest.mark.parametrize("model_id,entry", list(MODELS.items()))
+def test_revision_looks_like_commit_sha(model_id, entry):
+    """Revision must look like a 40-character hex commit SHA."""
+    revision = entry["revision"]
+    assert len(revision) == 40 and all(c in "0123456789abcdef" for c in revision), (
+        f"MODELS[{model_id!r}]['revision']={revision!r} is not a 40-char lowercase hex SHA."
+    )
+
+
+# ---------------------------------------------------------------------------
+# BLK-05: All sha256 values are real 64-char hex strings
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("model_id,entry", list(MODELS.items()))
+def test_sha256_is_not_pending(model_id, entry):
+    """No MODELS entry may have sha256='PENDING'."""
+    sha = entry["sha256"]
+    assert sha != "PENDING", (
+        f"MODELS[{model_id!r}]['sha256'] is still 'PENDING' — update with real checksum."
+    )
+
+
+@pytest.mark.parametrize("model_id,entry", list(MODELS.items()))
+def test_sha256_is_64_char_lowercase_hex(model_id, entry):
+    """sha256 must be exactly 64 lowercase hex characters."""
+    sha = entry.get("sha256", "")
+    assert len(sha) == 64 and all(c in "0123456789abcdef" for c in sha), (
+        f"MODELS[{model_id!r}]['sha256']={sha!r} is not a 64-char lowercase hex string."
+    )
+
+
+# ---------------------------------------------------------------------------
+# BLK-05: checksum_mismatch_error returns useful string
+# ---------------------------------------------------------------------------
+
+def test_checksum_mismatch_error_contains_expected_and_actual():
+    entry = {"id": "general_body", "sha256": "a" * 64}
+    msg = checksum_mismatch_error(entry, "/some/path/model.pth", "b" * 64)
+    assert "general_body" in msg
+    assert "a" * 64 in msg
+    assert "b" * 64 in msg
+    assert "re-download" in msg.lower()
+
+
+def test_checksum_mismatch_error_is_string():
+    entry = {"id": "curvature", "sha256": "c" * 64}
+    result = checksum_mismatch_error(entry, "/path/model.pth", "d" * 64)
+    assert isinstance(result, str)

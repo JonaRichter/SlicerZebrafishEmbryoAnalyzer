@@ -147,7 +147,7 @@ def _entry(name="model.pth", data=b"data", **extra):
         "revision": "main",
         "filename": name,
         "label": name,
-        "sha256": "PENDING",
+        "sha256": hashlib.sha256(data).hexdigest(),
         "size_bytes": len(data),
     }
     item.update(extra)

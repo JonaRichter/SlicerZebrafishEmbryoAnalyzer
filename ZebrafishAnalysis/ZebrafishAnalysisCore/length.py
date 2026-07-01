@@ -716,10 +716,13 @@ def load_model(model_path: str):
     import timm
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
     class FishClassifier(nn.Module):
         def __init__(self, num_classes, dense_layer_size, dropout_rate, model_name='resnet101'):
             super().__init__()
-            self.backbone = timm.create_model(model_name, pretrained=True, num_classes=0)
+            self.backbone = timm.create_model(model_name, pretrained=False, num_classes=0)
             self.flatten = nn.Flatten()
             # Get backbone output feature size by passing a dummy input
             with torch.no_grad():
@@ -727,7 +730,6 @@ def load_model(model_path: str):
                 dummy_output = self.backbone(dummy_input)
                 backbone_out_features = dummy_output.shape[1] if len(dummy_output.shape) > 1 else dummy_output.shape[0]
             self.fc1 = nn.Linear(backbone_out_features, dense_layer_size)
-            #self.fc1 = nn.Linear(self.backbone.num_features, dense_layer_size)
             self.dropout = nn.Dropout(dropout_rate)
             self.fc2 = nn.Linear(dense_layer_size, num_classes)
 
@@ -746,61 +748,46 @@ def load_model(model_path: str):
             "Download models via ZebrafishAnalysisLib.model_downloader before running analysis."
         )
 
-    fallback = {'dense_layer': 512, 'dropout': 0.2, 'model_name': 'convnext_base'}
-    print("Warning: best_params not found. Using fallback params:", fallback)
-    best_params = fallback
+    best_params = {'dense_layer': 512, 'dropout': 0.2, 'model_name': 'convnext_base'}
+    _log.debug("Using curvature model params: %s", best_params)
 
-    # Instantiate and load
-    model = FishClassifier(num_classes=4,
-                        dense_layer_size=best_params['dense_layer'],
-                        dropout_rate=best_params['dropout'],
-                        model_name=best_params['model_name'])
     try:
-        # # Try loading state dict first
-        state = torch.load(model_path, map_location=device)
-        #if isinstance(state, dict) and all(isinstance(k, str) for k in state.keys()):
-        #     model.load_state_dict(state)
-        # else:
-        #     # If saved the entire model object
-        model = state
-    except Exception as e:
-        # Last resort: try direct load_state_dict on the object
-        model.load_state_dict(torch.load(model_path, map_location=device))
-    # model = model.to(device)
-    # Ensure `model` is an nn.Module on the correct device and in eval mode.
+        state_dict = torch.load(model_path, map_location=device, weights_only=True)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to load curvature model from {model_path!r} with safe loading. "
+            "The checkpoint may use an incompatible format. "
+            "Re-download the model or obtain a state-dict-only checkpoint. "
+            f"Underlying error: {exc}"
+        ) from exc
 
-    def _strip_module_prefix(state_dict):
-        if any(k.startswith('module.') for k in state_dict.keys()):
-            return {k.replace('module.', ''): v for k, v in state_dict.items()}
-        return state_dict
+    # Unwrap common nested state_dict containers
+    if isinstance(state_dict, dict):
+        if 'state_dict' in state_dict:
+            state_dict = state_dict['state_dict']
+        elif 'model_state_dict' in state_dict:
+            state_dict = state_dict['model_state_dict']
 
-    if isinstance(model, nn.Module):
-        model = model.to(device)
-        model.eval()
-    else:
-        # model is likely a state_dict / OrderedDict -> instantiate and load
-        state_dict = model
-        if isinstance(state_dict, (dict, OrderedDict)):
-            state_dict = _strip_module_prefix(state_dict)
-            instantiated = FishClassifier(
-                num_classes=4,
-                dense_layer_size=best_params['dense_layer'],
-                dropout_rate=best_params['dropout'],
-                model_name=best_params['model_name']
-            )
-            # handle common nested keys
-            if 'state_dict' in state_dict:
-                state_dict = state_dict['state_dict']
-                state_dict = _strip_module_prefix(state_dict)
-            if 'model_state_dict' in state_dict:
-                state_dict = state_dict['model_state_dict']
-                state_dict = _strip_module_prefix(state_dict)
-            instantiated.load_state_dict(state_dict)
-            model = instantiated.to(device)
-            model.eval()
-        else:
-            raise TypeError("Loaded object is neither an nn.Module nor a state dict.")
+    # Strip DataParallel 'module.' prefix if present
+    if any(k.startswith('module.') for k in state_dict.keys()):
+        state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
 
+    model_instance = FishClassifier(
+        num_classes=4,
+        dense_layer_size=best_params['dense_layer'],
+        dropout_rate=best_params['dropout'],
+        model_name=best_params['model_name'],
+    )
+    missing, unexpected = model_instance.load_state_dict(state_dict, strict=False)
+    if unexpected:
+        _log.warning("Unexpected keys in curvature checkpoint: %s", unexpected)
+    if missing:
+        raise RuntimeError(
+            f"Curvature checkpoint at {model_path!r} is missing required keys: {missing}. "
+            "The checkpoint may be incomplete or incompatible. Re-download the model."
+        )
+    model = model_instance.to(device)
+    model.eval()
     return model
 
 

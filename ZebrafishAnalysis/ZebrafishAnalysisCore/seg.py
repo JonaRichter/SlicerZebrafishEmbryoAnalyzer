@@ -40,7 +40,16 @@ def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model"
         )
 
     try:
-        model.load_state_dict(torch.load(resolved_path, map_location=torch.device('cpu')))
+        try:
+            state_dict = torch.load(resolved_path, map_location=torch.device('cpu'), weights_only=True)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to load {label} model from {resolved_path!r} with safe loading. "
+                "The checkpoint may use an incompatible format. "
+                "Re-download the model or obtain a state-dict-only checkpoint. "
+                f"Underlying error: {exc}"
+            ) from exc
+        model.load_state_dict(state_dict)
         model.eval()
         print(f"{label.capitalize()} loaded from {resolved_path}")
         _UNET_CACHE[cache_key] = model

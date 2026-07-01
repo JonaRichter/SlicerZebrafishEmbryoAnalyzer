@@ -7,6 +7,12 @@ set(EXTENSION_CATEGORY "Quantification")
 set(EXTENSION_CONTRIBUTORS "Jona Richter, Mark Daniel Arndt")
 set(EXTENSION_DESCRIPTION "Zebrafish body length, curvature, and eye metrics from 2D microscopy images.")
 set(EXTENSION_ICONURL "https://raw.githubusercontent.com/MarkDanielArndt/SlicerZebrafishEmbryoAnalyzer/master/ZebrafishAnalysis/Resources/Icons/ZebrafishAnalysis.png")
+set(EXTENSION_SCREENSHOTURLS
+  "https://raw.githubusercontent.com/MarkDanielArndt/SlicerZebrafishEmbryoAnalyzer/master/Documentation_images/gallery.png"
+  "https://raw.githubusercontent.com/MarkDanielArndt/SlicerZebrafishEmbryoAnalyzer/master/Documentation_images/detail.png"
+  "https://raw.githubusercontent.com/MarkDanielArndt/SlicerZebrafishEmbryoAnalyzer/master/Documentation_images/setup_dialog.png"
+  "https://raw.githubusercontent.com/MarkDanielArndt/SlicerZebrafishEmbryoAnalyzer/master/Documentation_images/manual_correction.png"
+)
 set(EXTENSION_DEPENDS "NA")
 
 find_package(Slicer REQUIRED)
