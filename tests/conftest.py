@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 
 # Slicer puts the module directory on sys.path at runtime; mirror that here so
-# `ZebrafishAnalysisCore` and `ZebrafishAnalysisLib` import the same way in tests.
-_MODULE_DIR = Path(__file__).resolve().parent.parent / "ZebrafishAnalysis"
+# `ZebrafishEmbryoAnalyzerCore` and `ZebrafishEmbryoAnalyzerLib` import the same way in tests.
+_MODULE_DIR = Path(__file__).resolve().parent.parent / "ZebrafishEmbryoAnalyzer"
 if str(_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(_MODULE_DIR))
 
@@ -43,6 +43,6 @@ def mock_model_paths(tmp_path):
         created[entry["id"]] = p
         return p
 
-    with patch("ZebrafishAnalysisLib.model_manifest.get_cached_path",
+    with patch("ZebrafishEmbryoAnalyzerLib.model_manifest.get_cached_path",
                side_effect=fake_get_cached_path):
         yield created

@@ -2,13 +2,13 @@ import sys
 
 import numpy as np
 
-# test_exclude_integration.py stubs out ZebrafishAnalysisLib.overlay to satisfy
+# test_exclude_integration.py stubs out ZebrafishEmbryoAnalyzerLib.overlay to satisfy
 # its own imports. Pop the stub so this file loads the real module.
-sys.modules.pop("ZebrafishAnalysisLib.overlay", None)
+sys.modules.pop("ZebrafishEmbryoAnalyzerLib.overlay", None)
 
 
 def test_make_overlay_returns_rgb_array(synthetic_fish_image, synthetic_fish_mask):
-    from ZebrafishAnalysisLib.overlay import make_overlay
+    from ZebrafishEmbryoAnalyzerLib.overlay import make_overlay
 
     result_dict = {
         "original":  synthetic_fish_image,
@@ -30,7 +30,7 @@ def test_make_overlay_returns_rgb_array(synthetic_fish_image, synthetic_fish_mas
 
 
 def test_make_overlay_handles_none_mask(synthetic_fish_image):
-    from ZebrafishAnalysisLib.overlay import make_overlay
+    from ZebrafishEmbryoAnalyzerLib.overlay import make_overlay
 
     result_dict = {
         "original":             synthetic_fish_image,

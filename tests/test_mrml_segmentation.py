@@ -1,13 +1,13 @@
-"""Plain-Python tests for E2c segmentation helpers in ZebrafishAnalysisLib.mrml.
+"""Plain-Python tests for E2c segmentation helpers in ZebrafishEmbryoAnalyzerLib.mrml.
 
 All tests run in the normal pytest process (no slicer / vtk required).
-conftest.py adds ZebrafishAnalysis to sys.path so the import works directly.
+conftest.py adds ZebrafishEmbryoAnalyzer to sys.path so the import works directly.
 """
 
 import numpy as np
 import pytest
 
-from ZebrafishAnalysisLib.mrml import resample_mask_to_original
+from ZebrafishEmbryoAnalyzerLib.mrml import resample_mask_to_original
 
 
 # ---------------------------------------------------------------------------

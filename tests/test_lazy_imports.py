@@ -1,7 +1,7 @@
 """
 F1 regression tests: deferred ML imports.
 
-Verifies that importing ZebrafishAnalysisCore and ZebrafishAnalysisLib.logic
+Verifies that importing ZebrafishEmbryoAnalyzerCore and ZebrafishEmbryoAnalyzerLib.logic
 at module level does NOT trigger torch, segmentation_models_pytorch, or cv2.
 Also verifies that dependency_status() correctly reports package availability
 without importing them.
@@ -15,7 +15,7 @@ import textwrap
 import pytest
 
 MODULE_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ZebrafishAnalysis"
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ZebrafishEmbryoAnalyzer"
 )
 
 
@@ -33,7 +33,7 @@ def _subprocess(code: str) -> subprocess.CompletedProcess:
 # ---------------------------------------------------------------------------
 
 def test_core_seg_import_does_not_trigger_torch():
-    """Importing ZebrafishAnalysisCore.seg must not load torch at module level."""
+    """Importing ZebrafishEmbryoAnalyzerCore.seg must not load torch at module level."""
     result = _subprocess(
         """
         import sys
@@ -43,7 +43,7 @@ def test_core_seg_import_does_not_trigger_torch():
         sys.modules["segmentation_models_pytorch"] = None
         sys.modules["huggingface_hub"] = None
         sys.modules["timm"] = None
-        from ZebrafishAnalysisCore import seg
+        from ZebrafishEmbryoAnalyzerCore import seg
         assert "torch" not in sys.modules or sys.modules["torch"] is None, (
             "torch was imported at module level in seg.py"
         )
@@ -51,21 +51,21 @@ def test_core_seg_import_does_not_trigger_torch():
         """
     )
     assert result.returncode == 0, (
-        "ZebrafishAnalysisCore.seg must be importable without torch.\n"
+        "ZebrafishEmbryoAnalyzerCore.seg must be importable without torch.\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     assert "OK" in result.stdout
 
 
 def test_core_length_import_does_not_trigger_torch():
-    """Importing ZebrafishAnalysisCore.length must not load torch at module level."""
+    """Importing ZebrafishEmbryoAnalyzerCore.length must not load torch at module level."""
     result = _subprocess(
         """
         import sys
         sys.modules["torch"] = None
         sys.modules["timm"] = None
         sys.modules["huggingface_hub"] = None
-        from ZebrafishAnalysisCore import length
+        from ZebrafishEmbryoAnalyzerCore import length
         assert "torch" not in sys.modules or sys.modules["torch"] is None, (
             "torch was imported at module level in length.py"
         )
@@ -73,7 +73,7 @@ def test_core_length_import_does_not_trigger_torch():
         """
     )
     assert result.returncode == 0, (
-        "ZebrafishAnalysisCore.length must be importable without torch.\n"
+        "ZebrafishEmbryoAnalyzerCore.length must be importable without torch.\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     assert "OK" in result.stdout
@@ -88,7 +88,7 @@ def test_core_both_modules_import_without_torch():
         sys.modules["segmentation_models_pytorch"] = None
         sys.modules["timm"] = None
         sys.modules["huggingface_hub"] = None
-        from ZebrafishAnalysisCore import seg, length
+        from ZebrafishEmbryoAnalyzerCore import seg, length
         print("OK")
         """
     )
@@ -104,12 +104,12 @@ def test_core_both_modules_import_without_torch():
 # ---------------------------------------------------------------------------
 
 def test_logic_import_does_not_trigger_cv2():
-    """Importing ZebrafishAnalysisLib.logic must not load cv2 at module level."""
+    """Importing ZebrafishEmbryoAnalyzerLib.logic must not load cv2 at module level."""
     result = _subprocess(
         """
         import sys
         sys.modules["cv2"] = None
-        from ZebrafishAnalysisLib import logic
+        from ZebrafishEmbryoAnalyzerLib import logic
         assert "cv2" not in sys.modules or sys.modules["cv2"] is None, (
             "cv2 was imported at module level in logic.py"
         )
@@ -117,19 +117,19 @@ def test_logic_import_does_not_trigger_cv2():
         """
     )
     assert result.returncode == 0, (
-        "ZebrafishAnalysisLib.logic must be importable without cv2.\n"
+        "ZebrafishEmbryoAnalyzerLib.logic must be importable without cv2.\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     assert "OK" in result.stdout
 
 
 def test_logic_import_does_not_trigger_torch():
-    """Importing ZebrafishAnalysisLib.logic must not load torch at module level."""
+    """Importing ZebrafishEmbryoAnalyzerLib.logic must not load torch at module level."""
     result = _subprocess(
         """
         import sys
         sys.modules["torch"] = None
-        from ZebrafishAnalysisLib import logic
+        from ZebrafishEmbryoAnalyzerLib import logic
         assert "torch" not in sys.modules or sys.modules["torch"] is None, (
             "torch was imported at module level in logic.py"
         )
@@ -137,7 +137,7 @@ def test_logic_import_does_not_trigger_torch():
         """
     )
     assert result.returncode == 0, (
-        "ZebrafishAnalysisLib.logic must be importable without torch.\n"
+        "ZebrafishEmbryoAnalyzerLib.logic must be importable without torch.\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     assert "OK" in result.stdout
@@ -149,7 +149,7 @@ def test_logic_import_does_not_trigger_torch():
 
 def test_dependency_status_returns_dict_with_expected_keys():
     """dependency_status() returns a dict containing required package keys."""
-    from ZebrafishAnalysisLib.logic import dependency_status
+    from ZebrafishEmbryoAnalyzerLib.logic import dependency_status
     status = dependency_status()
     assert isinstance(status, dict), "dependency_status() must return a dict"
     for key in ("torch", "cv2"):
@@ -168,7 +168,7 @@ def test_dependency_status_does_not_import_packages():
         sys.modules["cv2"] = None
         sys.modules["segmentation_models_pytorch"] = None
         sys.modules["timm"] = None
-        from ZebrafishAnalysisLib.logic import dependency_status
+        from ZebrafishEmbryoAnalyzerLib.logic import dependency_status
         status = dependency_status()
         assert isinstance(status, dict)
         print("OK")
@@ -187,7 +187,7 @@ def test_dependency_status_detects_available_packages():
     if not torch_available:
         pytest.skip("torch not installed in this environment")
 
-    from ZebrafishAnalysisLib.logic import dependency_status
+    from ZebrafishEmbryoAnalyzerLib.logic import dependency_status
     status = dependency_status()
     assert status["torch"] is True, (
         "torch is installed but dependency_status() reports it as unavailable"
@@ -210,7 +210,7 @@ def test_dependency_status_reports_missing_package():
             return _real_find_spec(name, *args, **kwargs)
 
         _iu.find_spec = _patched_find_spec
-        from ZebrafishAnalysisLib.logic import dependency_status
+        from ZebrafishEmbryoAnalyzerLib.logic import dependency_status
         status = dependency_status()
         assert status["torch"] is False, f"Expected False for torch, got {status['torch']!r}"
         print("OK")
@@ -228,7 +228,7 @@ def test_dependency_status_reports_missing_package():
 # ---------------------------------------------------------------------------
 
 def test_core_seg_import_does_not_trigger_cv2():
-    """Importing ZebrafishAnalysisCore.seg must not load cv2 at module level."""
+    """Importing ZebrafishEmbryoAnalyzerCore.seg must not load cv2 at module level."""
     result = _subprocess(
         """
         import sys
@@ -237,7 +237,7 @@ def test_core_seg_import_does_not_trigger_cv2():
         sys.modules["segmentation_models_pytorch"] = None
         sys.modules["huggingface_hub"] = None
         sys.modules["timm"] = None
-        from ZebrafishAnalysisCore import seg
+        from ZebrafishEmbryoAnalyzerCore import seg
         assert "cv2" not in sys.modules or sys.modules["cv2"] is None, (
             "cv2 was imported at module level in seg.py"
         )
@@ -245,19 +245,19 @@ def test_core_seg_import_does_not_trigger_cv2():
         """
     )
     assert result.returncode == 0, (
-        "ZebrafishAnalysisCore.seg must be importable without cv2.\n"
+        "ZebrafishEmbryoAnalyzerCore.seg must be importable without cv2.\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     assert "OK" in result.stdout
 
 
 def test_core_length_import_does_not_trigger_cv2():
-    """Importing ZebrafishAnalysisCore.length must not load cv2 at module level."""
+    """Importing ZebrafishEmbryoAnalyzerCore.length must not load cv2 at module level."""
     result = _subprocess(
         """
         import sys
         sys.modules["cv2"] = None
-        from ZebrafishAnalysisCore import length
+        from ZebrafishEmbryoAnalyzerCore import length
         assert "cv2" not in sys.modules or sys.modules["cv2"] is None, (
             "cv2 was imported at module level in length.py"
         )
@@ -265,7 +265,7 @@ def test_core_length_import_does_not_trigger_cv2():
         """
     )
     assert result.returncode == 0, (
-        "ZebrafishAnalysisCore.length must be importable without cv2.\n"
+        "ZebrafishEmbryoAnalyzerCore.length must be importable without cv2.\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     assert "OK" in result.stdout
@@ -279,7 +279,7 @@ def test_torch_not_in_sys_modules_after_core_import():
         # Do NOT block torch — just check it doesn't get pulled in passively
         # Remove it first so we start clean
         sys.modules.pop("torch", None)
-        from ZebrafishAnalysisCore import seg, length
+        from ZebrafishEmbryoAnalyzerCore import seg, length
         if "torch" in sys.modules:
             print("FAIL: torch in sys.modules after core import")
             sys.exit(1)

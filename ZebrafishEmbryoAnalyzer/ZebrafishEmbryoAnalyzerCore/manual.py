@@ -1,4 +1,4 @@
-# ZebrafishAnalysisCore/manual.py
+# ZebrafishEmbryoAnalyzerCore/manual.py
 """
 Manual endpoint correction — shared path-computation logic.
 

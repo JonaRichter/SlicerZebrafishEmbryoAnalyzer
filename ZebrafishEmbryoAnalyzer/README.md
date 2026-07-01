@@ -1,4 +1,4 @@
-# ZebrafishAnalysis — 3D Slicer Extension
+# ZebrafishEmbryoAnalyzer — 3D Slicer Extension
 
 Offline zebrafish morphometry from 2-D microscopy images.
 
@@ -20,5 +20,5 @@ Slicer restart required after installation.
 
 ## Adding a model
 
-Edit `ZebrafishAnalysisCore/models/registry.py` — add one entry to
+Edit `ZebrafishEmbryoAnalyzerCore/models/registry.py` — add one entry to
 `MODEL_REGISTRY` and optionally `MODEL_PRESETS`.

@@ -1,5 +1,5 @@
 """
-Tests for InferenceController in ZebrafishAnalysisLib.inference_runner.
+Tests for InferenceController in ZebrafishEmbryoAnalyzerLib.inference_runner.
 
 All tests are fully synchronous — no real subprocess launched.
 A FakeProcess / FakeSignal / FakeQt scaffold replaces Qt and QProcess.
@@ -101,7 +101,7 @@ class FakeQt:
 
 def _make_controller(tmp_path, fake_process=None, on_finished=None, on_progress=None,
                      image_paths=None, model_id="general", params=None, originals=None):
-    from ZebrafishAnalysisLib.inference_runner import InferenceController
+    from ZebrafishEmbryoAnalyzerLib.inference_runner import InferenceController
 
     fqt = FakeQt()
     if fake_process is not None:
@@ -276,10 +276,10 @@ def test_stale_result_ignored_when_runner_replaced():
     sys.modules.setdefault("slicer", sl)
 
     import importlib
-    import ZebrafishAnalysisLib.widget as widget_mod
+    import ZebrafishEmbryoAnalyzerLib.widget as widget_mod
     widget_mod = importlib.reload(widget_mod)
 
-    w = object.__new__(widget_mod.ZebrafishAnalysisMainWidget)
+    w = object.__new__(widget_mod.ZebrafishEmbryoAnalyzerMainWidget)
     w._disposed = False
     w._active_runner = None
     w._run_token = 1
@@ -372,7 +372,7 @@ def test_sys_executable_empty_falls_back(monkeypatch):
     def on_finished(success, state, message, ctrl):
         calls.append((success, state, message))
 
-    from ZebrafishAnalysisLib.inference_runner import InferenceController
+    from ZebrafishEmbryoAnalyzerLib.inference_runner import InferenceController
     fqt = FakeQt()
     fqt._fake_process = proc
     controller = InferenceController(
@@ -411,7 +411,7 @@ def test_on_finished_accepts_single_arg(tmp_path):
 
     finished_calls = []
 
-    from ZebrafishAnalysisLib.inference_runner import InferenceController
+    from ZebrafishEmbryoAnalyzerLib.inference_runner import InferenceController
 
     qt_mock = MagicMock()
     fake_proc = FakeProcess()  # reuse the FakeProcess class defined in this test file
@@ -454,7 +454,7 @@ def test_python_exe_windows_fallback_scripts_python_exe(tmp_path, monkeypatch):
     proc = FakeProcess()
     calls = []
 
-    from ZebrafishAnalysisLib.inference_runner import InferenceController
+    from ZebrafishEmbryoAnalyzerLib.inference_runner import InferenceController
     fqt = FakeQt()
     fqt._fake_process = proc
     controller = InferenceController(
@@ -490,7 +490,7 @@ def test_python_exe_unix_fallback_bin_python(tmp_path, monkeypatch):
     proc = FakeProcess()
     calls = []
 
-    from ZebrafishAnalysisLib.inference_runner import InferenceController
+    from ZebrafishEmbryoAnalyzerLib.inference_runner import InferenceController
     fqt = FakeQt()
     fqt._fake_process = proc
     controller = InferenceController(

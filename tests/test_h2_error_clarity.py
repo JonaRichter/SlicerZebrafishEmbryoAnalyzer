@@ -29,13 +29,13 @@ def widget_module(monkeypatch):
     slicer.util.mainWindow.return_value = None
     monkeypatch.setitem(sys.modules, "slicer", slicer)
     import importlib
-    import ZebrafishAnalysisLib.widget as module
+    import ZebrafishEmbryoAnalyzerLib.widget as module
     return importlib.reload(module)
 
 
 def _make_widget(widget_module, deps_ok=True):
     """Return a minimal widget shell for button/error tests."""
-    w = object.__new__(widget_module.ZebrafishAnalysisMainWidget)
+    w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
     w._deps_ok = deps_ok
     w._image_paths = []
     w._btn_run = MagicMock()
@@ -68,7 +68,7 @@ def test_refresh_run_button_disabled_when_deps_missing(widget_module):
 
 
 def test_set_queue_empty_disables_run_button(widget_module):
-    w = object.__new__(widget_module.ZebrafishAnalysisMainWidget)
+    w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
     w._run_token = 0
     w._deps_ok = True
     w._image_paths = ["/tmp/fish.png"]  # start with images
@@ -90,7 +90,7 @@ def test_set_queue_empty_disables_run_button(widget_module):
 
 
 def test_set_queue_with_images_enables_run_button(widget_module):
-    w = object.__new__(widget_module.ZebrafishAnalysisMainWidget)
+    w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
     w._run_token = 0
     w._deps_ok = True
     w._image_paths = []
@@ -111,7 +111,7 @@ def test_set_queue_with_images_enables_run_button(widget_module):
 
 def test_run_button_disabled_on_construction_with_no_images(widget_module):
     """Run button must be disabled immediately after widget construction with no images."""
-    w = object.__new__(widget_module.ZebrafishAnalysisMainWidget)
+    w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
     w._deps_ok = True
     w._image_paths = []
     w._btn_run = MagicMock()
@@ -120,7 +120,7 @@ def test_run_button_disabled_on_construction_with_no_images(widget_module):
 
 
 def test_set_queue_does_not_enable_button_when_deps_missing(widget_module):
-    w = object.__new__(widget_module.ZebrafishAnalysisMainWidget)
+    w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
     w._run_token = 0
     w._deps_ok = False
     w._image_paths = []
@@ -255,9 +255,9 @@ def test_inference_controller_stores_exit_code_on_failure():
     from pathlib import Path
     from unittest.mock import MagicMock
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "ZebrafishAnalysis"))
+    sys.path.insert(0, str(Path(__file__).parent.parent / "ZebrafishEmbryoAnalyzer"))
 
-    from ZebrafishAnalysisLib.inference_runner import InferenceController
+    from ZebrafishEmbryoAnalyzerLib.inference_runner import InferenceController
 
     finished_calls = []
 
@@ -294,9 +294,9 @@ def test_inference_controller_exit_code_default_is_none():
     from pathlib import Path
     from unittest.mock import MagicMock
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "ZebrafishAnalysis"))
+    sys.path.insert(0, str(Path(__file__).parent.parent / "ZebrafishEmbryoAnalyzer"))
 
-    from ZebrafishAnalysisLib.inference_runner import InferenceController
+    from ZebrafishEmbryoAnalyzerLib.inference_runner import InferenceController
 
     fake_qt = MagicMock()
     ctrl = InferenceController(

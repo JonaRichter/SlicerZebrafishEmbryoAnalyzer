@@ -10,7 +10,7 @@ import pytest
 from pathlib import Path
 
 # Mirror the runtime sys.path setup used by conftest/other tests
-_MODULE_DIR = Path(__file__).resolve().parent.parent / "ZebrafishAnalysis"
+_MODULE_DIR = Path(__file__).resolve().parent.parent / "ZebrafishEmbryoAnalyzer"
 if str(_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(_MODULE_DIR))
 
@@ -148,11 +148,11 @@ sys.modules.setdefault("qt", _qt_stub)
 
 # Stub out heavy imports pulled in by detail_tab
 sys.modules.setdefault("numpy", types.ModuleType("numpy"))
-for _mod in ("ZebrafishAnalysisLib.zoom_view", "ZebrafishAnalysisLib.overlay"):
+for _mod in ("ZebrafishEmbryoAnalyzerLib.zoom_view", "ZebrafishEmbryoAnalyzerLib.overlay"):
     sys.modules.setdefault(_mod, types.ModuleType(_mod))
 
 # Now import the modules under test (without Slicer)
-from ZebrafishAnalysisLib import results_tab  # noqa: E402
+from ZebrafishEmbryoAnalyzerLib import results_tab  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

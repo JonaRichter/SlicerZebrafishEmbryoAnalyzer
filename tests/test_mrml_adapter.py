@@ -1,7 +1,7 @@
-"""Tests for the pure Python conversion layer in ZebrafishAnalysisLib.mrml.
+"""Tests for the pure Python conversion layer in ZebrafishEmbryoAnalyzerLib.mrml.
 
-All tests run in the normal pytest process. conftest.py adds the ZebrafishAnalysis
-directory to sys.path, so ZebrafishAnalysisLib.mrml imports without slicer or vtk.
+All tests run in the normal pytest process. conftest.py adds the ZebrafishEmbryoAnalyzer
+directory to sys.path, so ZebrafishEmbryoAnalyzerLib.mrml imports without slicer or vtk.
 """
 
 import math
@@ -10,11 +10,11 @@ import re
 
 import pytest
 
-from ZebrafishAnalysisLib.mrml import results_to_rows, TABLE_SCHEMA, ROLE_RESULTS_TABLE
+from ZebrafishEmbryoAnalyzerLib.mrml import results_to_rows, TABLE_SCHEMA, ROLE_RESULTS_TABLE
 
 _MRML_PY = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "ZebrafishAnalysis", "ZebrafishAnalysisLib", "mrml.py",
+    "ZebrafishEmbryoAnalyzer", "ZebrafishEmbryoAnalyzerLib", "mrml.py",
 )
 
 
@@ -205,7 +205,7 @@ def test_input_dicts_not_mutated():
 
 def test_mrml_module_importable_without_slicer_or_vtk():
     """mrml.py must be importable without installing slicer or vtk."""
-    from ZebrafishAnalysisLib import mrml
+    from ZebrafishEmbryoAnalyzerLib import mrml
     assert hasattr(mrml, "results_to_rows")
     assert hasattr(mrml, "TABLE_SCHEMA")
     assert hasattr(mrml, "ROLE_RESULTS_TABLE")
@@ -233,25 +233,25 @@ def test_mrml_module_no_global_slicer_import_still_holds():
 # ---------------------------------------------------------------------------
 
 def test_image_geometry_basic_dimensions():
-    from ZebrafishAnalysisLib.mrml import image_geometry
+    from ZebrafishEmbryoAnalyzerLib.mrml import image_geometry
     dims, spacing, origin = image_geometry(480, 640, 22.99)
     assert dims == (640, 480, 1)
 
 
 def test_image_geometry_spacing_mm():
-    from ZebrafishAnalysisLib.mrml import image_geometry
+    from ZebrafishEmbryoAnalyzerLib.mrml import image_geometry
     _, spacing, _ = image_geometry(480, 640, 22.99)
     assert spacing == pytest.approx((22.99 / 1000.0, 22.99 / 1000.0, 1.0))
 
 
 def test_image_geometry_spacing_z():
-    from ZebrafishAnalysisLib.mrml import image_geometry
+    from ZebrafishEmbryoAnalyzerLib.mrml import image_geometry
     _, spacing, _ = image_geometry(100, 100, 10.0)
     assert spacing[2] == 1.0
 
 
 def test_image_geometry_origin_zero():
-    from ZebrafishAnalysisLib.mrml import image_geometry
+    from ZebrafishEmbryoAnalyzerLib.mrml import image_geometry
     _, _, origin = image_geometry(100, 100, 10.0)
     assert origin == (0.0, 0.0, 0.0)
 
@@ -268,13 +268,13 @@ def test_image_geometry_origin_zero():
     (100, 100, float("-inf")),
 ])
 def test_image_geometry_raises_for_invalid(h, w, um):
-    from ZebrafishAnalysisLib.mrml import image_geometry
+    from ZebrafishEmbryoAnalyzerLib.mrml import image_geometry
     with pytest.raises(ValueError):
         image_geometry(h, w, um)
 
 
 def test_image_geometry_non_square():
-    from ZebrafishAnalysisLib.mrml import image_geometry
+    from ZebrafishEmbryoAnalyzerLib.mrml import image_geometry
     dims, _, _ = image_geometry(120, 160, 5.0)
     assert dims == (160, 120, 1)
 
@@ -340,7 +340,7 @@ def test_fliplr_and_flipud_both_applied():
 def test_image_geometry_accepts_numpy_int64_when_converted():
     """update_image_node must convert numpy shape values to int before calling image_geometry."""
     import numpy as np
-    from ZebrafishAnalysisLib.mrml import image_geometry
+    from ZebrafishEmbryoAnalyzerLib.mrml import image_geometry
     # numpy.int64 values directly should fail image_geometry (isinstance check)
     h, w = np.array([10, 8], dtype=np.int64)
     # Demonstrate the problem: numpy.int64 fails isinstance(h, int) in numpy < 2

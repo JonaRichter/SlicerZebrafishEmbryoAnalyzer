@@ -9,9 +9,9 @@ import pytest
 
 
 ROOT = Path(__file__).parent.parent
-PRODUCTION_ROOT = ROOT / "ZebrafishAnalysis"
-WIDGET_PATH = PRODUCTION_ROOT / "ZebrafishAnalysisLib" / "widget.py"
-MAIN_PATH = PRODUCTION_ROOT / "ZebrafishAnalysis.py"
+PRODUCTION_ROOT = ROOT / "ZebrafishEmbryoAnalyzer"
+WIDGET_PATH = PRODUCTION_ROOT / "ZebrafishEmbryoAnalyzerLib" / "widget.py"
+MAIN_PATH = PRODUCTION_ROOT / "ZebrafishEmbryoAnalyzer.py"
 
 
 @pytest.fixture
@@ -22,7 +22,7 @@ def widget_module(monkeypatch):
     slicer.util.mainWindow.return_value = None
     monkeypatch.setitem(sys.modules, "slicer", slicer)
     import importlib
-    import ZebrafishAnalysisLib.widget as module
+    import ZebrafishEmbryoAnalyzerLib.widget as module
     return importlib.reload(module)
 
 
@@ -102,7 +102,7 @@ def test_model_selection_only_updates_parameter_node():
 
 
 def test_run_analysis_starts_download_before_analysis_when_models_missing(widget_module):
-    w = object.__new__(widget_module.ZebrafishAnalysisMainWidget)
+    w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
     w._run_token = 0
     w._image_paths = ["/tmp/fish.png"]
     w._model_combo = MagicMock()
@@ -131,7 +131,7 @@ def test_run_analysis_starts_download_before_analysis_when_models_missing(widget
 
 def test_run_analysis_starts_inference_when_models_cached(widget_module):
     """When models are already cached, _start_inference_process is called directly."""
-    w = object.__new__(widget_module.ZebrafishAnalysisMainWidget)
+    w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
     w._run_token = 0
     w._image_paths = ["/tmp/fish.png"]
     w._model_combo = MagicMock()
@@ -157,7 +157,7 @@ def test_run_analysis_starts_inference_when_models_cached(widget_module):
 
 def test_downloader_success_rechecks_cache_before_analysis(widget_module):
     import qt as _qt
-    w = object.__new__(widget_module.ZebrafishAnalysisMainWidget)
+    w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
     w._active_downloader = None
     w._disposed = False
     w._run_token = 1
@@ -176,7 +176,7 @@ def test_downloader_success_rechecks_cache_before_analysis(widget_module):
         callback(True, "succeeded", None, controller)
         return controller
 
-    with patch("ZebrafishAnalysisLib.model_downloader.start_model_download", fake_start):
+    with patch("ZebrafishEmbryoAnalyzerLib.model_downloader.start_model_download", fake_start):
         w._start_model_download(missing, "general", params, token=1)
 
     w._missing_required_models.assert_called_with("general")
@@ -193,7 +193,7 @@ def test_downloader_success_rechecks_cache_before_analysis(widget_module):
 
 
 def test_downloader_failure_does_not_start_analysis(widget_module):
-    w = object.__new__(widget_module.ZebrafishAnalysisMainWidget)
+    w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
     w._active_downloader = None
     w._disposed = False
     w._run_token = 1
@@ -209,7 +209,7 @@ def test_downloader_failure_does_not_start_analysis(widget_module):
         callback(False, "failed", "offline", controller)
         return controller
 
-    with patch("ZebrafishAnalysisLib.model_downloader.start_model_download", fake_start):
+    with patch("ZebrafishEmbryoAnalyzerLib.model_downloader.start_model_download", fake_start):
         w._start_model_download([{"label": "Body"}], "general", {}, token=1)
 
     w._start_inference_process.assert_not_called()
@@ -223,7 +223,7 @@ def _make_download_widget(widget_module, token=1):
     """Return a minimal widget shell wired for _start_model_download tests."""
     import qt as _qt
     _qt.QTimer.singleShot.reset_mock()
-    w = object.__new__(widget_module.ZebrafishAnalysisMainWidget)
+    w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
     w._active_downloader = None
     w._disposed = False
     w._run_token = token
@@ -244,7 +244,7 @@ def _fire_download_success(widget_module, w, token=1):
         callback(True, "succeeded", None, controller)
         return controller
 
-    with patch("ZebrafishAnalysisLib.model_downloader.start_model_download", fake_start):
+    with patch("ZebrafishEmbryoAnalyzerLib.model_downloader.start_model_download", fake_start):
         w._start_model_download([{"label": "Body"}], "general", {"model_id": "general"}, token=token)
 
     return controller
@@ -313,7 +313,7 @@ def test_stale_token_before_deferred_continuation_prevents_analysis(widget_modul
 
 
 def test_start_model_download_exception_restores_run_ui(widget_module):
-    w = object.__new__(widget_module.ZebrafishAnalysisMainWidget)
+    w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
     w._active_downloader = None
     w._disposed = False
     w._run_token = 1
@@ -323,7 +323,7 @@ def test_start_model_download_exception_restores_run_ui(widget_module):
     def raising_start(entries, callback, parent=None):
         raise RuntimeError("network init failed")
 
-    with patch("ZebrafishAnalysisLib.model_downloader.start_model_download", raising_start):
+    with patch("ZebrafishEmbryoAnalyzerLib.model_downloader.start_model_download", raising_start):
         w._start_model_download([{"label": "Body"}], "general", {}, token=1)
 
     w._run_stack.setCurrentIndex.assert_called_with(0)
@@ -350,7 +350,7 @@ def test_no_processevents_in_download_to_analysis_path():
 
 def test_set_queue_cancels_active_runner(widget_module):
     """_set_queue must cancel any in-flight InferenceController."""
-    w = object.__new__(widget_module.ZebrafishAnalysisMainWidget)
+    w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
     w._run_token = 0
     w._deps_ok = True
     w._results = []
@@ -377,7 +377,7 @@ def test_set_queue_bumps_token_before_cancel(widget_module):
     def _cancel():
         tokens_at_cancel.append(w._run_token)
 
-    w = object.__new__(widget_module.ZebrafishAnalysisMainWidget)
+    w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
     w._run_token = 1
     w._deps_ok = True
     w._results = []
@@ -399,7 +399,7 @@ def test_set_queue_bumps_token_before_cancel(widget_module):
 
 def test_set_queue_increments_run_token(widget_module):
     """_set_queue must increment _run_token as its first action."""
-    w = object.__new__(widget_module.ZebrafishAnalysisMainWidget)
+    w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
     w._run_token = 5
     w._deps_ok = True
     w._image_paths = []

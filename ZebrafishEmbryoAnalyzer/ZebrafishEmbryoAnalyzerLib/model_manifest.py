@@ -1,5 +1,5 @@
 """
-Model manifest for ZebrafishAnalysis.
+Model manifest for ZebrafishEmbryoAnalyzer.
 
 Pure Python — no slicer, qt, vtk, ctk, or torch imports.
 Describes all model files, their provenance, and cache locations.

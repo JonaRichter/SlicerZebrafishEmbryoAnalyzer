@@ -36,8 +36,8 @@ def run_worker(request_path: str) -> int:
 
     # --- 2. Import logic modules ---
     try:
-        from ZebrafishAnalysisLib.logic import preload_models, analyse_images
-        from ZebrafishAnalysisLib.errors import ModelNotCachedError
+        from ZebrafishEmbryoAnalyzerLib.logic import preload_models, analyse_images
+        from ZebrafishEmbryoAnalyzerLib.errors import ModelNotCachedError
     except Exception:
         return 3
 

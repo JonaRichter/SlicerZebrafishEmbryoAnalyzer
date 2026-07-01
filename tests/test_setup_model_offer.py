@@ -10,11 +10,11 @@ from unittest.mock import patch
 
 import pytest
 
-_MODULE_DIR = Path(__file__).resolve().parent.parent / "ZebrafishAnalysis"
+_MODULE_DIR = Path(__file__).resolve().parent.parent / "ZebrafishEmbryoAnalyzer"
 if str(_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(_MODULE_DIR))
 
-from ZebrafishAnalysisLib.model_manifest import (
+from ZebrafishEmbryoAnalyzerLib.model_manifest import (
     MODEL_SETS,
     collect_all_model_entries,
     get_missing_models,
@@ -41,7 +41,7 @@ def test_collect_all_entries_covers_all_sets():
 
 def test_missing_excludes_cached(tmp_path):
     """get_missing_models() excludes entries whose cache path exists with content."""
-    import ZebrafishAnalysisLib.model_manifest as mm
+    import ZebrafishEmbryoAnalyzerLib.model_manifest as mm
 
     all_entries = collect_all_model_entries()
     # Pick two entries to mark as cached
@@ -89,7 +89,7 @@ def test_missing_includes_zero_byte_file():
 
 def test_missing_empty_when_all_cached(tmp_path):
     """get_missing_models() returns [] when all paths exist with content."""
-    import ZebrafishAnalysisLib.model_manifest as mm
+    import ZebrafishEmbryoAnalyzerLib.model_manifest as mm
 
     all_entries = collect_all_model_entries()
 

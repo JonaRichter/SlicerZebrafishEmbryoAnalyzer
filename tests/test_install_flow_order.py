@@ -22,11 +22,11 @@ def _stub_slicer_env():
     sys.modules["slicer"] = MagicMock()
     sys.modules["qt"] = MagicMock()
     sys.modules["ctk"] = MagicMock()
-    sys.modules.pop("ZebrafishAnalysisLib.widget", None)
+    sys.modules.pop("ZebrafishEmbryoAnalyzerLib.widget", None)
     try:
         yield
     finally:
-        for k in ("slicer", "qt", "ctk", "ZebrafishAnalysisLib.widget"):
+        for k in ("slicer", "qt", "ctk", "ZebrafishEmbryoAnalyzerLib.widget"):
             sys.modules.pop(k, None)
         sys.modules.update(saved)
 
@@ -35,8 +35,8 @@ def test_show_restart_dialog_takes_no_parameters():
     """_show_restart_dialog must accept zero extra arguments beyond self."""
     import inspect
     with _stub_slicer_env():
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
-        sig = inspect.signature(ZebrafishAnalysisMainWidget._show_restart_dialog)
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
+        sig = inspect.signature(ZebrafishEmbryoAnalyzerMainWidget._show_restart_dialog)
         params = [p for p in sig.parameters if p != "self"]
     assert params == [], (
         f"_show_restart_dialog should have no parameters beyond self; got {params}"
@@ -46,9 +46,9 @@ def test_show_restart_dialog_takes_no_parameters():
 def test_prompt_install_calls_download_when_entries_selected():
     """After install, _start_initial_model_download is called when entries selected."""
     with _stub_slicer_env():
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget as ZebrafishAnalysisWidget
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget as ZebrafishEmbryoAnalyzerWidget
 
-        widget = MagicMock(spec=ZebrafishAnalysisWidget)
+        widget = MagicMock(spec=ZebrafishEmbryoAnalyzerWidget)
         selected_entries = [{"id": "seg_v1", "filename": "seg.pt"}]
 
         # Replicate the tail branch of prompt_install_if_missing
@@ -64,9 +64,9 @@ def test_prompt_install_calls_download_when_entries_selected():
 def test_prompt_install_calls_restart_dialog_when_no_entries():
     """After install, _show_restart_dialog() is called when no models selected."""
     with _stub_slicer_env():
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget as ZebrafishAnalysisWidget
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget as ZebrafishEmbryoAnalyzerWidget
 
-        widget = MagicMock(spec=ZebrafishAnalysisWidget)
+        widget = MagicMock(spec=ZebrafishEmbryoAnalyzerWidget)
         selected_entries = []
 
         if selected_entries:
@@ -81,8 +81,8 @@ def test_prompt_install_calls_restart_dialog_when_no_entries():
 def test_finished_callback_calls_show_restart_dialog(monkeypatch):
     """_start_initial_model_download _finished callback calls _show_restart_dialog."""
     with _stub_slicer_env():
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget as ZebrafishAnalysisWidget
-        import ZebrafishAnalysisLib.model_downloader as md_module
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget as ZebrafishEmbryoAnalyzerWidget
+        import ZebrafishEmbryoAnalyzerLib.model_downloader as md_module
 
         captured_finished = []
 
@@ -93,7 +93,7 @@ def test_finished_callback_calls_show_restart_dialog(monkeypatch):
 
         monkeypatch.setattr(md_module, "start_model_download", fake_start_model_download)
 
-        widget = MagicMock(spec=ZebrafishAnalysisWidget)
+        widget = MagicMock(spec=ZebrafishEmbryoAnalyzerWidget)
         widget._disposed = False
         widget._active_downloader = None
         widget._run_status_label = MagicMock()
@@ -101,7 +101,7 @@ def test_finished_callback_calls_show_restart_dialog(monkeypatch):
         widget._run_stack = MagicMock()
 
         entries = [{"id": "seg_v1", "filename": "seg.pt"}]
-        ZebrafishAnalysisWidget._start_initial_model_download(widget, entries)
+        ZebrafishEmbryoAnalyzerWidget._start_initial_model_download(widget, entries)
 
         assert captured_finished, "_finished callback was never registered"
         finished_cb, controller = captured_finished[0]

@@ -11,8 +11,8 @@ import sys
 import pytest
 
 WORKTREE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CORE_DIR = os.path.join(WORKTREE, "ZebrafishAnalysis", "ZebrafishAnalysisCore")
-LIB_DIR = os.path.join(WORKTREE, "ZebrafishAnalysis", "ZebrafishAnalysisLib")
+CORE_DIR = os.path.join(WORKTREE, "ZebrafishEmbryoAnalyzer", "ZebrafishEmbryoAnalyzerCore")
+LIB_DIR = os.path.join(WORKTREE, "ZebrafishEmbryoAnalyzer", "ZebrafishEmbryoAnalyzerLib")
 
 PRODUCTION_DIRS = [CORE_DIR, LIB_DIR]
 
@@ -74,7 +74,7 @@ def test_seg_loader_raises_runtime_error_on_bad_checkpoint(tmp_path):
     bad_file = tmp_path / "bad.pth"
     bad_file.write_bytes(b"not a valid pytorch file")
 
-    module_dir = os.path.join(WORKTREE, "ZebrafishAnalysis")
+    module_dir = os.path.join(WORKTREE, "ZebrafishEmbryoAnalyzer")
     script = f"""
 import sys
 sys.path.insert(0, {module_dir!r})
@@ -101,7 +101,7 @@ class FakeUnet:
     def eval(self): pass
 smp.Unet = lambda **kw: FakeUnet()
 
-from ZebrafishAnalysisCore.seg import _load_unet_model
+from ZebrafishEmbryoAnalyzerCore.seg import _load_unet_model
 try:
     _load_unet_model(model_path={str(bad_file)!r}, label="test model")
     print("NO_ERROR")

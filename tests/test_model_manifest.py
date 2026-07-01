@@ -1,5 +1,5 @@
 """
-Tests for ZebrafishAnalysisLib.model_manifest.
+Tests for ZebrafishEmbryoAnalyzerLib.model_manifest.
 
 Pure-Python module: no slicer, qt, vtk, ctk, or torch required.
 """
@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ZebrafishAnalysisLib.model_manifest import (
+from ZebrafishEmbryoAnalyzerLib.model_manifest import (
     MODELS,
     MODEL_SETS,
     _CACHE_DIR,
@@ -26,7 +26,7 @@ from ZebrafishAnalysisLib.model_manifest import (
 )
 
 MODULE_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ZebrafishAnalysis"
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ZebrafishEmbryoAnalyzer"
 )
 
 
@@ -44,7 +44,7 @@ def test_manifest_importable_without_heavy_deps():
             sys.modules["qt"] = None
             sys.modules["vtk"] = None
             sys.modules["ctk"] = None
-            from ZebrafishAnalysisLib import model_manifest
+            from ZebrafishEmbryoAnalyzerLib import model_manifest
             print("OK")
         """)],
         capture_output=True,
@@ -182,9 +182,9 @@ def test_verify_checksum_missing_file_returns_false():
 
 def test_get_missing_models_all_absent(tmp_path):
     """When no files are cached, all entries are returned as missing."""
-    with patch("ZebrafishAnalysisLib.model_manifest._CACHE_DIR", tmp_path):
+    with patch("ZebrafishEmbryoAnalyzerLib.model_manifest._CACHE_DIR", tmp_path):
         # Reload get_missing_models to pick up patched _CACHE_DIR.
-        from ZebrafishAnalysisLib.model_manifest import MODELS as _MODELS
+        from ZebrafishEmbryoAnalyzerLib.model_manifest import MODELS as _MODELS
 
         # Build a small model_set using real entries but pointing at tmp_path.
         model_set = {
@@ -192,7 +192,7 @@ def test_get_missing_models_all_absent(tmp_path):
             "curvature": _MODELS["curvature"],
         }
         # get_cached_path uses module-level _CACHE_DIR; patch it.
-        import ZebrafishAnalysisLib.model_manifest as _mm
+        import ZebrafishEmbryoAnalyzerLib.model_manifest as _mm
         orig = _mm._CACHE_DIR
         _mm._CACHE_DIR = tmp_path
         try:
@@ -205,8 +205,8 @@ def test_get_missing_models_all_absent(tmp_path):
 
 def test_get_missing_models_none_absent(tmp_path):
     """When all files are present and non-empty, nothing is reported missing."""
-    import ZebrafishAnalysisLib.model_manifest as _mm
-    from ZebrafishAnalysisLib.model_manifest import MODELS as _MODELS
+    import ZebrafishEmbryoAnalyzerLib.model_manifest as _mm
+    from ZebrafishEmbryoAnalyzerLib.model_manifest import MODELS as _MODELS
 
     model_set = {
         "body": _MODELS["general_body"],
@@ -229,8 +229,8 @@ def test_get_missing_models_none_absent(tmp_path):
 
 def test_get_missing_models_empty_file_counts_as_missing(tmp_path):
     """A zero-byte file is treated as missing."""
-    import ZebrafishAnalysisLib.model_manifest as _mm
-    from ZebrafishAnalysisLib.model_manifest import MODELS as _MODELS
+    import ZebrafishEmbryoAnalyzerLib.model_manifest as _mm
+    from ZebrafishEmbryoAnalyzerLib.model_manifest import MODELS as _MODELS
 
     model_set = {"body": _MODELS["general_body"]}
     orig = _mm._CACHE_DIR
@@ -247,8 +247,8 @@ def test_get_missing_models_empty_file_counts_as_missing(tmp_path):
 
 def test_get_missing_models_partial(tmp_path):
     """Only entries that are absent are returned."""
-    import ZebrafishAnalysisLib.model_manifest as _mm
-    from ZebrafishAnalysisLib.model_manifest import MODELS as _MODELS
+    import ZebrafishEmbryoAnalyzerLib.model_manifest as _mm
+    from ZebrafishEmbryoAnalyzerLib.model_manifest import MODELS as _MODELS
 
     model_set = {
         "body": _MODELS["general_body"],
@@ -335,7 +335,7 @@ def test_default_cache_dir_without_platformdirs(monkeypatch):
     original = sys.modules.get("platformdirs", None)
     sys.modules["platformdirs"] = None  # causes ImportError on 'from platformdirs import ...'
     try:
-        import ZebrafishAnalysisLib.model_manifest as mm
+        import ZebrafishEmbryoAnalyzerLib.model_manifest as mm
         result = mm._default_cache_dir()
     finally:
         if original is None:
@@ -349,7 +349,7 @@ def test_default_cache_dir_without_platformdirs(monkeypatch):
 
 def test_default_cache_dir_platformdirs_raises_oserror(monkeypatch):
     """Falls back to ~/.cache/zebrafish_models when user_cache_dir raises OSError."""
-    import ZebrafishAnalysisLib.model_manifest as mm
+    import ZebrafishEmbryoAnalyzerLib.model_manifest as mm
 
     def _raise_oserror(*args, **kwargs):
         raise OSError("restricted LOCALAPPDATA")
@@ -362,7 +362,7 @@ def test_default_cache_dir_platformdirs_raises_oserror(monkeypatch):
 
 def test_cache_dir_injectable_via_module_attr(tmp_path):
     """get_cached_path respects a patched _CACHE_DIR (enables unit testing)."""
-    import ZebrafishAnalysisLib.model_manifest as mm
+    import ZebrafishEmbryoAnalyzerLib.model_manifest as mm
     orig = mm._CACHE_DIR
     mm._CACHE_DIR = tmp_path
     try:

@@ -53,7 +53,7 @@ def _make_png(tmp_path, name="fish.png", size=(64, 64)):
 
 def test_run_worker_bad_request_exits_3_nonexistent_file():
     """Non-existent request file → exit 3."""
-    from ZebrafishAnalysisLib.inference_worker import run_worker
+    from ZebrafishEmbryoAnalyzerLib.inference_worker import run_worker
     code = run_worker("/nonexistent/request.json")
     assert code == 3
 
@@ -61,7 +61,7 @@ def test_run_worker_bad_request_exits_3_nonexistent_file():
 def test_run_worker_bad_request_exits_3_wrong_protocol(tmp_path):
     """protocol_version != 1 → exit 3."""
     req_path = _write_request(tmp_path, protocol_version=99)
-    from ZebrafishAnalysisLib.inference_worker import run_worker
+    from ZebrafishEmbryoAnalyzerLib.inference_worker import run_worker
     code = run_worker(req_path)
     assert code == 3
 
@@ -70,21 +70,21 @@ def test_run_worker_bad_request_exits_3_invalid_json(tmp_path):
     """Malformed JSON → exit 3."""
     req_path = tmp_path / "request.json"
     req_path.write_text("NOT JSON {{{")
-    from ZebrafishAnalysisLib.inference_worker import run_worker
+    from ZebrafishEmbryoAnalyzerLib.inference_worker import run_worker
     code = run_worker(str(req_path))
     assert code == 3
 
 
 def test_run_worker_model_not_cached_exits_2(tmp_path):
     """ModelNotCachedError during preload → exit 2."""
-    from ZebrafishAnalysisLib.errors import ModelNotCachedError
+    from ZebrafishEmbryoAnalyzerLib.errors import ModelNotCachedError
     req_path = _write_request(tmp_path, image_paths=["/tmp/fish.png"])
 
     def raise_not_cached(params):
         raise ModelNotCachedError("not cached")
 
-    from ZebrafishAnalysisLib.inference_worker import run_worker
-    with patch("ZebrafishAnalysisLib.logic.preload_models", raise_not_cached):
+    from ZebrafishEmbryoAnalyzerLib.inference_worker import run_worker
+    with patch("ZebrafishEmbryoAnalyzerLib.logic.preload_models", raise_not_cached):
         code = run_worker(req_path)
     assert code == 2
 
@@ -100,9 +100,9 @@ def test_run_worker_analysis_exception_exits_1(tmp_path):
     def raise_analysis(paths, params, cb):
         raise RuntimeError("segmentation failed")
 
-    from ZebrafishAnalysisLib.inference_worker import run_worker
-    with patch("ZebrafishAnalysisLib.logic.preload_models", noop_preload), \
-         patch("ZebrafishAnalysisLib.logic.analyse_images", raise_analysis):
+    from ZebrafishEmbryoAnalyzerLib.inference_worker import run_worker
+    with patch("ZebrafishEmbryoAnalyzerLib.logic.preload_models", noop_preload), \
+         patch("ZebrafishEmbryoAnalyzerLib.logic.analyse_images", raise_analysis):
         code = run_worker(req_path)
     assert code == 1
 
@@ -145,9 +145,9 @@ def test_original_not_in_result(tmp_path):
         cb(1, 1)
         return fake_result
 
-    from ZebrafishAnalysisLib.inference_worker import run_worker
-    with patch("ZebrafishAnalysisLib.logic.preload_models", noop_preload), \
-         patch("ZebrafishAnalysisLib.logic.analyse_images", fake_analyse):
+    from ZebrafishEmbryoAnalyzerLib.inference_worker import run_worker
+    with patch("ZebrafishEmbryoAnalyzerLib.logic.preload_models", noop_preload), \
+         patch("ZebrafishEmbryoAnalyzerLib.logic.analyse_images", fake_analyse):
         code = run_worker(req_path)
 
     assert code == 0
@@ -188,9 +188,9 @@ def test_run_worker_writes_result_json_on_success(tmp_path):
         cb(1, 1)
         return fake_result
 
-    from ZebrafishAnalysisLib.inference_worker import run_worker
-    with patch("ZebrafishAnalysisLib.logic.preload_models", noop_preload), \
-         patch("ZebrafishAnalysisLib.logic.analyse_images", fake_analyse):
+    from ZebrafishEmbryoAnalyzerLib.inference_worker import run_worker
+    with patch("ZebrafishEmbryoAnalyzerLib.logic.preload_models", noop_preload), \
+         patch("ZebrafishEmbryoAnalyzerLib.logic.analyse_images", fake_analyse):
         code = run_worker(req_path)
 
     assert code == 0
@@ -227,9 +227,9 @@ def test_run_worker_writes_progress_to_stdout(tmp_path, capsys):
             for p in paths
         ]
 
-    from ZebrafishAnalysisLib.inference_worker import run_worker
-    with patch("ZebrafishAnalysisLib.logic.preload_models", noop_preload), \
-         patch("ZebrafishAnalysisLib.logic.analyse_images", fake_analyse):
+    from ZebrafishEmbryoAnalyzerLib.inference_worker import run_worker
+    with patch("ZebrafishEmbryoAnalyzerLib.logic.preload_models", noop_preload), \
+         patch("ZebrafishEmbryoAnalyzerLib.logic.analyse_images", fake_analyse):
         code = run_worker(req_path)
 
     assert code == 0

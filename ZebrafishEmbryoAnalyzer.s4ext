@@ -4,7 +4,7 @@ scmrevision master
 depends NA
 build_subdirectory .
 homepage https://github.com/MarkDanielArndt/SlicerZebrafishEmbryoAnalyzer
-iconurl https://raw.githubusercontent.com/MarkDanielArndt/SlicerZebrafishEmbryoAnalyzer/master/ZebrafishAnalysis/Resources/Icons/ZebrafishAnalysis.png
+iconurl https://raw.githubusercontent.com/MarkDanielArndt/SlicerZebrafishEmbryoAnalyzer/master/ZebrafishEmbryoAnalyzer/Resources/Icons/ZebrafishEmbryoAnalyzer.png
 category Quantification
 status beta
 description Automated zebrafish body length, curvature classification, and eye metrics from 2D microscopy images. Uses deep learning (U-Net + ConvNeXt) with models hosted on Hugging Face Hub.

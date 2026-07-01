@@ -4,8 +4,8 @@ The analysis core and Slicer extension in this repository originate, unmodified,
 from the development repository below. This file records where the code came
 from. The snapshot was subsequently relocated into this repository, given a
 clean-install fix, and flattened into a standalone extension layout (core now
-under `ZebrafishAnalysis/ZebrafishAnalysisCore/`, library under
-`ZebrafishAnalysis/ZebrafishAnalysisLib/`). The recorded commit and tree hashes
+under `ZebrafishEmbryoAnalyzer/ZebrafishEmbryoAnalyzerCore/`, library under
+`ZebrafishEmbryoAnalyzer/ZebrafishEmbryoAnalyzerLib/`). The recorded commit and tree hashes
 below describe the original source paths, not the current layout.
 
 ## Canonical upstream
@@ -49,6 +49,6 @@ a description of the current contents.
 
 Runtime behavior is preserved across the relocation and flatten: analysis
 algorithms, model URLs and cache behavior, dependency installation, NumPy
-pinning, and the `ZebrafishAnalysis` module name are unchanged. Only the
+pinning, and the `ZebrafishEmbryoAnalyzer` module name are unchanged. Only the
 directory layout and import paths were updated. Repository/Extension Index URLs
 are handled separately.

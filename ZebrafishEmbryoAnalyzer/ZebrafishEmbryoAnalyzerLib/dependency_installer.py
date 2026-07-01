@@ -1,5 +1,5 @@
 """
-Dependency status check and install helpers for ZebrafishAnalysis.
+Dependency status check and install helpers for ZebrafishEmbryoAnalyzer.
 
 get_missing_packages()  -- pure Python, safe to call anywhere
 install_packages()      -- Slicer-only, called only from explicit user action
@@ -97,7 +97,7 @@ def install_packages(missing: dict, pip_fn=None) -> None:
     total = len(steps)  # numpy pin added below if applicable
 
     progress = qt.QProgressDialog("Installing dependencies…", None, 0, total + 1)
-    progress.setWindowTitle("ZebrafishAnalysis — Dependency Setup")
+    progress.setWindowTitle("ZebrafishEmbryoAnalyzer — Dependency Setup")
     progress.setMinimumWidth(400)
     progress.setWindowModality(qt.Qt.WindowModal)
     progress.setMinimumDuration(0)
@@ -152,4 +152,4 @@ def install_packages(missing: dict, pip_fn=None) -> None:
             "Some packages could not be installed:\n" + "\n".join(f"  • {e}" for e in errors)
         )
     else:
-        slicer.util.showStatusMessage("ZebrafishAnalysis: dependencies installed — restart required.")
+        slicer.util.showStatusMessage("ZebrafishEmbryoAnalyzer: dependencies installed — restart required.")

@@ -57,7 +57,7 @@ The extension is not yet available through the Extensions Manager and must be in
 
 1. Open **3D Slicer** (version 5.x).
 2. Go to **Edit → Application Settings → Modules**.
-3. Under **Additional module paths**, add the `ZebrafishAnalysis/` directory
+3. Under **Additional module paths**, add the `ZebrafishEmbryoAnalyzer/` directory
    from this repository.
 4. Click **OK** and restart Slicer.
 5. On first open a dialog appears listing the Python packages that will be
@@ -244,7 +244,7 @@ The test suite under `tests/` can be run without Slicer:
 python -m pytest tests/ -q
 ```
 
-Slicer integration tests live in `ZebrafishAnalysis/Testing/Python/`.
+Slicer integration tests live in `ZebrafishEmbryoAnalyzer/Testing/Python/`.
 
 CI runs on Ubuntu, macOS, and Windows (Python 3.11 and 3.12) via GitHub Actions.
 

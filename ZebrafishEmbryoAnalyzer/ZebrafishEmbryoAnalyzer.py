@@ -10,25 +10,25 @@ from slicer.ScriptedLoadableModule import (
 from slicer.util import VTKObservationMixin
 
 
-# Slicer puts this module's directory on sys.path, so ZebrafishAnalysisLib and
-# ZebrafishAnalysisCore import as normal packages — no path manipulation needed.
+# Slicer puts this module's directory on sys.path, so ZebrafishEmbryoAnalyzerLib and
+# ZebrafishEmbryoAnalyzerCore import as normal packages — no path manipulation needed.
 
 _LIB_MODULES = (
-    "ZebrafishAnalysisLib.errors",
-    "ZebrafishAnalysisLib.model_manifest",
-    "ZebrafishAnalysisLib.model_downloader",
-    "ZebrafishAnalysisLib.inference_runner",
-    "ZebrafishAnalysisLib.inference_worker",
-    "ZebrafishAnalysisLib.mrml",
-    "ZebrafishAnalysisLib.widget",
-    "ZebrafishAnalysisLib.gallery_tab",
-    "ZebrafishAnalysisLib.detail_tab",
-    "ZebrafishAnalysisLib.results_tab",
-    "ZebrafishAnalysisLib.logic",
-    "ZebrafishAnalysisLib.overlay",
-    "ZebrafishAnalysisLib.export",
-    "ZebrafishAnalysisLib.dependency_installer",
-    "ZebrafishAnalysisLib.zoom_view",
+    "ZebrafishEmbryoAnalyzerLib.errors",
+    "ZebrafishEmbryoAnalyzerLib.model_manifest",
+    "ZebrafishEmbryoAnalyzerLib.model_downloader",
+    "ZebrafishEmbryoAnalyzerLib.inference_runner",
+    "ZebrafishEmbryoAnalyzerLib.inference_worker",
+    "ZebrafishEmbryoAnalyzerLib.mrml",
+    "ZebrafishEmbryoAnalyzerLib.widget",
+    "ZebrafishEmbryoAnalyzerLib.gallery_tab",
+    "ZebrafishEmbryoAnalyzerLib.detail_tab",
+    "ZebrafishEmbryoAnalyzerLib.results_tab",
+    "ZebrafishEmbryoAnalyzerLib.logic",
+    "ZebrafishEmbryoAnalyzerLib.overlay",
+    "ZebrafishEmbryoAnalyzerLib.export",
+    "ZebrafishEmbryoAnalyzerLib.dependency_installer",
+    "ZebrafishEmbryoAnalyzerLib.zoom_view",
 )
 
 def _evict_lib_modules():
@@ -38,7 +38,7 @@ def _evict_lib_modules():
 _evict_lib_modules()
 
 
-class ZebrafishAnalysis(ScriptedLoadableModule):
+class ZebrafishEmbryoAnalyzer(ScriptedLoadableModule):
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
         self.parent.title = "Zebrafish Embryo Analyzer"
@@ -56,7 +56,7 @@ class ZebrafishAnalysis(ScriptedLoadableModule):
         )
 
 
-class ZebrafishAnalysisWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
+class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def __init__(self, parent=None):
         ScriptedLoadableModuleWidget.__init__(self, parent)
         VTKObservationMixin.__init__(self)
@@ -68,10 +68,10 @@ class ZebrafishAnalysisWidget(ScriptedLoadableModuleWidget, VTKObservationMixin)
         ScriptedLoadableModuleWidget.setup(self)
         _evict_lib_modules()
 
-        self.logic = ZebrafishAnalysisLogic()
+        self.logic = ZebrafishEmbryoAnalyzerLogic()
 
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
-        self._main = ZebrafishAnalysisMainWidget(self.layout, logic=self.logic)
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
+        self._main = ZebrafishEmbryoAnalyzerMainWidget(self.layout, logic=self.logic)
         self._main._on_settings_changed = self._on_settings_changed
         self._main.refresh_dependency_status()
 
@@ -128,7 +128,7 @@ class ZebrafishAnalysisWidget(ScriptedLoadableModuleWidget, VTKObservationMixin)
     def initializeParameterNode(self):
         """Get the scene parameter node, fill missing params and normalize invalid ones."""
         import math
-        from ZebrafishAnalysisLib.widget import (
+        from ZebrafishEmbryoAnalyzerLib.widget import (
             PARAM_DEFAULTS, _MODEL_BY_ID, _DEFAULT_MODEL_ID,
             PARAM_LENGTH_ENABLED, PARAM_CURVATURE_ENABLED, PARAM_RATIO_ENABLED,
             PARAM_EYES_ENABLED, PARAM_CONFIDENCE_THRESHOLD_ENABLED,
@@ -219,27 +219,27 @@ class ZebrafishAnalysisWidget(ScriptedLoadableModuleWidget, VTKObservationMixin)
         # Pick up parameter node values from the newly loaded scene.
         self.initializeParameterNode()
 
-class ZebrafishAnalysisLogic(ScriptedLoadableModuleLogic):
+class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
     """Orchestrates analysis requests on behalf of the widget.
 
     Widget calls these methods; each delegates to the corresponding free
-    function in ZebrafishAnalysisLib.logic so the widget never imports that
-    module directly.  ZebrafishAnalysisCore remains Slicer-independent.
+    function in ZebrafishEmbryoAnalyzerLib.logic so the widget never imports that
+    module directly.  ZebrafishEmbryoAnalyzerCore remains Slicer-independent.
     """
 
     def dependency_status(self) -> dict:
         """Return availability of optional ML/vision dependencies.
 
-        Thin wrapper so widget.py never imports ZebrafishAnalysisLib.logic directly.
+        Thin wrapper so widget.py never imports ZebrafishEmbryoAnalyzerLib.logic directly.
         """
-        from ZebrafishAnalysisLib.logic import dependency_status as _ds
+        from ZebrafishEmbryoAnalyzerLib.logic import dependency_status as _ds
         return _ds()
 
     def run_analysis(self, image_paths, params, progress_callback=None):
         import math
         import os
         from collections.abc import Mapping, Sequence
-        from ZebrafishAnalysisLib.errors import AnalysisInputError
+        from ZebrafishEmbryoAnalyzerLib.errors import AnalysisInputError
 
         # image_paths: must be a non-string, non-empty Sequence of path-like values
         if not isinstance(image_paths, Sequence) or isinstance(image_paths, (str, bytes)):
@@ -305,23 +305,23 @@ class ZebrafishAnalysisLogic(ScriptedLoadableModuleLogic):
         normalized_params["um_per_px"] = um_per_px
         normalized_params["threshold"] = threshold
 
-        from ZebrafishAnalysisLib.logic import analyse_images
+        from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
         return analyse_images(normalized_paths, normalized_params, progress_callback)
 
     def detect_scalebar(self, image_path, label_um=None):
-        from ZebrafishAnalysisLib.logic import detect_scalebar
+        from ZebrafishEmbryoAnalyzerLib.logic import detect_scalebar
         return detect_scalebar(image_path, label_um=label_um)
 
     def preload_models(self, params):
-        from ZebrafishAnalysisLib.logic import preload_models
+        from ZebrafishEmbryoAnalyzerLib.logic import preload_models
         return preload_models(params)
 
     def apply_manual_correction(self, result, point1_orig, point2_orig, params=None):
-        from ZebrafishAnalysisLib.logic import apply_manual_correction
+        from ZebrafishEmbryoAnalyzerLib.logic import apply_manual_correction
         return apply_manual_correction(result, point1_orig, point2_orig, params)
 
     def revert_manual_correction(self, result):
-        from ZebrafishAnalysisLib.logic import revert_manual_correction
+        from ZebrafishEmbryoAnalyzerLib.logic import revert_manual_correction
         return revert_manual_correction(result)
 
     def update_results_table(self, results):
@@ -335,10 +335,10 @@ class ZebrafishAnalysisLogic(ScriptedLoadableModuleLogic):
         -------
         vtkMRMLTableNode
         """
-        from ZebrafishAnalysisLib.errors import MRMLAdapterError
+        from ZebrafishEmbryoAnalyzerLib.errors import MRMLAdapterError
         try:
             import slicer
-            from ZebrafishAnalysisLib.mrml import (
+            from ZebrafishEmbryoAnalyzerLib.mrml import (
                 results_to_rows,
                 build_vtk_table,
                 get_or_create_table_node,
@@ -372,9 +372,9 @@ class ZebrafishAnalysisLogic(ScriptedLoadableModuleLogic):
         if original is None:
             return None
         try:
-            from ZebrafishAnalysisLib.errors import MRMLAdapterError
+            from ZebrafishEmbryoAnalyzerLib.errors import MRMLAdapterError
             import slicer
-            from ZebrafishAnalysisLib.mrml import (
+            from ZebrafishEmbryoAnalyzerLib.mrml import (
                 get_or_create_image_node,
                 update_image_node,
             )
@@ -402,9 +402,9 @@ class ZebrafishAnalysisLogic(ScriptedLoadableModuleLogic):
         if original is None:
             return None
         try:
-            from ZebrafishAnalysisLib.errors import MRMLAdapterError
+            from ZebrafishEmbryoAnalyzerLib.errors import MRMLAdapterError
             import slicer
-            from ZebrafishAnalysisLib.mrml import (
+            from ZebrafishEmbryoAnalyzerLib.mrml import (
                 get_or_create_segmentation_node,
                 update_segmentation_node,
             )

@@ -1,5 +1,5 @@
 set(KIT_PYTHON_SCRIPTS
-  Python/ZebrafishAnalysisTest.py
+  Python/ZebrafishEmbryoAnalyzerTest.py
 )
 
 set(KIT_PYTHON_RESOURCES)

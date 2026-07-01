@@ -33,17 +33,17 @@ def _make_result(with_spacing=True, with_mask=True, orig_shape=(256, 256, 3)):
 
 def test_apply_manual_correction_updates_length():
     """apply_manual_correction changes result['length'] from auto value."""
-    from ZebrafishAnalysisLib import logic
+    from ZebrafishEmbryoAnalyzerLib import logic
 
     result = _make_result()
 
     mock_cls = MagicMock()
     mock_cls.item.return_value = 3
 
-    with patch("ZebrafishAnalysisLib.logic._MODEL_CACHE", {"curvature": MagicMock()}), \
-         patch("ZebrafishAnalysisCore.manual.compute_manual_length",
+    with patch("ZebrafishEmbryoAnalyzerLib.logic._MODEL_CACHE", {"curvature": MagicMock()}), \
+         patch("ZebrafishEmbryoAnalyzerCore.manual.compute_manual_length",
                return_value=(500.0, 450.0, np.zeros((10, 2), dtype=int), ((0, 0), (9, 9)))), \
-         patch("ZebrafishAnalysisCore.length.classification_curvature",
+         patch("ZebrafishEmbryoAnalyzerCore.length.classification_curvature",
                return_value=(None, mock_cls)):
         logic.apply_manual_correction(result, (128, 28), (128, 228))
 
@@ -53,7 +53,7 @@ def test_apply_manual_correction_updates_length():
 
 def test_apply_manual_correction_snapshots_auto_values():
     """First call saves auto values; second call does not overwrite the snapshot."""
-    from ZebrafishAnalysisLib import logic
+    from ZebrafishEmbryoAnalyzerLib import logic
 
     result = _make_result()
     result["length"] = 1000.0
@@ -62,10 +62,10 @@ def test_apply_manual_correction_snapshots_auto_values():
     mock_cls = MagicMock()
     mock_cls.item.return_value = 3
 
-    with patch("ZebrafishAnalysisLib.logic._MODEL_CACHE", {"curvature": MagicMock()}), \
-         patch("ZebrafishAnalysisCore.manual.compute_manual_length",
+    with patch("ZebrafishEmbryoAnalyzerLib.logic._MODEL_CACHE", {"curvature": MagicMock()}), \
+         patch("ZebrafishEmbryoAnalyzerCore.manual.compute_manual_length",
                return_value=(500.0, 450.0, np.zeros((10, 2), dtype=int), ((0, 0), (9, 9)))), \
-         patch("ZebrafishAnalysisCore.length.classification_curvature",
+         patch("ZebrafishEmbryoAnalyzerCore.length.classification_curvature",
                return_value=(None, mock_cls)):
         logic.apply_manual_correction(result, (128, 28), (128, 228))
         assert result["_auto_length"] == 1000.0
@@ -81,7 +81,7 @@ def test_apply_manual_correction_snapshots_auto_values():
 
 def test_apply_manual_correction_noop_when_spacing_none():
     """Returns unchanged result when spacing is None."""
-    from ZebrafishAnalysisLib import logic
+    from ZebrafishEmbryoAnalyzerLib import logic
 
     result = _make_result(with_spacing=False)
     result["length"] = 999.0
@@ -93,13 +93,13 @@ def test_apply_manual_correction_noop_when_spacing_none():
 
 def test_apply_manual_correction_skips_curvature_when_no_model():
     """Curvature unchanged when model not in cache."""
-    from ZebrafishAnalysisLib import logic
+    from ZebrafishEmbryoAnalyzerLib import logic
 
     result = _make_result()
     result["curvature"] = 2
 
-    with patch("ZebrafishAnalysisLib.logic._MODEL_CACHE", {}), \
-         patch("ZebrafishAnalysisCore.manual.compute_manual_length",
+    with patch("ZebrafishEmbryoAnalyzerLib.logic._MODEL_CACHE", {}), \
+         patch("ZebrafishEmbryoAnalyzerCore.manual.compute_manual_length",
                return_value=(500.0, 450.0, np.zeros((10, 2), dtype=int), ((0, 0), (9, 9)))):
         logic.apply_manual_correction(result, (128, 28), (128, 228))
 
@@ -108,7 +108,7 @@ def test_apply_manual_correction_skips_curvature_when_no_model():
 
 def test_revert_manual_correction_restores_auto():
     """revert_manual_correction restores auto-snapshotted values."""
-    from ZebrafishAnalysisLib import logic
+    from ZebrafishEmbryoAnalyzerLib import logic
 
     result = _make_result()
     result["_auto_length"] = 1000.0
@@ -132,7 +132,7 @@ def test_revert_manual_correction_restores_auto():
 
 def test_revert_manual_correction_noop_when_not_corrected():
     """revert_manual_correction is a no-op when manual_corrected not set."""
-    from ZebrafishAnalysisLib import logic
+    from ZebrafishEmbryoAnalyzerLib import logic
 
     result = _make_result()
     result["length"] = 1000.0

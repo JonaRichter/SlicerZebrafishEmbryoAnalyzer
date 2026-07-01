@@ -31,10 +31,10 @@ def test_analyse_images_returns_one_result_per_image(tmp_path, synthetic_fish_im
     dummy_mask = np.zeros((256, 256), dtype=np.uint8)
     dummy_grown = dummy_mask.copy()
 
-    with patch("ZebrafishAnalysisCore.seg.segmentation_pipeline") as mock_pipeline, \
-         patch("ZebrafishAnalysisCore.length.load_model") as mock_load, \
-         patch("ZebrafishAnalysisCore.length.tube_length_border2border") as mock_length, \
-         patch("ZebrafishAnalysisCore.length.classification_curvature") as mock_curv:
+    with patch("ZebrafishEmbryoAnalyzerCore.seg.segmentation_pipeline") as mock_pipeline, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.load_model") as mock_load, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.tube_length_border2border") as mock_length, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.classification_curvature") as mock_curv:
 
         mock_pipeline.return_value = (
             [synthetic_fish_image[:, :, ::-1]],
@@ -47,7 +47,7 @@ def test_analyse_images_returns_one_result_per_image(tmp_path, synthetic_fish_im
                                     ((64, 128), (192, 128)))
         mock_curv.return_value = (MagicMock(), MagicMock(item=lambda: 2))
 
-        from ZebrafishAnalysisLib.logic import analyse_images
+        from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
         results = analyse_images(
             [img_path],
             {"length": True, "curvature": True, "ratio": True,
@@ -67,9 +67,9 @@ def test_analyse_images_error_per_image_does_not_crash(tmp_path, synthetic_fish_
 
     dummy_mask = np.zeros((256, 256), dtype=np.uint8)
 
-    with patch("ZebrafishAnalysisCore.seg.segmentation_pipeline") as mock_pipeline, \
-         patch("ZebrafishAnalysisCore.length.load_model"), \
-         patch("ZebrafishAnalysisCore.length.tube_length_border2border") as mock_length:
+    with patch("ZebrafishEmbryoAnalyzerCore.seg.segmentation_pipeline") as mock_pipeline, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.load_model"), \
+         patch("ZebrafishEmbryoAnalyzerCore.length.tube_length_border2border") as mock_length:
 
         mock_pipeline.return_value = (
             [synthetic_fish_image[:, :, ::-1]],
@@ -78,7 +78,7 @@ def test_analyse_images_error_per_image_does_not_crash(tmp_path, synthetic_fish_
         )
         mock_length.side_effect = RuntimeError("synthetic error")
 
-        from ZebrafishAnalysisLib.logic import analyse_images
+        from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
         results = analyse_images(
             [p1],
             {"length": True, "curvature": False, "ratio": False,
@@ -91,13 +91,13 @@ def test_analyse_images_error_per_image_does_not_crash(tmp_path, synthetic_fish_
 
 
 def test_models_to_download_all_cached(tmp_path):
-    from ZebrafishAnalysisLib.model_manifest import get_missing_models, MODEL_SETS
+    from ZebrafishEmbryoAnalyzerLib.model_manifest import get_missing_models, MODEL_SETS
     model_set = MODEL_SETS["general"]
     for entry in model_set.values():
         f = tmp_path / entry["filename"]
         f.write_bytes(b"\x00")
     with patch(
-        "ZebrafishAnalysisLib.model_manifest.get_cached_path",
+        "ZebrafishEmbryoAnalyzerLib.model_manifest.get_cached_path",
         side_effect=lambda entry: tmp_path / entry["filename"],
     ):
         result = get_missing_models(model_set)
@@ -105,10 +105,10 @@ def test_models_to_download_all_cached(tmp_path):
 
 
 def test_models_to_download_missing(tmp_path):
-    from ZebrafishAnalysisLib.model_manifest import get_missing_models, MODEL_SETS
+    from ZebrafishEmbryoAnalyzerLib.model_manifest import get_missing_models, MODEL_SETS
     model_set = MODEL_SETS["general"]
     with patch(
-        "ZebrafishAnalysisLib.model_manifest.get_cached_path",
+        "ZebrafishEmbryoAnalyzerLib.model_manifest.get_cached_path",
         side_effect=lambda entry: tmp_path / entry["filename"],
     ):
         result = get_missing_models(model_set)
@@ -122,8 +122,8 @@ def test_models_to_download_missing(tmp_path):
 def test_analyse_images_raises_model_not_cached_when_body_missing(tmp_path, synthetic_fish_image):
     """analyse_images must raise ModelNotCachedError when body model file is absent."""
     import cv2
-    from ZebrafishAnalysisLib.logic import analyse_images
-    from ZebrafishAnalysisLib.errors import ModelNotCachedError
+    from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
+    from ZebrafishEmbryoAnalyzerLib.errors import ModelNotCachedError
     from pathlib import Path
 
     img_path = str(tmp_path / "fish.png")
@@ -133,7 +133,7 @@ def test_analyse_images_raises_model_not_cached_when_body_missing(tmp_path, synt
     def fake_get_cached_path(entry):
         return tmp_path / entry["filename"]
 
-    with patch("ZebrafishAnalysisLib.model_manifest.get_cached_path",
+    with patch("ZebrafishEmbryoAnalyzerLib.model_manifest.get_cached_path",
                side_effect=fake_get_cached_path):
         with pytest.raises(ModelNotCachedError):
             analyse_images(
@@ -145,8 +145,8 @@ def test_analyse_images_raises_model_not_cached_when_body_missing(tmp_path, synt
 
 def test_preload_models_raises_model_not_cached_when_body_missing(tmp_path):
     """preload_models must raise ModelNotCachedError when body model file is absent."""
-    from ZebrafishAnalysisLib import logic
-    from ZebrafishAnalysisLib.errors import ModelNotCachedError
+    from ZebrafishEmbryoAnalyzerLib import logic
+    from ZebrafishEmbryoAnalyzerLib.errors import ModelNotCachedError
 
     def fake_get_cached_path(entry):
         return tmp_path / entry["filename"]
@@ -155,9 +155,9 @@ def test_preload_models_raises_model_not_cached_when_body_missing(tmp_path):
     saved_cache = dict(logic._MODEL_CACHE)
     logic._MODEL_CACHE.clear()
     try:
-        with patch("ZebrafishAnalysisLib.model_manifest.get_cached_path",
+        with patch("ZebrafishEmbryoAnalyzerLib.model_manifest.get_cached_path",
                    side_effect=fake_get_cached_path):
-            with patch("ZebrafishAnalysisCore.length.load_model"):
+            with patch("ZebrafishEmbryoAnalyzerCore.length.load_model"):
                 with pytest.raises(ModelNotCachedError):
                     logic.preload_models(
                         {"curvature": False, "eyes": False}

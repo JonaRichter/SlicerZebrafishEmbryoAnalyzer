@@ -34,16 +34,16 @@ _EXPECTED_RESULT_KEYS = frozenset({
 def test_result_schema_all_keys_present(tmp_path, synthetic_fish_image, mock_model_paths):
     """Every result dict returned by analyse_images must contain all required keys."""
     import cv2
-    from ZebrafishAnalysisLib.logic import analyse_images
+    from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
 
     img_path = str(tmp_path / "fish.png")
     cv2.imwrite(img_path, synthetic_fish_image)
     dummy_mask = np.zeros((256, 256), dtype=np.uint8)
 
-    with patch("ZebrafishAnalysisCore.seg.segmentation_pipeline") as mock_pipe, \
-         patch("ZebrafishAnalysisCore.length.load_model"), \
-         patch("ZebrafishAnalysisCore.length.tube_length_border2border") as mock_len, \
-         patch("ZebrafishAnalysisCore.length.classification_curvature") as mock_curv:
+    with patch("ZebrafishEmbryoAnalyzerCore.seg.segmentation_pipeline") as mock_pipe, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.load_model"), \
+         patch("ZebrafishEmbryoAnalyzerCore.length.tube_length_border2border") as mock_len, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.classification_curvature") as mock_curv:
 
         mock_pipe.return_value = (
             [synthetic_fish_image[:, :, ::-1]],
@@ -70,15 +70,15 @@ def test_result_schema_all_keys_present(tmp_path, synthetic_fish_image, mock_mod
 def test_result_schema_preserved_on_per_image_error(tmp_path, synthetic_fish_image, mock_model_paths):
     """A per-image error must still produce a result dict with all required keys."""
     import cv2
-    from ZebrafishAnalysisLib.logic import analyse_images
+    from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
 
     img_path = str(tmp_path / "fish.png")
     cv2.imwrite(img_path, synthetic_fish_image)
     dummy_mask = np.zeros((256, 256), dtype=np.uint8)
 
-    with patch("ZebrafishAnalysisCore.seg.segmentation_pipeline") as mock_pipe, \
-         patch("ZebrafishAnalysisCore.length.load_model"), \
-         patch("ZebrafishAnalysisCore.length.tube_length_border2border") as mock_len:
+    with patch("ZebrafishEmbryoAnalyzerCore.seg.segmentation_pipeline") as mock_pipe, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.load_model"), \
+         patch("ZebrafishEmbryoAnalyzerCore.length.tube_length_border2border") as mock_len:
 
         mock_pipe.return_value = (
             [synthetic_fish_image[:, :, ::-1]], [dummy_mask], [dummy_mask.copy()]
@@ -100,15 +100,15 @@ def test_result_schema_preserved_on_per_image_error(tmp_path, synthetic_fish_ima
 def test_result_filename_derived_from_path(tmp_path, synthetic_fish_image, mock_model_paths):
     """result['filename'] must be the basename of the input path."""
     import cv2
-    from ZebrafishAnalysisLib.logic import analyse_images
+    from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
 
     img_path = str(tmp_path / "sample_fish.png")
     cv2.imwrite(img_path, synthetic_fish_image)
     dummy_mask = np.zeros((256, 256), dtype=np.uint8)
 
-    with patch("ZebrafishAnalysisCore.seg.segmentation_pipeline") as mock_pipe, \
-         patch("ZebrafishAnalysisCore.length.load_model"), \
-         patch("ZebrafishAnalysisCore.length.tube_length_border2border") as mock_len:
+    with patch("ZebrafishEmbryoAnalyzerCore.seg.segmentation_pipeline") as mock_pipe, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.load_model"), \
+         patch("ZebrafishEmbryoAnalyzerCore.length.tube_length_border2border") as mock_len:
 
         mock_pipe.return_value = (
             [synthetic_fish_image[:, :, ::-1]], [dummy_mask], [dummy_mask.copy()]
@@ -131,7 +131,7 @@ def test_result_filename_derived_from_path(tmp_path, synthetic_fish_image, mock_
 def test_progress_callback_called_once_per_image(tmp_path, synthetic_fish_image, mock_model_paths):
     """progress_callback(i, total) must be called exactly once per image."""
     import cv2
-    from ZebrafishAnalysisLib.logic import analyse_images
+    from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
 
     paths = []
     for i in range(3):
@@ -142,10 +142,10 @@ def test_progress_callback_called_once_per_image(tmp_path, synthetic_fish_image,
     dummy_mask = np.zeros((256, 256), dtype=np.uint8)
     calls_received = []
 
-    with patch("ZebrafishAnalysisCore.seg.segmentation_pipeline") as mock_pipe, \
-         patch("ZebrafishAnalysisCore.length.load_model"), \
-         patch("ZebrafishAnalysisCore.length.tube_length_border2border") as mock_len, \
-         patch("ZebrafishAnalysisCore.length.classification_curvature") as mock_curv:
+    with patch("ZebrafishEmbryoAnalyzerCore.seg.segmentation_pipeline") as mock_pipe, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.load_model"), \
+         patch("ZebrafishEmbryoAnalyzerCore.length.tube_length_border2border") as mock_len, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.classification_curvature") as mock_curv:
 
         mock_pipe.return_value = (
             [synthetic_fish_image[:, :, ::-1]], [dummy_mask], [dummy_mask.copy()]
@@ -184,7 +184,7 @@ def test_model_cache_reused_across_preload_calls(tmp_path, mock_model_paths):
     block restores both touched module-level variables; _seg._load_unet_model is not
     touched so this test does not need to know about seg's internal state.
     """
-    from ZebrafishAnalysisLib import logic
+    from ZebrafishEmbryoAnalyzerLib import logic
 
     body_path = str(tmp_path / "body.pth")
     (tmp_path / "body.pth").write_bytes(b"dummy")
@@ -213,7 +213,7 @@ def test_model_cache_reused_across_preload_calls(tmp_path, mock_model_paths):
             "body_encoder_name": "vgg19",
             "body_model_path": body_path,
         }
-        with patch("ZebrafishAnalysisCore.length.load_model"):
+        with patch("ZebrafishEmbryoAnalyzerCore.length.load_model"):
             logic.preload_models(params)
             logic.preload_models(params)
 
@@ -232,8 +232,8 @@ def test_model_cache_reused_across_preload_calls(tmp_path, mock_model_paths):
 # ---------------------------------------------------------------------------
 
 def test_logic_lib_imports_without_slicer():
-    """ZebrafishAnalysisLib.logic must be importable when 'slicer' is not available."""
-    import ZebrafishAnalysisLib.logic as lg
+    """ZebrafishEmbryoAnalyzerLib.logic must be importable when 'slicer' is not available."""
+    import ZebrafishEmbryoAnalyzerLib.logic as lg
     assert callable(lg.analyse_images)
     assert callable(lg.detect_scalebar)
     assert callable(lg.apply_manual_correction)
@@ -242,7 +242,7 @@ def test_logic_lib_imports_without_slicer():
 
 def test_get_missing_packages_safe_outside_slicer():
     """get_missing_packages must return a valid dict without raising outside Slicer."""
-    from ZebrafishAnalysisLib.dependency_installer import get_missing_packages
+    from ZebrafishEmbryoAnalyzerLib.dependency_installer import get_missing_packages
     result = get_missing_packages()
     assert isinstance(result, dict)
     assert "torch" in result
@@ -258,7 +258,7 @@ def test_get_missing_packages_safe_outside_slicer():
 # ---------------------------------------------------------------------------
 
 _MODULE_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ZebrafishAnalysis"
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ZebrafishEmbryoAnalyzer"
 )
 
 
@@ -271,9 +271,9 @@ def _run_subprocess(code: str) -> subprocess.CompletedProcess:
 
 
 def test_qualified_logic_import_from_package_layout():
-    """From the packaged module directory, ZebrafishAnalysisLib.logic must import."""
+    """From the packaged module directory, ZebrafishEmbryoAnalyzerLib.logic must import."""
     result = _run_subprocess("""
-        from ZebrafishAnalysisLib.logic import analyse_images, detect_scalebar
+        from ZebrafishEmbryoAnalyzerLib.logic import analyse_images, detect_scalebar
         print("OK")
     """)
     assert result.returncode == 0, result.stderr
@@ -285,7 +285,7 @@ def test_qualified_core_scalebar_manual_import_without_ml_deps():
     result = _run_subprocess("""
         import sys
         sys.modules["segmentation_models_pytorch"] = None
-        from ZebrafishAnalysisCore import scalebar, manual
+        from ZebrafishEmbryoAnalyzerCore import scalebar, manual
         print("OK")
     """)
     assert result.returncode == 0, result.stderr
@@ -304,14 +304,14 @@ def test_seg_helper_importable_without_torch_at_module_level():
         sys.modules["segmentation_models_pytorch"] = None
         sys.modules["huggingface_hub"] = None
         try:
-            from ZebrafishAnalysisCore import seg
+            from ZebrafishEmbryoAnalyzerCore import seg
             print("IMPORTED_OK")
         except (ImportError, ModuleNotFoundError) as exc:
             print(f"IMPORT_BLOCKED_UNEXPECTEDLY: {exc}")
     """)
     assert result.returncode == 0
     assert "IMPORTED_OK" in result.stdout, (
-        "ZebrafishAnalysisCore.seg must be importable without torch at module level.\n"
+        "ZebrafishEmbryoAnalyzerCore.seg must be importable without torch at module level.\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
 
@@ -322,7 +322,7 @@ def test_seg_helper_importable_without_torch_at_module_level():
 
 def test_export_csv_contains_expected_columns_and_values(tmp_path):
     """export_csv must produce a file with filename, length, curvature, ratio columns."""
-    from ZebrafishAnalysisLib.export import export_csv
+    from ZebrafishEmbryoAnalyzerLib.export import export_csv
 
     results = [
         {
@@ -354,13 +354,13 @@ def test_export_csv_contains_expected_columns_and_values(tmp_path):
 def test_analyse_images_error_field_contains_message(tmp_path, synthetic_fish_image, mock_model_paths):
     """When segmentation_pipeline raises, the error field must contain the message."""
     import cv2
-    from ZebrafishAnalysisLib.logic import analyse_images
+    from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
 
     img_path = str(tmp_path / "fish.png")
     cv2.imwrite(img_path, synthetic_fish_image)
 
-    with patch("ZebrafishAnalysisCore.seg.segmentation_pipeline") as mock_pipe, \
-         patch("ZebrafishAnalysisCore.length.load_model"):
+    with patch("ZebrafishEmbryoAnalyzerCore.seg.segmentation_pipeline") as mock_pipe, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.load_model"):
 
         mock_pipe.side_effect = RuntimeError("GPU out of memory")
 

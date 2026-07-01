@@ -1,5 +1,5 @@
 """
-Asynchronous QProcess-based inference runner for ZebrafishAnalysis.
+Asynchronous QProcess-based inference runner for ZebrafishEmbryoAnalyzer.
 
 Launches inference_worker.py as a standalone subprocess, streams progress via
 stdout, and delivers results back to the main thread via on_finished callback.
@@ -115,7 +115,7 @@ class InferenceController:
         self._process.readyReadStandardOutput.connect(self._on_ready_read)
         self._process.finished.connect(self._on_finished)
 
-        # Ensure ZebrafishAnalysis/ is on sys.path in the subprocess
+        # Ensure ZebrafishEmbryoAnalyzer/ is on sys.path in the subprocess
         _zebrafish_lib_root = str(Path(__file__).parent.parent)
         try:
             env = self.qt.QProcessEnvironment.systemEnvironment()

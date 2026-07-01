@@ -5,7 +5,7 @@ import textwrap
 
 
 MODULE_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ZebrafishAnalysis"
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ZebrafishEmbryoAnalyzer"
 )
 
 
@@ -27,7 +27,7 @@ def test_core_length_imports_without_matplotlib():
         import sys
         sys.modules["matplotlib"] = None
         sys.modules["matplotlib.pyplot"] = None
-        from ZebrafishAnalysisCore.length import (
+        from ZebrafishEmbryoAnalyzerCore.length import (
             load_model,
             tube_length_border2border,
             classification_curvature,
@@ -50,7 +50,7 @@ def test_core_modules_import_without_segmentation_models_pytorch():
         """
         import sys
         sys.modules["segmentation_models_pytorch"] = None
-        from ZebrafishAnalysisCore import seg, length
+        from ZebrafishEmbryoAnalyzerCore import seg, length
         print("OK")
         """
     )

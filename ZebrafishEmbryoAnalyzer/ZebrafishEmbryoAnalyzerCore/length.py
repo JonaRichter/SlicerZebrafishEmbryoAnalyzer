@@ -707,7 +707,7 @@ def load_model(model_path: str):
     ----------
     model_path : str
         Absolute path to the model checkpoint file on the local filesystem.
-        Download the file first via ZebrafishAnalysisLib.model_downloader.
+        Download the file first via ZebrafishEmbryoAnalyzerLib.model_downloader.
         Raises FileNotFoundError when the path does not exist.
     """
     import torch
@@ -745,7 +745,7 @@ def load_model(model_path: str):
     if not os.path.exists(model_path):
         raise FileNotFoundError(
             f"Curvature model not found at {model_path!r}. "
-            "Download models via ZebrafishAnalysisLib.model_downloader before running analysis."
+            "Download models via ZebrafishEmbryoAnalyzerLib.model_downloader before running analysis."
         )
 
     best_params = {'dense_layer': 512, 'dropout': 0.2, 'model_name': 'convnext_base'}

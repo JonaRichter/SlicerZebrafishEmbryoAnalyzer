@@ -2,7 +2,7 @@ import importlib
 import sys
 from unittest.mock import MagicMock
 
-from ZebrafishAnalysisLib.dependency_installer import _is_importable, get_missing_packages
+from ZebrafishEmbryoAnalyzerLib.dependency_installer import _is_importable, get_missing_packages
 
 
 def test_is_importable_finds_numpy():
@@ -28,8 +28,8 @@ def test_is_importable_does_not_trigger_import():
 # ---------------------------------------------------------------------------
 
 def test_get_missing_packages_all_present(monkeypatch):
-    monkeypatch.setattr("ZebrafishAnalysisLib.dependency_installer._is_importable", lambda n: True)
-    monkeypatch.setattr("ZebrafishAnalysisLib.dependency_installer._numpy_major", lambda: 1)
+    monkeypatch.setattr("ZebrafishEmbryoAnalyzerLib.dependency_installer._is_importable", lambda n: True)
+    monkeypatch.setattr("ZebrafishEmbryoAnalyzerLib.dependency_installer._numpy_major", lambda: 1)
     result = get_missing_packages()
     assert result["torch"] == []
     assert result["general"] == []
@@ -41,8 +41,8 @@ def test_get_missing_packages_all_present(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_get_missing_packages_numpy_pin_when_numpy2(monkeypatch):
-    monkeypatch.setattr("ZebrafishAnalysisLib.dependency_installer._is_importable", lambda n: True)
-    monkeypatch.setattr("ZebrafishAnalysisLib.dependency_installer._numpy_major", lambda: 2)
+    monkeypatch.setattr("ZebrafishEmbryoAnalyzerLib.dependency_installer._is_importable", lambda n: True)
+    monkeypatch.setattr("ZebrafishEmbryoAnalyzerLib.dependency_installer._numpy_major", lambda: 2)
     result = get_missing_packages()
     assert result["numpy_pin"] == ["numpy<2"]
 
@@ -54,8 +54,8 @@ def test_get_missing_packages_numpy_pin_when_numpy2(monkeypatch):
 def test_get_missing_packages_torch_missing(monkeypatch):
     def fake_importable(name):
         return name not in ("torch", "torchvision")
-    monkeypatch.setattr("ZebrafishAnalysisLib.dependency_installer._is_importable", fake_importable)
-    monkeypatch.setattr("ZebrafishAnalysisLib.dependency_installer._numpy_major", lambda: 1)
+    monkeypatch.setattr("ZebrafishEmbryoAnalyzerLib.dependency_installer._is_importable", fake_importable)
+    monkeypatch.setattr("ZebrafishEmbryoAnalyzerLib.dependency_installer._numpy_major", lambda: 1)
     result = get_missing_packages()
     assert "torch" in result["torch"]
     assert "torchvision" in result["torch"]
@@ -71,7 +71,7 @@ def test_install_packages_skipped_in_testing_mode(monkeypatch):
     mock_slicer.app.testingEnabled.return_value = True
     monkeypatch.setitem(sys.modules, "slicer", mock_slicer)
     pip_fn = MagicMock()
-    from ZebrafishAnalysisLib import dependency_installer
+    from ZebrafishEmbryoAnalyzerLib import dependency_installer
     importlib.reload(dependency_installer)
     dependency_installer.install_packages(
         {"torch": ["torch"], "general": [], "numpy_pin": []}, pip_fn=pip_fn
@@ -113,11 +113,11 @@ def test_install_packages_pins_numpy_when_torch_ok(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "slicer", mock_slicer)
     monkeypatch.setitem(sys.modules, "qt", mock_qt)
-    monkeypatch.setitem(sys.modules, "ZebrafishAnalysisLib.logic", mock_logic)
+    monkeypatch.setitem(sys.modules, "ZebrafishEmbryoAnalyzerLib.logic", mock_logic)
 
     pip_fn = MagicMock()  # succeeds (no raise) → torch_ok = True
 
-    from ZebrafishAnalysisLib import dependency_installer
+    from ZebrafishEmbryoAnalyzerLib import dependency_installer
     importlib.reload(dependency_installer)
 
     dependency_installer.install_packages(
@@ -148,7 +148,7 @@ def test_install_packages_no_numpy_pin_when_torch_fails_and_absent(monkeypatch):
 
     pip_fn = MagicMock(side_effect=pip_fn_side_effect)
 
-    from ZebrafishAnalysisLib import dependency_installer
+    from ZebrafishEmbryoAnalyzerLib import dependency_installer
     importlib.reload(dependency_installer)
 
     # Simulate torch absent on disk so already_has_torch is False
@@ -177,11 +177,11 @@ def test_install_packages_numpy_pin_when_torch_preexisting(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "slicer", mock_slicer)
     monkeypatch.setitem(sys.modules, "qt", mock_qt)
-    monkeypatch.setitem(sys.modules, "ZebrafishAnalysisLib.logic", mock_logic)
+    monkeypatch.setitem(sys.modules, "ZebrafishEmbryoAnalyzerLib.logic", mock_logic)
 
     pip_fn = MagicMock()
 
-    from ZebrafishAnalysisLib import dependency_installer
+    from ZebrafishEmbryoAnalyzerLib import dependency_installer
     importlib.reload(dependency_installer)
 
     # torch not in missing (already installed); numpy_pin present
@@ -202,9 +202,9 @@ def test_install_packages_numpy_pin_when_torch_preexisting(monkeypatch):
 
 def test_prewarm_guard_structure_when_torch_missing(monkeypatch):
     # prewarm guard verified via get_missing_packages structure test
-    monkeypatch.setattr("ZebrafishAnalysisLib.dependency_installer._is_importable",
+    monkeypatch.setattr("ZebrafishEmbryoAnalyzerLib.dependency_installer._is_importable",
                         lambda n: n not in ("torch", "torchvision"))
-    monkeypatch.setattr("ZebrafishAnalysisLib.dependency_installer._numpy_major", lambda: 1)
+    monkeypatch.setattr("ZebrafishEmbryoAnalyzerLib.dependency_installer._numpy_major", lambda: 1)
     result = get_missing_packages()
     # Guard condition: if result["torch"] is truthy → _prewarm_imports returns early
     assert bool(result["torch"]) is True, "torch missing → guard fires → no thread spawned"

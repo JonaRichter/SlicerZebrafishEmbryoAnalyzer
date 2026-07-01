@@ -1,5 +1,5 @@
 """
-Asynchronous Qt model downloader for ZebrafishAnalysis.
+Asynchronous Qt model downloader for ZebrafishEmbryoAnalyzer.
 
 The downloader uses Slicer's PythonQt QNetworkAccessManager and never starts a
 Python thread, blocks in a nested event loop, or manually pumps the Qt event
@@ -17,7 +17,7 @@ import os
 import time
 from pathlib import Path
 
-from ZebrafishAnalysisLib.model_manifest import (
+from ZebrafishEmbryoAnalyzerLib.model_manifest import (
     _CACHE_DIR,
     checksum_mismatch_error,
     get_cached_path,

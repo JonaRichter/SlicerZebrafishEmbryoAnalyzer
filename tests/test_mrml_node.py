@@ -3,9 +3,9 @@ Tests for MRML node creation, reuse, and update_results_table orchestration.
 
 Static checks verify source-level contracts without subprocess overhead.
 Behavioral node tests use small fake objects directly — conftest.py adds the
-ZebrafishAnalysis directory to sys.path so mrml.py imports cleanly.
+ZebrafishEmbryoAnalyzer directory to sys.path so mrml.py imports cleanly.
 Subprocess tests cover the full update_results_table flow, which requires
-the Slicer module stub so ZebrafishAnalysis.py can be imported.
+the Slicer module stub so ZebrafishEmbryoAnalyzer.py can be imported.
 """
 
 import math
@@ -21,14 +21,14 @@ import pytest
 
 _MODULE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "ZebrafishAnalysis",
+    "ZebrafishEmbryoAnalyzer",
 )
-_MAIN_PY   = os.path.join(_MODULE_DIR, "ZebrafishAnalysis.py")
-_WIDGET_PY = os.path.join(_MODULE_DIR, "ZebrafishAnalysisLib", "widget.py")
-_LOGIC_PY  = os.path.join(_MODULE_DIR, "ZebrafishAnalysisLib", "logic.py")
-_MRML_PY   = os.path.join(_MODULE_DIR, "ZebrafishAnalysisLib", "mrml.py")
+_MAIN_PY   = os.path.join(_MODULE_DIR, "ZebrafishEmbryoAnalyzer.py")
+_WIDGET_PY = os.path.join(_MODULE_DIR, "ZebrafishEmbryoAnalyzerLib", "widget.py")
+_LOGIC_PY  = os.path.join(_MODULE_DIR, "ZebrafishEmbryoAnalyzerLib", "logic.py")
+_MRML_PY   = os.path.join(_MODULE_DIR, "ZebrafishEmbryoAnalyzerLib", "mrml.py")
 _CMAKE     = os.path.join(
-    os.path.dirname(_MODULE_DIR), "ZebrafishAnalysis", "CMakeLists.txt"
+    os.path.dirname(_MODULE_DIR), "ZebrafishEmbryoAnalyzer", "CMakeLists.txt"
 )
 
 
@@ -270,7 +270,7 @@ class _FakeImageParamNode:
 # ---------------------------------------------------------------------------
 
 def test_logic_py_does_not_import_mrml():
-    """ZebrafishAnalysisLib.logic must not import the mrml adapter."""
+    """ZebrafishEmbryoAnalyzerLib.logic must not import the mrml adapter."""
     src = open(_LOGIC_PY).read()
     import re
     assert not re.search(r'^(?:import|from)\s+.*mrml', src, re.MULTILINE), \
@@ -278,18 +278,18 @@ def test_logic_py_does_not_import_mrml():
 
 
 def test_mrml_in_cmake():
-    """ZebrafishAnalysis/CMakeLists.txt must list ZebrafishAnalysisLib/mrml.py."""
+    """ZebrafishEmbryoAnalyzer/CMakeLists.txt must list ZebrafishEmbryoAnalyzerLib/mrml.py."""
     content = open(_CMAKE).read()
-    assert "ZebrafishAnalysisLib/mrml.py" in content, (
-        "CMakeLists.txt does not include ZebrafishAnalysisLib/mrml.py"
+    assert "ZebrafishEmbryoAnalyzerLib/mrml.py" in content, (
+        "CMakeLists.txt does not include ZebrafishEmbryoAnalyzerLib/mrml.py"
     )
 
 
 def test_mrml_in_reload_eviction_list():
-    """ZebrafishAnalysis.py _LIB_MODULES must include ZebrafishAnalysisLib.mrml."""
+    """ZebrafishEmbryoAnalyzer.py _LIB_MODULES must include ZebrafishEmbryoAnalyzerLib.mrml."""
     src = open(_MAIN_PY).read()
-    assert '"ZebrafishAnalysisLib.mrml"' in src, (
-        "_LIB_MODULES must include 'ZebrafishAnalysisLib.mrml'"
+    assert '"ZebrafishEmbryoAnalyzerLib.mrml"' in src, (
+        "_LIB_MODULES must include 'ZebrafishEmbryoAnalyzerLib.mrml'"
     )
 
 
@@ -316,11 +316,11 @@ def test_widget_calls_update_results_table_not_mrml_directly():
     assert "update_results_table" in src, (
         "widget.py must call self._logic.update_results_table()"
     )
-    assert "from ZebrafishAnalysisLib.mrml" not in src, (
-        "widget.py must not import ZebrafishAnalysisLib.mrml directly"
+    assert "from ZebrafishEmbryoAnalyzerLib.mrml" not in src, (
+        "widget.py must not import ZebrafishEmbryoAnalyzerLib.mrml directly"
     )
-    assert "from ZebrafishAnalysisLib import mrml" not in src, (
-        "widget.py must not import ZebrafishAnalysisLib.mrml directly"
+    assert "from ZebrafishEmbryoAnalyzerLib import mrml" not in src, (
+        "widget.py must not import ZebrafishEmbryoAnalyzerLib.mrml directly"
     )
 
 
@@ -356,7 +356,7 @@ def test_mrml_module_has_no_global_vtk_import():
 
 def test_existing_node_reference_is_reused():
     """get_or_create_table_node returns the existing node without creating a new one."""
-    from ZebrafishAnalysisLib.mrml import get_or_create_table_node, ROLE_RESULTS_TABLE
+    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_table_node, ROLE_RESULTS_TABLE
 
     existing = _FakeTableNode()
     existing.SetName("My renamed table")
@@ -372,7 +372,7 @@ def test_existing_node_reference_is_reused():
 
 def test_missing_reference_creates_node_with_display_name():
     """get_or_create_table_node creates exactly one new node with the canonical name."""
-    from ZebrafishAnalysisLib.mrml import get_or_create_table_node
+    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_table_node
 
     param_node = _FakeParamNode(existing_node=None)
     scene = _FakeScene()
@@ -381,12 +381,12 @@ def test_missing_reference_creates_node_with_display_name():
 
     assert node is not None
     assert scene._add_count == 1, f"expected 1 new node, got {scene._add_count}"
-    assert node.GetName() == "ZebrafishAnalysis Results"
+    assert node.GetName() == "ZebrafishEmbryoAnalyzer Results"
 
 
 def test_new_node_id_stored_in_param_node():
     """get_or_create_table_node stores the new node ID in the parameter node."""
-    from ZebrafishAnalysisLib.mrml import get_or_create_table_node, ROLE_RESULTS_TABLE
+    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_table_node, ROLE_RESULTS_TABLE
 
     param_node = _FakeParamNode(existing_node=None)
     scene = _FakeScene()
@@ -400,7 +400,7 @@ def test_new_node_id_stored_in_param_node():
 
 def test_renamed_node_is_reused():
     """A node renamed by the user is still found via the stored reference."""
-    from ZebrafishAnalysisLib.mrml import get_or_create_table_node
+    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_table_node
 
     existing = _FakeTableNode()
     existing.SetName("User renamed this")
@@ -416,7 +416,7 @@ def test_renamed_node_is_reused():
 
 def test_wrong_node_type_creates_new_table_node():
     """A reference to a non-table node triggers creation of a new table node."""
-    from ZebrafishAnalysisLib.mrml import get_or_create_table_node
+    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_table_node
 
     wrong_node = _FakeNonTableNode()
     param_node = _FakeParamNode(existing_node=wrong_node)
@@ -438,8 +438,8 @@ def test_wrong_node_type_creates_new_table_node():
 
 def test_populate_table_node_columns_and_names(monkeypatch):
     """populate_table_node creates one correctly named column per TABLE_SCHEMA entry."""
-    from ZebrafishAnalysisLib import mrml as mrml_mod
-    from ZebrafishAnalysisLib.mrml import TABLE_SCHEMA
+    from ZebrafishEmbryoAnalyzerLib import mrml as mrml_mod
+    from ZebrafishEmbryoAnalyzerLib.mrml import TABLE_SCHEMA
 
     fake_vtk = _make_fake_vtk()
     monkeypatch.setitem(sys.modules, "vtk", fake_vtk)
@@ -460,8 +460,8 @@ def test_populate_table_node_columns_and_names(monkeypatch):
 
 def test_populate_table_node_applies_atomically(monkeypatch):
     """populate_table_node only calls SetAndObserveTable after full construction."""
-    from ZebrafishAnalysisLib import mrml as mrml_mod
-    from ZebrafishAnalysisLib.mrml import TABLE_SCHEMA
+    from ZebrafishEmbryoAnalyzerLib import mrml as mrml_mod
+    from ZebrafishEmbryoAnalyzerLib.mrml import TABLE_SCHEMA
 
     fake_vtk = _make_fake_vtk()
     set_observe_calls = []
@@ -487,7 +487,7 @@ def test_populate_table_node_applies_atomically(monkeypatch):
 
 def test_populate_table_node_existing_table_preserved_on_failure(monkeypatch):
     """If vtk construction fails, the existing table on the node is not replaced."""
-    from ZebrafishAnalysisLib import mrml as mrml_mod
+    from ZebrafishEmbryoAnalyzerLib import mrml as mrml_mod
 
     class _BrokenVTK:
         def vtkTable(self):
@@ -511,7 +511,7 @@ def test_populate_table_node_existing_table_preserved_on_failure(monkeypatch):
 
 def test_input_results_not_mutated_by_update(monkeypatch):
     """update_results_table must not mutate the input results list or dicts."""
-    from ZebrafishAnalysisLib import mrml as mrml_mod
+    from ZebrafishEmbryoAnalyzerLib import mrml as mrml_mod
 
     fake_vtk = _make_fake_vtk()
     monkeypatch.setitem(sys.modules, "vtk", fake_vtk)
@@ -539,18 +539,18 @@ def test_update_results_table_calls_mrml_functions():
     """update_results_table builds the vtk table then resolves/creates the MRML node."""
     r = _run("""
         from unittest.mock import patch, MagicMock
-        from ZebrafishAnalysis import ZebrafishAnalysisLogic
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
 
-        logic = ZebrafishAnalysisLogic()
+        logic = ZebrafishEmbryoAnalyzerLogic()
         logic.getParameterNode = MagicMock(return_value=MagicMock())
 
         fake_table = MagicMock()
         fake_node = MagicMock()
         fake_node.GetID.return_value = "nodeID1"
 
-        with patch("ZebrafishAnalysisLib.mrml.build_vtk_table",
+        with patch("ZebrafishEmbryoAnalyzerLib.mrml.build_vtk_table",
                    return_value=fake_table) as mock_build, \\
-             patch("ZebrafishAnalysisLib.mrml.get_or_create_table_node",
+             patch("ZebrafishEmbryoAnalyzerLib.mrml.get_or_create_table_node",
                    return_value=fake_node) as mock_get:
             import slicer
             result = logic.update_results_table([
@@ -572,10 +572,10 @@ def test_vtk_build_failure_creates_no_node():
     """If build_vtk_table raises, get_or_create_table_node must not be called."""
     r = _run("""
         from unittest.mock import patch, MagicMock
-        from ZebrafishAnalysis import ZebrafishAnalysisLogic
-        from ZebrafishAnalysisLib.errors import MRMLAdapterError
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+        from ZebrafishEmbryoAnalyzerLib.errors import MRMLAdapterError
 
-        logic = ZebrafishAnalysisLogic()
+        logic = ZebrafishEmbryoAnalyzerLogic()
         logic.getParameterNode = MagicMock(return_value=MagicMock())
 
         node_creation_calls = []
@@ -584,9 +584,9 @@ def test_vtk_build_failure_creates_no_node():
             node_creation_calls.append(1)
             return MagicMock()
 
-        with patch("ZebrafishAnalysisLib.mrml.build_vtk_table",
+        with patch("ZebrafishEmbryoAnalyzerLib.mrml.build_vtk_table",
                    side_effect=RuntimeError("vtk unavailable")), \\
-             patch("ZebrafishAnalysisLib.mrml.get_or_create_table_node",
+             patch("ZebrafishEmbryoAnalyzerLib.mrml.get_or_create_table_node",
                    _record_create):
             try:
                 logic.update_results_table([
@@ -609,13 +609,13 @@ def test_update_results_table_wraps_unexpected_exception_as_mrml_error():
     """update_results_table wraps unexpected exceptions as MRMLAdapterError."""
     r = _run("""
         from unittest.mock import patch, MagicMock
-        from ZebrafishAnalysis import ZebrafishAnalysisLogic
-        from ZebrafishAnalysisLib.errors import MRMLAdapterError
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+        from ZebrafishEmbryoAnalyzerLib.errors import MRMLAdapterError
 
-        logic = ZebrafishAnalysisLogic()
+        logic = ZebrafishEmbryoAnalyzerLogic()
         logic.getParameterNode = MagicMock(return_value=MagicMock())
 
-        with patch("ZebrafishAnalysisLib.mrml.build_vtk_table",
+        with patch("ZebrafishEmbryoAnalyzerLib.mrml.build_vtk_table",
                    side_effect=RuntimeError("vtk broke")):
             try:
                 logic.update_results_table([
@@ -637,10 +637,10 @@ def test_widget_mrml_failure_preserves_results_via_helper():
     """_try_update_mrml_table must not affect self._results on MRMLAdapterError."""
     r = _run("""
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
-        from ZebrafishAnalysisLib.errors import MRMLAdapterError
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
+        from ZebrafishEmbryoAnalyzerLib.errors import MRMLAdapterError
 
-        w = object.__new__(ZebrafishAnalysisMainWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
         w._results = [{"filename": "fish.png"}]
 
         mock_logic = MagicMock()
@@ -665,9 +665,9 @@ def test_run_analysis_has_no_mrml_calls():
     """run_analysis() must not call update_results_table or any MRML function."""
     r = _run("""
         from unittest.mock import patch, MagicMock
-        from ZebrafishAnalysis import ZebrafishAnalysisLogic
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
 
-        logic = ZebrafishAnalysisLogic()
+        logic = ZebrafishEmbryoAnalyzerLogic()
 
         calls = []
 
@@ -676,7 +676,7 @@ def test_run_analysis_has_no_mrml_calls():
 
         logic.update_results_table = _fake_update
 
-        with patch("ZebrafishAnalysisLib.logic.analyse_images",
+        with patch("ZebrafishEmbryoAnalyzerLib.logic.analyse_images",
                    return_value=[{"filename": "x.png"}]):
             logic.run_analysis(["/x.png"], {"um_per_px": 1.0})
 
@@ -725,7 +725,7 @@ def test_widget_source_calls_update_current_image_node():
 
 def test_mrml_module_exports_image_functions():
     """mrml.py must export all required E2b symbols."""
-    from ZebrafishAnalysisLib import mrml
+    from ZebrafishEmbryoAnalyzerLib import mrml
     assert hasattr(mrml, "ROLE_CURRENT_IMAGE")
     assert hasattr(mrml, "image_geometry")
     assert hasattr(mrml, "get_or_create_image_node")
@@ -738,7 +738,7 @@ def test_mrml_module_exports_image_functions():
 
 def test_mrml_module_exports_segmentation_symbols():
     """mrml.py must export all required E2c symbols."""
-    from ZebrafishAnalysisLib import mrml
+    from ZebrafishEmbryoAnalyzerLib import mrml
     assert hasattr(mrml, "ROLE_CURRENT_SEGMENTATION")
     assert hasattr(mrml, "resample_mask_to_original")
     assert hasattr(mrml, "get_or_create_segmentation_node")
@@ -780,7 +780,7 @@ def test_on_gallery_select_calls_segmentation_after_image():
 
 def test_get_or_create_image_node_creates_new_when_no_reference():
     """get_or_create_image_node creates a new node when no reference exists."""
-    from ZebrafishAnalysisLib.mrml import get_or_create_image_node, ROLE_CURRENT_IMAGE
+    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_image_node, ROLE_CURRENT_IMAGE
 
     param_node = _FakeImageParamNode(existing_node=None)
     scene = _FakeImageScene()
@@ -795,20 +795,20 @@ def test_get_or_create_image_node_creates_new_when_no_reference():
 
 
 def test_get_or_create_image_node_creates_node_with_display_name():
-    """get_or_create_image_node names the new node 'ZebrafishAnalysis Current Image'."""
-    from ZebrafishAnalysisLib.mrml import get_or_create_image_node
+    """get_or_create_image_node names the new node 'ZebrafishEmbryoAnalyzer Current Image'."""
+    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_image_node
 
     param_node = _FakeImageParamNode(existing_node=None)
     scene = _FakeImageScene()
 
     node = get_or_create_image_node(param_node, scene)
 
-    assert node.GetName() == "ZebrafishAnalysis Current Image"
+    assert node.GetName() == "ZebrafishEmbryoAnalyzer Current Image"
 
 
 def test_get_or_create_image_node_reuses_existing_reference():
     """get_or_create_image_node returns the same node on repeated calls."""
-    from ZebrafishAnalysisLib.mrml import get_or_create_image_node
+    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_image_node
 
     existing = _FakeVectorVolumeNode()
     param_node = _FakeImageParamNode(existing_node=existing)
@@ -823,7 +823,7 @@ def test_get_or_create_image_node_reuses_existing_reference():
 
 def test_get_or_create_image_node_idempotent_calls_add_once():
     """AddNewNodeByClass is called exactly once even across two separate invocations."""
-    from ZebrafishAnalysisLib.mrml import get_or_create_image_node
+    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_image_node
 
     param_node = _FakeImageParamNode(existing_node=None)
     scene = _FakeImageScene()
@@ -839,7 +839,7 @@ def test_get_or_create_image_node_idempotent_calls_add_once():
 
 def test_get_or_create_image_node_wrong_type_creates_new():
     """A wrong-type foreign node is left in scene; a fresh vector volume node is created."""
-    from ZebrafishAnalysisLib.mrml import get_or_create_image_node
+    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_image_node
 
     wrong_node = _FakeNonVectorVolumeNode()
     param_node = _FakeImageParamNode(existing_node=wrong_node)
@@ -863,9 +863,9 @@ def test_update_current_image_node_none_original_returns_none():
     """update_current_image_node returns None when result['original'] is None."""
     r = _run("""
         from unittest.mock import MagicMock
-        from ZebrafishAnalysis import ZebrafishAnalysisLogic
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
 
-        logic = ZebrafishAnalysisLogic()
+        logic = ZebrafishEmbryoAnalyzerLogic()
         logic.getParameterNode = MagicMock(return_value=MagicMock())
 
         result = logic.update_current_image_node({"original": None}, 22.99)
@@ -880,9 +880,9 @@ def test_update_current_image_node_none_result_returns_none():
     """update_current_image_node returns None when result itself is None."""
     r = _run("""
         from unittest.mock import MagicMock
-        from ZebrafishAnalysis import ZebrafishAnalysisLogic
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
 
-        logic = ZebrafishAnalysisLogic()
+        logic = ZebrafishEmbryoAnalyzerLogic()
         logic.getParameterNode = MagicMock(return_value=MagicMock())
 
         result = logic.update_current_image_node(None, 22.99)
@@ -897,16 +897,16 @@ def test_update_current_image_node_wraps_exception_as_mrml_error():
     """Unexpected exceptions are wrapped as MRMLAdapterError."""
     r = _run("""
         from unittest.mock import patch, MagicMock
-        from ZebrafishAnalysis import ZebrafishAnalysisLogic
-        from ZebrafishAnalysisLib.errors import MRMLAdapterError
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+        from ZebrafishEmbryoAnalyzerLib.errors import MRMLAdapterError
         import numpy as np
 
-        logic = ZebrafishAnalysisLogic()
+        logic = ZebrafishEmbryoAnalyzerLogic()
         logic.getParameterNode = MagicMock(return_value=MagicMock())
 
         fake_image = np.zeros((10, 10, 3), dtype="uint8")
 
-        with patch("ZebrafishAnalysisLib.mrml.get_or_create_image_node",
+        with patch("ZebrafishEmbryoAnalyzerLib.mrml.get_or_create_image_node",
                    side_effect=RuntimeError("mrml broke")):
             try:
                 logic.update_current_image_node({"original": fake_image}, 22.99)
@@ -957,7 +957,7 @@ def test_update_image_node_calls_set_dimensions_with_correct_values():
         sys.modules["vtk.util.numpy_support"] = fake_numpy_support
 
         # Force reimport of mrml to pick up fake vtk
-        import ZebrafishAnalysisLib.mrml as mrml_mod
+        import ZebrafishEmbryoAnalyzerLib.mrml as mrml_mod
         importlib.reload(mrml_mod)
 
         image = np.zeros((10, 8, 3), dtype="uint8")

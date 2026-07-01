@@ -18,11 +18,11 @@ import pytest
 
 _MODULE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "ZebrafishAnalysis",
+    "ZebrafishEmbryoAnalyzer",
 )
-_MAIN_PY   = os.path.join(_MODULE_DIR, "ZebrafishAnalysis.py")
-_WIDGET_PY = os.path.join(_MODULE_DIR, "ZebrafishAnalysisLib", "widget.py")
-_DETAIL_PY = os.path.join(_MODULE_DIR, "ZebrafishAnalysisLib", "detail_tab.py")
+_MAIN_PY   = os.path.join(_MODULE_DIR, "ZebrafishEmbryoAnalyzer.py")
+_WIDGET_PY = os.path.join(_MODULE_DIR, "ZebrafishEmbryoAnalyzerLib", "widget.py")
+_DETAIL_PY = os.path.join(_MODULE_DIR, "ZebrafishEmbryoAnalyzerLib", "detail_tab.py")
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +41,7 @@ sys.modules["ctk"] = MagicMock()
 sys.modules["slicer"] = MagicMock()
 
 # ScriptedLoadableModuleWidget must be a distinct class (not object itself) so
-# that class ZebrafishAnalysisWidget(ScriptedLoadableModuleWidget, VTKObservationMixin)
+# that class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservationMixin)
 # can resolve its MRO — Python C3 rejects (object, SomeSubclassOfObject).
 class _BaseWidget:
     pass
@@ -74,7 +74,7 @@ sys.modules["slicer.ScriptedLoadableModule"] = types.SimpleNamespace(
 sys.modules["slicer.util"] = types.SimpleNamespace(
     VTKObservationMixin=_TrackingMixin,
 )
-# vtk is imported at the top of ZebrafishAnalysis.py
+# vtk is imported at the top of ZebrafishEmbryoAnalyzer.py
 _vtk = types.ModuleType("vtk")
 _vtk.vtkCommand = types.SimpleNamespace(ModifiedEvent=33)
 sys.modules["vtk"] = _vtk
@@ -83,7 +83,7 @@ import vtk  # noqa
 
 
 # DetailTab inherits from qt.QWidget, so qt.QWidget must be a real Python class
-# for object.__new__(DetailTab) to work.  The ZebrafishAnalysisWidget tests only
+# for object.__new__(DetailTab) to work.  The ZebrafishEmbryoAnalyzerWidget tests only
 # need qt as a MagicMock (no actual subclassing from qt types).
 _DETAIL_STUB = """\
 import sys, types
@@ -200,8 +200,8 @@ def test_vtk_observation_mixin_imported_from_slicer_util():
 
 
 def test_widget_inherits_vtk_observation_mixin():
-    """ZebrafishAnalysisWidget must list VTKObservationMixin as a direct base."""
-    bases = _class_base_names(_MAIN_PY, "ZebrafishAnalysisWidget")
+    """ZebrafishEmbryoAnalyzerWidget must list VTKObservationMixin as a direct base."""
+    bases = _class_base_names(_MAIN_PY, "ZebrafishEmbryoAnalyzerWidget")
     assert "VTKObservationMixin" in bases, (
         f"VTKObservationMixin missing from bases: {bases}"
     )
@@ -211,28 +211,28 @@ def test_setup_registers_start_close_event_observer():
     """setup() (via _register_scene_observers) must reference StartCloseEvent."""
     # The call may be in the extracted helper method; check the whole class.
     src = open(_MAIN_PY).read()
-    cls = _parse_class(_MAIN_PY, "ZebrafishAnalysisWidget")
+    cls = _parse_class(_MAIN_PY, "ZebrafishEmbryoAnalyzerWidget")
     lines = src.splitlines()
     cls_src = "\n".join(lines[cls.lineno - 1 : cls.end_lineno])
     assert "StartCloseEvent" in cls_src, (
-        "ZebrafishAnalysisWidget must register StartCloseEvent"
+        "ZebrafishEmbryoAnalyzerWidget must register StartCloseEvent"
     )
 
 
 def test_setup_registers_end_close_event_observer():
     """setup() (via _register_scene_observers) must reference EndCloseEvent."""
     src = open(_MAIN_PY).read()
-    cls = _parse_class(_MAIN_PY, "ZebrafishAnalysisWidget")
+    cls = _parse_class(_MAIN_PY, "ZebrafishEmbryoAnalyzerWidget")
     lines = src.splitlines()
     cls_src = "\n".join(lines[cls.lineno - 1 : cls.end_lineno])
     assert "EndCloseEvent" in cls_src, (
-        "ZebrafishAnalysisWidget must register EndCloseEvent"
+        "ZebrafishEmbryoAnalyzerWidget must register EndCloseEvent"
     )
 
 
 def test_cleanup_calls_remove_observers():
     """cleanup() must call removeObservers() — the real Slicer VTKObservationMixin API."""
-    body = _method_source(_MAIN_PY, "ZebrafishAnalysisWidget", "cleanup")
+    body = _method_source(_MAIN_PY, "ZebrafishEmbryoAnalyzerWidget", "cleanup")
     assert "removeObservers" in body, "cleanup() must call removeObservers()"
     assert "removeAllObservers" not in body, (
         "removeAllObservers() does not exist in Slicer VTKObservationMixin; use removeObservers()"
@@ -241,7 +241,7 @@ def test_cleanup_calls_remove_observers():
 
 def test_cleanup_guards_main_attribute():
     """cleanup() must guard self._main access so it is safe before setup()."""
-    body = _method_source(_MAIN_PY, "ZebrafishAnalysisWidget", "cleanup")
+    body = _method_source(_MAIN_PY, "ZebrafishEmbryoAnalyzerWidget", "cleanup")
     if "_main" in body:
         assert ("is not None" in body or "hasattr" in body), (
             "cleanup() accesses self._main without a None/hasattr guard"
@@ -249,22 +249,22 @@ def test_cleanup_guards_main_attribute():
 
 
 def test_enter_method_is_defined():
-    """enter() must be defined on ZebrafishAnalysisWidget."""
-    assert _has_method(_MAIN_PY, "ZebrafishAnalysisWidget", "enter"), (
-        "ZebrafishAnalysisWidget must define enter()"
+    """enter() must be defined on ZebrafishEmbryoAnalyzerWidget."""
+    assert _has_method(_MAIN_PY, "ZebrafishEmbryoAnalyzerWidget", "enter"), (
+        "ZebrafishEmbryoAnalyzerWidget must define enter()"
     )
 
 
 def test_exit_method_is_defined():
-    """exit() must be defined on ZebrafishAnalysisWidget."""
-    assert _has_method(_MAIN_PY, "ZebrafishAnalysisWidget", "exit"), (
-        "ZebrafishAnalysisWidget must define exit()"
+    """exit() must be defined on ZebrafishEmbryoAnalyzerWidget."""
+    assert _has_method(_MAIN_PY, "ZebrafishEmbryoAnalyzerWidget", "exit"), (
+        "ZebrafishEmbryoAnalyzerWidget must define exit()"
     )
 
 
 def test_scene_start_close_handler_calls_cancel_workers():
     """_on_scene_start_close() must cancel active async operations early."""
-    body = _method_source(_MAIN_PY, "ZebrafishAnalysisWidget", "_on_scene_start_close")
+    body = _method_source(_MAIN_PY, "ZebrafishEmbryoAnalyzerWidget", "_on_scene_start_close")
     assert "_cancel_workers" in body, (
         "_on_scene_start_close() must call _cancel_workers() on self._main"
     )
@@ -272,29 +272,29 @@ def test_scene_start_close_handler_calls_cancel_workers():
 
 def test_scene_end_close_handler_calls_reset():
     """_on_scene_end_close() must call reset_for_scene_close() on self._main."""
-    body = _method_source(_MAIN_PY, "ZebrafishAnalysisWidget", "_on_scene_end_close")
+    body = _method_source(_MAIN_PY, "ZebrafishEmbryoAnalyzerWidget", "_on_scene_end_close")
     assert "reset_for_scene_close" in body, (
         "_on_scene_end_close() must call self._main.reset_for_scene_close()"
     )
 
 
 def test_main_widget_has_cancel_workers():
-    """ZebrafishAnalysisMainWidget must define _cancel_workers()."""
-    assert _has_method(_WIDGET_PY, "ZebrafishAnalysisMainWidget", "_cancel_workers"), (
-        "ZebrafishAnalysisMainWidget must define _cancel_workers()"
+    """ZebrafishEmbryoAnalyzerMainWidget must define _cancel_workers()."""
+    assert _has_method(_WIDGET_PY, "ZebrafishEmbryoAnalyzerMainWidget", "_cancel_workers"), (
+        "ZebrafishEmbryoAnalyzerMainWidget must define _cancel_workers()"
     )
 
 
 def test_main_widget_has_reset_for_scene_close():
-    """ZebrafishAnalysisMainWidget must define reset_for_scene_close()."""
-    assert _has_method(_WIDGET_PY, "ZebrafishAnalysisMainWidget", "reset_for_scene_close"), (
-        "ZebrafishAnalysisMainWidget must define reset_for_scene_close()"
+    """ZebrafishEmbryoAnalyzerMainWidget must define reset_for_scene_close()."""
+    assert _has_method(_WIDGET_PY, "ZebrafishEmbryoAnalyzerMainWidget", "reset_for_scene_close"), (
+        "ZebrafishEmbryoAnalyzerMainWidget must define reset_for_scene_close()"
     )
 
 
 def test_main_widget_cleanup_cleans_detail_tab():
-    """ZebrafishAnalysisMainWidget.cleanup() must clean transient detail state."""
-    body = _method_source(_WIDGET_PY, "ZebrafishAnalysisMainWidget", "cleanup")
+    """ZebrafishEmbryoAnalyzerMainWidget.cleanup() must clean transient detail state."""
+    body = _method_source(_WIDGET_PY, "ZebrafishEmbryoAnalyzerMainWidget", "cleanup")
     assert "self._detail.cleanup" in body
 
 
@@ -336,7 +336,7 @@ def test_detail_tab_reset_has_no_worker_timer_logic():
 
 def test_setup_no_prewarm_timer():
     """setup() must not create a prewarm import timer."""
-    body = _method_source(_MAIN_PY, "ZebrafishAnalysisWidget", "setup")
+    body = _method_source(_MAIN_PY, "ZebrafishEmbryoAnalyzerWidget", "setup")
     assert "_prewarm_timer" not in body, (
         "setup() must not assign self._prewarm_timer"
     )
@@ -344,7 +344,7 @@ def test_setup_no_prewarm_timer():
 
 def test_cleanup_no_prewarm_timer():
     """cleanup() must not reference _prewarm_timer."""
-    body = _method_source(_MAIN_PY, "ZebrafishAnalysisWidget", "cleanup")
+    body = _method_source(_MAIN_PY, "ZebrafishEmbryoAnalyzerWidget", "cleanup")
     assert "_prewarm_timer" not in body, (
         "cleanup() must not reference _prewarm_timer — it was removed in G1 Redux"
     )
@@ -358,10 +358,10 @@ def test_reset_for_scene_close_clears_results_and_paths():
     """reset_for_scene_close() clears _results, _image_paths and _excluded."""
     r = _run("""
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
 
         # Bypass __init__ (needs Qt layout); set all referenced attributes manually.
-        w = object.__new__(ZebrafishAnalysisMainWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
         w._results     = [{"filename": "a.png"}, {"filename": "b.png"}]
         w._image_paths = ["/a.png", "/b.png"]
         w._excluded    = {"b.png"}
@@ -390,9 +390,9 @@ def test_reset_for_scene_close_calls_detail_reset_and_clears_gallery():
     """reset_for_scene_close() calls detail.reset() and gallery.populate([])."""
     r = _run("""
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
 
-        w = object.__new__(ZebrafishAnalysisMainWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
         w._results     = [{"filename": "a.png"}]
         w._image_paths = ["/a.png"]
         w._excluded    = set()
@@ -425,9 +425,9 @@ def test_cancel_workers_replaces_results_and_invalidates_cache():
     """_cancel_workers() replaces _results and calls detail.invalidate_cache()."""
     r = _run("""
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
 
-        w = object.__new__(ZebrafishAnalysisMainWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
         w._results = [{"filename": "a.png"}]
         w._detail  = MagicMock()
         w._run_stack = MagicMock()
@@ -448,10 +448,10 @@ def test_cancel_workers_replaces_results_and_invalidates_cache():
 def test_cleanup_is_safe_before_setup():
     """cleanup() must not raise if called before setup() (_main is None)."""
     r = _run("""
-        from ZebrafishAnalysis import ZebrafishAnalysisWidget
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerWidget
 
         # Create without calling __init__ or setup()
-        w = object.__new__(ZebrafishAnalysisWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerWidget)
         w._main = None
         w._parameterNode = None
         w._obs  = []   # _TrackingMixin state (normally set by __init__)
@@ -467,9 +467,9 @@ def test_cleanup_is_safe_before_setup():
 def test_cleanup_clears_registered_observers():
     """cleanup() calls removeObservers() so all scene observers are deregistered."""
     r = _run("""
-        from ZebrafishAnalysis import ZebrafishAnalysisWidget
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerWidget
 
-        w = object.__new__(ZebrafishAnalysisWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerWidget)
         w._main = None
         w._parameterNode = None
         # Simulate three observers registered (StartClose, EndClose, EndImport)
@@ -512,9 +512,9 @@ def test_observer_registration_is_idempotent():
     """_register_scene_observers() must not add duplicate observers on repeated calls."""
     r = _run("""
         import slicer
-        from ZebrafishAnalysis import ZebrafishAnalysisWidget
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerWidget
 
-        w = object.__new__(ZebrafishAnalysisWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerWidget)
         w._obs = []
         w._sceneObserversRegistered = False
 
@@ -538,10 +538,10 @@ def test_observer_registration_is_idempotent():
 def test_cleanup_resets_observer_registration_flag():
     """cleanup() resets _sceneObserversRegistered so a subsequent setup can re-register."""
     r = _run("""
-        from ZebrafishAnalysis import ZebrafishAnalysisWidget
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerWidget
         import slicer
 
-        w = object.__new__(ZebrafishAnalysisWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerWidget)
         w._main = None
         w._parameterNode = None
         w._obs  = [1001, 1002, 1003]
@@ -569,7 +569,7 @@ def test_detail_tab_cleanup_invalidates_cache():
     """DetailTab.cleanup() calls invalidate_cache() which clears the pixmap cache."""
     r = _run_detail("""
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.detail_tab import DetailTab
+        from ZebrafishEmbryoAnalyzerLib.detail_tab import DetailTab
 
         d = object.__new__(DetailTab)
         d._cache = {"a": "pixmap", "b": "pixmap2"}
@@ -587,7 +587,7 @@ def test_detail_tab_cleanup_is_idempotent():
     """DetailTab.cleanup() is safe to call twice — second call must not raise."""
     r = _run_detail("""
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.detail_tab import DetailTab
+        from ZebrafishEmbryoAnalyzerLib.detail_tab import DetailTab
 
         d = object.__new__(DetailTab)
         d._cache = {}
@@ -604,7 +604,7 @@ def test_detail_tab_reset_shows_placeholder():
     """DetailTab.reset() must call show_placeholder() on the view — clears visible image."""
     r = _run_detail("""
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.detail_tab import DetailTab
+        from ZebrafishEmbryoAnalyzerLib.detail_tab import DetailTab
 
         d = object.__new__(DetailTab)
         d._cache   = {"old": "pixmap"}
@@ -641,7 +641,7 @@ def test_detail_tab_reset_clears_texts_and_labels():
     """DetailTab.reset() must clear metrics_label and nav_label."""
     r = _run_detail("""
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.detail_tab import DetailTab
+        from ZebrafishEmbryoAnalyzerLib.detail_tab import DetailTab
 
         d = object.__new__(DetailTab)
         d._cache = {}
@@ -676,7 +676,7 @@ def test_detail_tab_reset_disables_navigation_and_clears_index():
     """DetailTab.reset() disables both nav buttons and resets _current_idx to 0."""
     r = _run_detail("""
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.detail_tab import DetailTab
+        from ZebrafishEmbryoAnalyzerLib.detail_tab import DetailTab
 
         d = object.__new__(DetailTab)
         d._cache = {}
@@ -712,7 +712,7 @@ def test_detail_tab_reset_invalidates_cache_without_worker_state():
     """DetailTab.reset() clears cache without requiring worker bookkeeping."""
     r = _run_detail("""
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.detail_tab import DetailTab
+        from ZebrafishEmbryoAnalyzerLib.detail_tab import DetailTab
 
         d = object.__new__(DetailTab)
         d._cache   = {0: "pixmap_a", 1: "pixmap_b"}
@@ -749,7 +749,7 @@ def test_detail_tab_show_result_builds_selected_pixmap_only():
     """show_result() builds the selected pixmap and does not require neighbour preload."""
     r = _run_detail("""
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.detail_tab import DetailTab
+        from ZebrafishEmbryoAnalyzerLib.detail_tab import DetailTab
 
         d = object.__new__(DetailTab)
         d._cache   = {}
@@ -771,7 +771,7 @@ def test_detail_tab_show_result_builds_selected_pixmap_only():
         d._chk_exclude = MagicMock()
         d._current_filename = None
 
-        import ZebrafishAnalysisLib.detail_tab as _dt
+        import ZebrafishEmbryoAnalyzerLib.detail_tab as _dt
         _dt._build_rgb_array = lambda result: result["rgb"]
         fake_pixmap = MagicMock()
         _dt._numpy_to_qpixmap = lambda arr: fake_pixmap
@@ -791,7 +791,7 @@ def test_detail_tab_reset_does_not_reference_poll_timer():
     """DetailTab.reset() does not use the removed poll timer."""
     r = _run_detail("""
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.detail_tab import DetailTab
+        from ZebrafishEmbryoAnalyzerLib.detail_tab import DetailTab
 
         d = object.__new__(DetailTab)
         d._cache = {}
@@ -825,7 +825,7 @@ def test_detail_tab_accepts_new_results_after_reset():
     """After reset(), show_result() must update internal state with fresh results."""
     r = _run_detail("""
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.detail_tab import DetailTab
+        from ZebrafishEmbryoAnalyzerLib.detail_tab import DetailTab
 
         from unittest.mock import patch as _patch
         d = object.__new__(DetailTab)
@@ -877,9 +877,9 @@ def test_no_new_mrml_node_references():
     """D1 must not introduce MRML node references in setup, enter, exit, or cleanup."""
     for method in ("setup", "enter", "exit", "cleanup", "_on_scene_start_close",
                    "_on_scene_end_close", "_register_scene_observers"):
-        if not _has_method(_MAIN_PY, "ZebrafishAnalysisWidget", method):
+        if not _has_method(_MAIN_PY, "ZebrafishEmbryoAnalyzerWidget", method):
             continue
-        body = _method_source(_MAIN_PY, "ZebrafishAnalysisWidget", method)
+        body = _method_source(_MAIN_PY, "ZebrafishEmbryoAnalyzerWidget", method)
         mrml_refs = re.findall(r'\bvtkMRML\w+\b', body)
         assert not mrml_refs, (
             f"{method}() introduces MRML node references: {mrml_refs} — D1 must not add MRML nodes"
@@ -895,7 +895,7 @@ def test_widget_init_has_no_set_layout_call():
     import ast
     from pathlib import Path
     source = (Path(__file__).parent.parent /
-              "ZebrafishAnalysis" / "ZebrafishAnalysisLib" / "widget.py").read_text()
+              "ZebrafishEmbryoAnalyzer" / "ZebrafishEmbryoAnalyzerLib" / "widget.py").read_text()
     tree = ast.parse(source)
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "__init__":
@@ -911,7 +911,7 @@ def test_apply_shell_layout_method_exists():
     import ast
     from pathlib import Path
     source = (Path(__file__).parent.parent /
-              "ZebrafishAnalysis" / "ZebrafishAnalysisLib" / "widget.py").read_text()
+              "ZebrafishEmbryoAnalyzer" / "ZebrafishEmbryoAnalyzerLib" / "widget.py").read_text()
     tree = ast.parse(source)
     names = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
     assert "apply_shell_layout" in names
@@ -939,9 +939,9 @@ def test_restore_shell_layout_safe_without_prior_apply():
     sys.modules["slicer"] = slicer_mock
 
     try:
-        import ZebrafishAnalysisLib.widget as _wm
+        import ZebrafishEmbryoAnalyzerLib.widget as _wm
         _wm = importlib.reload(_wm)
-        w = object.__new__(_wm.ZebrafishAnalysisMainWidget)
+        w = object.__new__(_wm.ZebrafishEmbryoAnalyzerMainWidget)
         w._saved_layout_id = None
         w._saved_central_visible = None
         w._saved_pydock_floating = None
@@ -958,11 +958,11 @@ def test_restore_shell_layout_safe_without_prior_apply():
 
 
 def test_enter_calls_apply_shell_layout():
-    """ZebrafishAnalysisWidget.enter() must call apply_shell_layout on _main."""
+    """ZebrafishEmbryoAnalyzerWidget.enter() must call apply_shell_layout on _main."""
     import ast
     from pathlib import Path
     source = (Path(__file__).parent.parent /
-              "ZebrafishAnalysis" / "ZebrafishAnalysis.py").read_text()
+              "ZebrafishEmbryoAnalyzer" / "ZebrafishEmbryoAnalyzer.py").read_text()
     tree = ast.parse(source)
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "enter":
@@ -975,11 +975,11 @@ def test_enter_calls_apply_shell_layout():
 
 
 def test_exit_calls_restore_shell_layout():
-    """ZebrafishAnalysisWidget.exit() must call restore_shell_layout on _main."""
+    """ZebrafishEmbryoAnalyzerWidget.exit() must call restore_shell_layout on _main."""
     import ast
     from pathlib import Path
     source = (Path(__file__).parent.parent /
-              "ZebrafishAnalysis" / "ZebrafishAnalysis.py").read_text()
+              "ZebrafishEmbryoAnalyzer" / "ZebrafishEmbryoAnalyzer.py").read_text()
     tree = ast.parse(source)
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "exit":
@@ -995,7 +995,7 @@ def test_cleanup_calls_restore_shell_layout():
     """cleanup() must call restore_shell_layout() so reload does not corrupt saved state."""
     import ast
     from pathlib import Path
-    source = (Path(__file__).parent.parent / "ZebrafishAnalysis" / "ZebrafishAnalysis.py").read_text()
+    source = (Path(__file__).parent.parent / "ZebrafishEmbryoAnalyzer" / "ZebrafishEmbryoAnalyzer.py").read_text()
     tree = ast.parse(source)
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "cleanup":
@@ -1004,7 +1004,7 @@ def test_cleanup_calls_restore_shell_layout():
                 "cleanup() must call restore_shell_layout() to handle module reload correctly"
             )
             return
-    assert False, "cleanup() method not found in ZebrafishAnalysis.py"
+    assert False, "cleanup() method not found in ZebrafishEmbryoAnalyzer.py"
 
 
 def test_apply_shell_layout_is_idempotent():
@@ -1012,7 +1012,7 @@ def test_apply_shell_layout_is_idempotent():
     import ast
     from pathlib import Path
     source = (Path(__file__).parent.parent /
-              "ZebrafishAnalysis" / "ZebrafishAnalysisLib" / "widget.py").read_text()
+              "ZebrafishEmbryoAnalyzer" / "ZebrafishEmbryoAnalyzerLib" / "widget.py").read_text()
     tree = ast.parse(source)
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "apply_shell_layout":
@@ -1029,7 +1029,7 @@ def test_setup_calls_apply_shell_layout():
     import ast
     from pathlib import Path
     source = (Path(__file__).parent.parent /
-              "ZebrafishAnalysis" / "ZebrafishAnalysis.py").read_text()
+              "ZebrafishEmbryoAnalyzer" / "ZebrafishEmbryoAnalyzer.py").read_text()
     tree = ast.parse(source)
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "setup":

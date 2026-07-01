@@ -157,12 +157,12 @@ def _entry(name="model.pth", data=b"data", **extra):
 @pytest.fixture
 def md(tmp_path, monkeypatch):
     import importlib
-    import ZebrafishAnalysisLib.model_downloader as module
+    import ZebrafishEmbryoAnalyzerLib.model_downloader as module
 
     module = importlib.reload(module)
     monkeypatch.setattr(module, "_CACHE_DIR", tmp_path)
     monkeypatch.setattr(
-        "ZebrafishAnalysisLib.model_manifest._CACHE_DIR",
+        "ZebrafishEmbryoAnalyzerLib.model_manifest._CACHE_DIR",
         tmp_path,
         raising=False,
     )
@@ -194,7 +194,7 @@ def test_download_models_guard_returns_true_in_testing_mode(monkeypatch):
     slicer.app.testingEnabled.return_value = True
     monkeypatch.setitem(sys.modules, "slicer", slicer)
 
-    from ZebrafishAnalysisLib.model_downloader import download_models
+    from ZebrafishEmbryoAnalyzerLib.model_downloader import download_models
 
     assert download_models([_entry()]) is True
     slicer.util.mainWindow.assert_not_called()

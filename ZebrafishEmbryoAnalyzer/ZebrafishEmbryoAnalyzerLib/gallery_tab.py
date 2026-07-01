@@ -69,7 +69,7 @@ class GalleryTab(qt.QWidget):
         self._cells = []
         self._n_cols = 0
 
-        from ZebrafishAnalysisLib.overlay import make_overlay
+        from ZebrafishEmbryoAnalyzerLib.overlay import make_overlay
 
         for i in range(len(results)):
             r = results[i]
@@ -125,7 +125,7 @@ class GalleryTab(qt.QWidget):
         """Update a single thumbnail — builds thumb from full-res rgb on main thread."""
         if index >= len(self._thumbnails):
             return
-        from ZebrafishAnalysisLib.overlay import make_overlay
+        from ZebrafishEmbryoAnalyzerLib.overlay import make_overlay
         stub = {"original": rgb_array, "mask": None, "length": None, "error": None}
         thumb_rgb = make_overlay(stub, thumbnail_size=THUMB_SIZE)
         self.update_thumb_prebuilt(index, thumb_rgb)

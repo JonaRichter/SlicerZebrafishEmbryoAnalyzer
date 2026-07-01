@@ -1,11 +1,11 @@
 """
-Logic layer for the ZebrafishAnalysis Slicer extension.
+Logic layer for the ZebrafishEmbryoAnalyzer Slicer extension.
 
-Wraps ZebrafishAnalysisCore functions and provides a clean public API:
+Wraps ZebrafishEmbryoAnalyzerCore functions and provides a clean public API:
   - analyse_images()   — batch segmentation + measurements
   - detect_scalebar()  — thin wrapper around core scalebar
 
-ZebrafishAnalysisCore and ZebrafishAnalysisLib import as packages because Slicer
+ZebrafishEmbryoAnalyzerCore and ZebrafishEmbryoAnalyzerLib import as packages because Slicer
 puts the module directory on sys.path; no path manipulation here.
 Export functions (export_excel, export_csv) live in export.py.
 """
@@ -44,7 +44,7 @@ def _install_model_cache():
     if _original_load_unet is not None:
         return
     import numpy as np  # noqa: F401 — must precede torch to enable numpy bridge  # noqa: F401
-    import ZebrafishAnalysisCore.seg as _seg_module
+    import ZebrafishEmbryoAnalyzerCore.seg as _seg_module
     # On Slicer module reload, logic.py globals reset but seg._load_unet_model
     # still holds the wrapper from the old instance → would recurse infinitely.
     # Stash the true original on seg so it survives logic.py reloads.
@@ -76,9 +76,9 @@ def preload_models(params: dict) -> None:
     deserialization synchronously in the current process.
     """
     _install_model_cache()
-    from ZebrafishAnalysisCore.length import load_model
-    from ZebrafishAnalysisLib.errors import ModelNotCachedError
-    from ZebrafishAnalysisLib.model_manifest import MODEL_SETS, get_cached_path, MODELS
+    from ZebrafishEmbryoAnalyzerCore.length import load_model
+    from ZebrafishEmbryoAnalyzerLib.errors import ModelNotCachedError
+    from ZebrafishEmbryoAnalyzerLib.model_manifest import MODEL_SETS, get_cached_path, MODELS
 
     model_id = params.get("model_id", "general")
     model_set = MODEL_SETS.get(model_id, MODEL_SETS["general"])
@@ -161,7 +161,7 @@ def detect_scalebar(image_path: str, label_um: float | None = None) -> dict:
     if the image cannot be read.
     """
     import cv2  # deferred: heavy compiled extension, only needed at call time
-    from ZebrafishAnalysisCore.scalebar import detect_scalebar as _detect_scalebar
+    from ZebrafishEmbryoAnalyzerCore.scalebar import detect_scalebar as _detect_scalebar
     img_bgr = cv2.imread(image_path)
     if img_bgr is None:
         return {"success": False, "bar_found": False,
@@ -198,15 +198,15 @@ def analyse_images(image_paths: list, params: dict,
     import cv2  # deferred: heavy compiled extension, only needed at call time
     import numpy as np  # deferred: only needed inside analyse_images
     _install_model_cache()
-    from ZebrafishAnalysisCore.seg import segmentation_pipeline
-    from ZebrafishAnalysisCore.length import (
+    from ZebrafishEmbryoAnalyzerCore.seg import segmentation_pipeline
+    from ZebrafishEmbryoAnalyzerCore.length import (
         load_model,
         tube_length_border2border,
         classification_curvature,
         compute_eye_metrics,
     )
-    from ZebrafishAnalysisLib.errors import ModelNotCachedError
-    from ZebrafishAnalysisLib.model_manifest import MODEL_SETS, get_cached_path, MODELS
+    from ZebrafishEmbryoAnalyzerLib.errors import ModelNotCachedError
+    from ZebrafishEmbryoAnalyzerLib.model_manifest import MODEL_SETS, get_cached_path, MODELS
 
     um_per_px = float(params.get("um_per_px", 22.99))
     include_eyes = params.get("eyes", False)
@@ -399,7 +399,7 @@ def apply_manual_correction(result, point1_orig, point2_orig, params=None):
         return result
 
     import numpy as np  # deferred: only needed at call time
-    from ZebrafishAnalysisCore.manual import compute_manual_length
+    from ZebrafishEmbryoAnalyzerCore.manual import compute_manual_length
     # Snapshot auto values on first correction only
     if "_auto_length" not in result:
         result["_auto_length"] = result.get("length")

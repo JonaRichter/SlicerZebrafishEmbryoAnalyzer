@@ -17,17 +17,17 @@ import pytest
 
 _MODULE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "ZebrafishAnalysis",
+    "ZebrafishEmbryoAnalyzer",
 )
-_MAIN_PY   = os.path.join(_MODULE_DIR, "ZebrafishAnalysis.py")
-_WIDGET_PY = os.path.join(_MODULE_DIR, "ZebrafishAnalysisLib", "widget.py")
+_MAIN_PY   = os.path.join(_MODULE_DIR, "ZebrafishEmbryoAnalyzer.py")
+_WIDGET_PY = os.path.join(_MODULE_DIR, "ZebrafishEmbryoAnalyzerLib", "widget.py")
 
 
 # ---------------------------------------------------------------------------
 # Stubs
 # ---------------------------------------------------------------------------
 
-# Stub for tests that import ZebrafishAnalysisWidget (needs vtk + tracking mixin)
+# Stub for tests that import ZebrafishEmbryoAnalyzerWidget (needs vtk + tracking mixin)
 _WIDGET_STUB = """\
 import sys, types
 from unittest.mock import MagicMock
@@ -73,7 +73,7 @@ sys.modules["vtk"] = _vtk
 import vtk  # noqa
 """
 
-# Stub for tests that import ZebrafishAnalysisMainWidget only (no vtk needed)
+# Stub for tests that import ZebrafishEmbryoAnalyzerMainWidget only (no vtk needed)
 _MAIN_WIDGET_STUB = """\
 import sys, types
 from unittest.mock import MagicMock
@@ -161,7 +161,7 @@ def test_widget_has_update_node_method():
 
 def test_main_py_imports_vtk():
     src = _src(_MAIN_PY)
-    assert re.search(r"^import\s+vtk", src, re.M), "ZebrafishAnalysis.py must import vtk"
+    assert re.search(r"^import\s+vtk", src, re.M), "ZebrafishEmbryoAnalyzer.py must import vtk"
 
 
 def test_main_py_has_initialize_parameter_node():
@@ -192,7 +192,7 @@ def test_no_numpy_array_in_param_defaults():
 def test_param_defaults_match_ui_defaults():
     """PARAM_DEFAULTS string values must match the actual widget control defaults."""
     r = _run(_MAIN_WIDGET_STUB, """
-        from ZebrafishAnalysisLib.widget import PARAM_DEFAULTS
+        from ZebrafishEmbryoAnalyzerLib.widget import PARAM_DEFAULTS
 
         assert PARAM_DEFAULTS.get("lengthEnabled")               == "true",  PARAM_DEFAULTS
         assert PARAM_DEFAULTS.get("curvatureEnabled")            == "true",  PARAM_DEFAULTS
@@ -211,7 +211,7 @@ def test_param_defaults_match_ui_defaults():
 def test_param_defaults_has_exactly_eight_keys():
     """PARAM_DEFAULTS must have exactly the eight expected keys — no extras."""
     r = _run(_MAIN_WIDGET_STUB, """
-        from ZebrafishAnalysisLib.widget import PARAM_DEFAULTS
+        from ZebrafishEmbryoAnalyzerLib.widget import PARAM_DEFAULTS
 
         expected = {
             "lengthEnabled", "curvatureEnabled", "ratioEnabled",
@@ -235,7 +235,7 @@ def test_update_gui_applies_bool_and_float_values():
     """updateGUIFromParameterNode sets all controls from non-default stored values."""
     r = _run(_MAIN_WIDGET_STUB, """
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget, _MODEL_BY_ID
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget, _MODEL_BY_ID
 
         node = _FakeNode({
             "lengthEnabled":               "false",
@@ -248,7 +248,7 @@ def test_update_gui_applies_bool_and_float_values():
             "selectedModelId":             "desy",
         })
 
-        w = object.__new__(ZebrafishAnalysisMainWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
         w._updatingGUIFromParameterNode = False
         w._chk_length    = MagicMock()
         w._chk_curvature = MagicMock()
@@ -283,11 +283,11 @@ def test_update_gui_unknown_model_id_falls_back_to_first():
     """updateGUIFromParameterNode falls back to index 0 for an unknown model ID."""
     r = _run(_MAIN_WIDGET_STUB, """
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
 
         node = _FakeNode({"selectedModelId": "unknown_model_xyz"})
 
-        w = object.__new__(ZebrafishAnalysisMainWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
         w._updatingGUIFromParameterNode = False
         w._chk_length    = MagicMock()
         w._chk_curvature = MagicMock()
@@ -314,11 +314,11 @@ def test_update_gui_missing_params_use_defaults():
     """updateGUIFromParameterNode uses Python defaults for parameters not in the node."""
     r = _run(_MAIN_WIDGET_STUB, """
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
 
         node = _FakeNode()  # empty node
 
-        w = object.__new__(ZebrafishAnalysisMainWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
         w._updatingGUIFromParameterNode = False
         w._chk_length    = MagicMock()
         w._chk_curvature = MagicMock()
@@ -348,9 +348,9 @@ def test_update_gui_none_node_is_safe():
     """updateGUIFromParameterNode(None) must not raise."""
     r = _run(_MAIN_WIDGET_STUB, """
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
 
-        w = object.__new__(ZebrafishAnalysisMainWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
         w._updatingGUIFromParameterNode = False
         # No controls needed — must return early without touching anything.
         w.updateGUIFromParameterNode(None)
@@ -368,11 +368,11 @@ def test_update_node_from_gui_writes_all_params():
     """updateParameterNodeFromGUI must write all setting control values to the node."""
     r = _run(_MAIN_WIDGET_STUB, """
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
 
         node = _FakeNode()
 
-        w = object.__new__(ZebrafishAnalysisMainWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
         w._updatingGUIFromParameterNode = False
         w._chk_length    = MagicMock(); w._chk_length.isChecked.return_value    = False
         w._chk_curvature = MagicMock(); w._chk_curvature.isChecked.return_value = True
@@ -403,11 +403,11 @@ def test_update_node_from_gui_invalid_model_id_falls_back():
     """updateParameterNodeFromGUI stores 'general' if currentData is not a known model ID."""
     r = _run(_MAIN_WIDGET_STUB, """
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
 
         node = _FakeNode()
 
-        w = object.__new__(ZebrafishAnalysisMainWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
         w._updatingGUIFromParameterNode = False
         w._chk_length    = MagicMock(); w._chk_length.isChecked.return_value    = True
         w._chk_curvature = MagicMock(); w._chk_curvature.isChecked.return_value = True
@@ -431,11 +431,11 @@ def test_update_node_guarded_during_gui_update():
     """updateParameterNodeFromGUI must be a no-op when _updatingGUIFromParameterNode is True."""
     r = _run(_MAIN_WIDGET_STUB, """
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
 
         node = _FakeNode()
 
-        w = object.__new__(ZebrafishAnalysisMainWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
         w._updatingGUIFromParameterNode = True  # guard active
         w._chk_length = MagicMock()
         w._chk_length.isChecked.return_value = False
@@ -454,9 +454,9 @@ def test_update_node_none_is_safe():
     """updateParameterNodeFromGUI(None) must not raise."""
     r = _run(_MAIN_WIDGET_STUB, """
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
 
-        w = object.__new__(ZebrafishAnalysisMainWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
         w._updatingGUIFromParameterNode = False
         w.updateParameterNodeFromGUI(None)
         print("OK")
@@ -473,12 +473,12 @@ def test_round_trip_preserves_all_values():
     """Write controls → node → read back into new controls: values must be preserved."""
     r = _run(_MAIN_WIDGET_STUB, """
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
 
         node = _FakeNode()
 
         # ── Write phase ──────────────────────────────────────────────────────
-        w = object.__new__(ZebrafishAnalysisMainWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
         w._updatingGUIFromParameterNode = False
         w._chk_length    = MagicMock(); w._chk_length.isChecked.return_value    = False
         w._chk_curvature = MagicMock(); w._chk_curvature.isChecked.return_value = True
@@ -492,7 +492,7 @@ def test_round_trip_preserves_all_values():
         w.updateParameterNodeFromGUI(node)
 
         # ── Read phase ───────────────────────────────────────────────────────
-        w2 = object.__new__(ZebrafishAnalysisMainWidget)
+        w2 = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
         w2._updatingGUIFromParameterNode = False
         w2._chk_length    = MagicMock()
         w2._chk_curvature = MagicMock()
@@ -526,9 +526,9 @@ def test_round_trip_preserves_all_values():
 def test_set_parameter_node_adds_modified_observer():
     """setParameterNode(node) must add a ModifiedEvent observer on the node."""
     r = _run(_WIDGET_STUB, """
-        from ZebrafishAnalysis import ZebrafishAnalysisWidget
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerWidget
 
-        w = object.__new__(ZebrafishAnalysisWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerWidget)
         w._obs = []
         w._parameterNode = None
         w._main = None
@@ -550,9 +550,9 @@ def test_set_parameter_node_adds_modified_observer():
 def test_set_parameter_node_removes_old_observer():
     """setParameterNode(new) must remove the ModifiedEvent observer from the old node."""
     r = _run(_WIDGET_STUB, """
-        from ZebrafishAnalysis import ZebrafishAnalysisWidget
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerWidget
 
-        w = object.__new__(ZebrafishAnalysisWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerWidget)
         w._obs = []
         w._parameterNode = None
         w._main = None
@@ -575,9 +575,9 @@ def test_set_parameter_node_removes_old_observer():
 def test_set_parameter_node_none_removes_observer():
     """setParameterNode(None) must remove the ModifiedEvent observer from the current node."""
     r = _run(_WIDGET_STUB, """
-        from ZebrafishAnalysis import ZebrafishAnalysisWidget
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerWidget
 
-        w = object.__new__(ZebrafishAnalysisWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerWidget)
         w._obs = []
         w._parameterNode = None
         w._main = None
@@ -599,9 +599,9 @@ def test_set_parameter_node_none_removes_observer():
 def test_set_parameter_node_repeated_same_node_no_duplicate():
     """setParameterNode called twice with the same node must not add duplicate observers."""
     r = _run(_WIDGET_STUB, """
-        from ZebrafishAnalysis import ZebrafishAnalysisWidget
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerWidget
 
-        w = object.__new__(ZebrafishAnalysisWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerWidget)
         w._obs = []
         w._parameterNode = None
         w._main = None
@@ -626,9 +626,9 @@ def test_set_parameter_node_repeated_same_node_no_duplicate():
 def test_cleanup_disconnects_parameter_node():
     """cleanup() must remove the parameter node ModifiedEvent observer."""
     r = _run(_WIDGET_STUB, """
-        from ZebrafishAnalysis import ZebrafishAnalysisWidget
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerWidget
 
-        w = object.__new__(ZebrafishAnalysisWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerWidget)
         w._obs = []
         w._parameterNode = None
         w._main = None
@@ -661,7 +661,7 @@ def test_no_mrml_refs_in_initialize_parameter_node():
     # Find the initializeParameterNode method body
     tree = ast.parse(src)
     for cls in ast.walk(tree):
-        if isinstance(cls, ast.ClassDef) and cls.name == "ZebrafishAnalysisWidget":
+        if isinstance(cls, ast.ClassDef) and cls.name == "ZebrafishEmbryoAnalyzerWidget":
             for fn in ast.walk(cls):
                 if isinstance(fn, ast.FunctionDef) and fn.name == "initializeParameterNode":
                     lines = src.splitlines()
@@ -669,13 +669,13 @@ def test_no_mrml_refs_in_initialize_parameter_node():
                     refs = re.findall(r'\bvtkMRML\w+\b', body)
                     assert not refs, f"initializeParameterNode has MRML node refs: {refs}"
                     return
-    pytest.fail("initializeParameterNode not found in ZebrafishAnalysisWidget")
+    pytest.fail("initializeParameterNode not found in ZebrafishEmbryoAnalyzerWidget")
 
 
 def test_no_result_dicts_or_paths_in_defaults():
     """PARAM_DEFAULTS values must all be plain strings, not lists or dicts."""
     r = _run(_MAIN_WIDGET_STUB, """
-        from ZebrafishAnalysisLib.widget import PARAM_DEFAULTS
+        from ZebrafishEmbryoAnalyzerLib.widget import PARAM_DEFAULTS
 
         for k, v in PARAM_DEFAULTS.items():
             assert isinstance(v, str), f"PARAM_DEFAULTS[{k!r}] is not a string: {v!r}"
@@ -688,11 +688,11 @@ def test_no_result_dicts_or_paths_in_defaults():
 def test_notify_settings_changed_calls_callback():
     """_notify_settings_changed must call _on_settings_changed when not updating from node."""
     r = _run(_MAIN_WIDGET_STUB, """
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
 
         called = []
 
-        w = object.__new__(ZebrafishAnalysisMainWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
         w._updatingGUIFromParameterNode = False
         w._on_settings_changed = lambda: called.append(1)
 
@@ -708,11 +708,11 @@ def test_notify_settings_changed_calls_callback():
 def test_notify_settings_changed_suppressed_during_gui_update():
     """_notify_settings_changed must not call the callback when _updatingGUIFromParameterNode."""
     r = _run(_MAIN_WIDGET_STUB, """
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
 
         called = []
 
-        w = object.__new__(ZebrafishAnalysisMainWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
         w._updatingGUIFromParameterNode = True  # guard active
         w._on_settings_changed = lambda: called.append(1)
 
@@ -733,14 +733,14 @@ def test_initialize_parameter_node_empty_node_sets_all_defaults():
     """initializeParameterNode must populate all 8 parameters on an empty node."""
     r = _run(_WIDGET_STUB, """
         from unittest.mock import MagicMock
-        from ZebrafishAnalysis import ZebrafishAnalysisWidget
-        from ZebrafishAnalysisLib.widget import PARAM_DEFAULTS
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerWidget
+        from ZebrafishEmbryoAnalyzerLib.widget import PARAM_DEFAULTS
 
         node = _FakeNode()
         logic = MagicMock()
         logic.getParameterNode.return_value = node
 
-        w = object.__new__(ZebrafishAnalysisWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerWidget)
         w._obs = []
         w._parameterNode = None
         w._main = None
@@ -761,7 +761,7 @@ def test_initialize_parameter_node_does_not_overwrite_valid_values():
     """initializeParameterNode must not replace values that are already valid."""
     r = _run(_WIDGET_STUB, """
         from unittest.mock import MagicMock
-        from ZebrafishAnalysis import ZebrafishAnalysisWidget
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerWidget
 
         node = _FakeNode({
             "lengthEnabled":               "false",
@@ -776,7 +776,7 @@ def test_initialize_parameter_node_does_not_overwrite_valid_values():
         logic = MagicMock()
         logic.getParameterNode.return_value = node
 
-        w = object.__new__(ZebrafishAnalysisWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerWidget)
         w._obs = []
         w._parameterNode = None
         w._main = None
@@ -799,13 +799,13 @@ def test_initialize_parameter_node_idempotent():
     """Calling initializeParameterNode twice yields identical parameter values."""
     r = _run(_WIDGET_STUB, """
         from unittest.mock import MagicMock
-        from ZebrafishAnalysis import ZebrafishAnalysisWidget
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerWidget
 
         node = _FakeNode()
         logic = MagicMock()
         logic.getParameterNode.return_value = node
 
-        w = object.__new__(ZebrafishAnalysisWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerWidget)
         w._obs = []
         w._parameterNode = None
         w._main = None
@@ -828,7 +828,7 @@ def test_initialize_parameter_node_normalizes_invalid_values():
     """initializeParameterNode must correct invalid stored values to canonical defaults."""
     r = _run(_WIDGET_STUB, """
         from unittest.mock import MagicMock
-        from ZebrafishAnalysis import ZebrafishAnalysisWidget
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerWidget
 
         node = _FakeNode({
             "lengthEnabled":               "yes",       # invalid bool → "true"
@@ -843,7 +843,7 @@ def test_initialize_parameter_node_normalizes_invalid_values():
         logic = MagicMock()
         logic.getParameterNode.return_value = node
 
-        w = object.__new__(ZebrafishAnalysisWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerWidget)
         w._obs = []
         w._parameterNode = None
         w._main = None
@@ -869,7 +869,7 @@ def test_initialize_parameter_node_gui_updated_on_same_node_reinit():
     """GUI must be updated on every initializeParameterNode call, including same-node re-init."""
     r = _run(_WIDGET_STUB, """
         from unittest.mock import MagicMock
-        from ZebrafishAnalysis import ZebrafishAnalysisWidget
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerWidget
 
         node = _FakeNode({
             "lengthEnabled": "true", "curvatureEnabled": "true",
@@ -891,7 +891,7 @@ def test_initialize_parameter_node_gui_updated_on_same_node_reinit():
             def _cancel_workers(self): pass
             def cleanup(self): pass
 
-        w = object.__new__(ZebrafishAnalysisWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerWidget)
         w._obs = []
         w._parameterNode = None
         w._main = _FakeMain()
@@ -918,7 +918,7 @@ def test_no_modified_loop_on_initialize():
     """Repeated initializeParameterNode calls must not cause unbounded GUI updates."""
     r = _run(_WIDGET_STUB, """
         from unittest.mock import MagicMock
-        from ZebrafishAnalysis import ZebrafishAnalysisWidget
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerWidget
 
         node = _FakeNode()
         logic = MagicMock()
@@ -937,7 +937,7 @@ def test_no_modified_loop_on_initialize():
             def _cancel_workers(self): pass
             def cleanup(self): pass
 
-        w = object.__new__(ZebrafishAnalysisWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerWidget)
         w._obs = []
         w._parameterNode = None
         w._main = _SafeMain()
@@ -961,7 +961,7 @@ def test_update_gui_invalid_bool_string_falls_back():
     """updateGUIFromParameterNode accepts only 'true'/'false'; others fall back to defaults."""
     r = _run(_MAIN_WIDGET_STUB, """
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
 
         node = _FakeNode({
             "lengthEnabled":               "yes",    # → default True
@@ -974,7 +974,7 @@ def test_update_gui_invalid_bool_string_falls_back():
             "selectedModelId":             "general",
         })
 
-        w = object.__new__(ZebrafishAnalysisMainWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
         w._updatingGUIFromParameterNode = False
         w._chk_length    = MagicMock()
         w._chk_curvature = MagicMock()
@@ -1004,7 +1004,7 @@ def test_update_gui_nan_and_infinity_fall_back():
     """updateGUIFromParameterNode falls back to defaults for NaN and ±Infinity."""
     r = _run(_MAIN_WIDGET_STUB, """
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
 
         for bad_val in ("nan", "inf", "-inf", "NaN", "Infinity", "-Infinity"):
             node = _FakeNode({
@@ -1016,7 +1016,7 @@ def test_update_gui_nan_and_infinity_fall_back():
                 "selectedModelId": "general",
             })
 
-            w = object.__new__(ZebrafishAnalysisMainWidget)
+            w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
             w._updatingGUIFromParameterNode = False
             w._chk_length    = MagicMock()
             w._chk_curvature = MagicMock()
@@ -1044,7 +1044,7 @@ def test_update_gui_out_of_range_numeric_falls_back():
     """updateGUIFromParameterNode falls back to defaults for out-of-range numeric values."""
     r = _run(_MAIN_WIDGET_STUB, """
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
 
         node = _FakeNode({
             "lengthEnabled": "true", "curvatureEnabled": "true",
@@ -1055,7 +1055,7 @@ def test_update_gui_out_of_range_numeric_falls_back():
             "selectedModelId": "general",
         })
 
-        w = object.__new__(ZebrafishAnalysisMainWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
         w._updatingGUIFromParameterNode = False
         w._chk_length    = MagicMock()
         w._chk_curvature = MagicMock()
@@ -1082,7 +1082,7 @@ def test_update_gui_non_numeric_string_no_exception():
     """updateGUIFromParameterNode must not raise for non-numeric strings in numeric fields."""
     r = _run(_MAIN_WIDGET_STUB, """
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
 
         node = _FakeNode({
             "lengthEnabled": "true", "curvatureEnabled": "true",
@@ -1093,7 +1093,7 @@ def test_update_gui_non_numeric_string_no_exception():
             "selectedModelId": "general",
         })
 
-        w = object.__new__(ZebrafishAnalysisMainWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
         w._updatingGUIFromParameterNode = False
         w._chk_length    = MagicMock()
         w._chk_curvature = MagicMock()
@@ -1124,7 +1124,7 @@ def test_update_node_from_gui_end_modify_called_on_exception():
     """EndModify must be called exactly once even when SetParameter raises."""
     r = _run(_MAIN_WIDGET_STUB, """
         from unittest.mock import MagicMock
-        from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
 
         end_modify_calls = []
 
@@ -1146,7 +1146,7 @@ def test_update_node_from_gui_end_modify_called_on_exception():
 
         node = _BrokenNode()
 
-        w = object.__new__(ZebrafishAnalysisMainWidget)
+        w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
         w._updatingGUIFromParameterNode = False
         w._chk_length    = MagicMock(); w._chk_length.isChecked.return_value    = True
         w._chk_curvature = MagicMock(); w._chk_curvature.isChecked.return_value = True
@@ -1178,7 +1178,7 @@ def test_update_node_from_gui_end_modify_called_on_exception():
 def test_model_config_contract():
     """_MODEL_BY_ID must contain the original file names and encoder for both models."""
     r = _run(_MAIN_WIDGET_STUB, """
-        from ZebrafishAnalysisLib.widget import _MODEL_BY_ID
+        from ZebrafishEmbryoAnalyzerLib.widget import _MODEL_BY_ID
 
         general = _MODEL_BY_ID["general"]
         assert general[0] == "best_model_body_3400_vgg19.pth", general
@@ -1203,10 +1203,10 @@ def test_model_config_contract():
 # Minimal attribute set for reset_for_scene_close tests.
 _RESET_SETUP = """\
 from unittest.mock import MagicMock
-from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
+from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
 
 def _make_w(**overrides):
-    w = object.__new__(ZebrafishAnalysisMainWidget)
+    w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
     w._results        = []
     w._detail         = MagicMock()
     w._image_paths    = ["/img/a.tif", "/img/b.tif"]

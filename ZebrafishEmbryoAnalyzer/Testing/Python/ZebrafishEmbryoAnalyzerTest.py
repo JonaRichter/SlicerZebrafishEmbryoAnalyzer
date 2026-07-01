@@ -1,10 +1,10 @@
-"""Slicer integration tests for the ZebrafishAnalysis extension.
+"""Slicer integration tests for the ZebrafishEmbryoAnalyzer extension.
 
 Run inside Slicer only — requires slicer, vtk, and MRML APIs.
 Not executable with plain pytest.
 
 Usage (from Slicer Python console or test runner):
-    slicer.util.selectModule("ZebrafishAnalysis")
+    slicer.util.selectModule("ZebrafishEmbryoAnalyzer")
     # Or via ctest after CMakeLists.txt registration.
 """
 
@@ -12,8 +12,8 @@ import slicer
 from slicer.ScriptedLoadableModule import ScriptedLoadableModuleTest
 
 
-class ZebrafishAnalysisTest(ScriptedLoadableModuleTest):
-    """Integration tests for ZebrafishAnalysis.
+class ZebrafishEmbryoAnalyzerTest(ScriptedLoadableModuleTest):
+    """Integration tests for ZebrafishEmbryoAnalyzer.
 
     Each test_* method is self-contained: it sets up what it needs and cleans up
     via slicer.mrmlScene.Clear(0) or targeted node removal.  No network access,
@@ -57,29 +57,29 @@ class ZebrafishAnalysisTest(ScriptedLoadableModuleTest):
     # ------------------------------------------------------------------
 
     def test_module_import(self):
-        """ZebrafishAnalysis module and its main classes must be importable."""
-        import ZebrafishAnalysis as mod
-        self.assertIsNotNone(mod.ZebrafishAnalysis)
-        self.assertIsNotNone(mod.ZebrafishAnalysisWidget)
-        self.assertIsNotNone(mod.ZebrafishAnalysisLogic)
+        """ZebrafishEmbryoAnalyzer module and its main classes must be importable."""
+        import ZebrafishEmbryoAnalyzer as mod
+        self.assertIsNotNone(mod.ZebrafishEmbryoAnalyzer)
+        self.assertIsNotNone(mod.ZebrafishEmbryoAnalyzerWidget)
+        self.assertIsNotNone(mod.ZebrafishEmbryoAnalyzerLogic)
 
     def test_logic_instantiation(self):
-        """ZebrafishAnalysisLogic() must construct without error."""
-        from ZebrafishAnalysis import ZebrafishAnalysisLogic
-        logic = ZebrafishAnalysisLogic()
+        """ZebrafishEmbryoAnalyzerLogic() must construct without error."""
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+        logic = ZebrafishEmbryoAnalyzerLogic()
         self.assertIsNotNone(logic)
 
     def test_parameter_node_defaults(self):
         """getParameterNode() must return a node whose defaults match PARAM_DEFAULTS."""
-        from ZebrafishAnalysis import ZebrafishAnalysisLogic
-        from ZebrafishAnalysisLib.widget import (
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+        from ZebrafishEmbryoAnalyzerLib.widget import (
             PARAM_DEFAULTS,
             PARAM_LENGTH_ENABLED,
             PARAM_MODEL_ID,
             _DEFAULT_MODEL_ID,
         )
 
-        logic = ZebrafishAnalysisLogic()
+        logic = ZebrafishEmbryoAnalyzerLogic()
         param_node = logic.getParameterNode()
         self.assertIsNotNone(param_node)
 
@@ -101,9 +101,9 @@ class ZebrafishAnalysisTest(ScriptedLoadableModuleTest):
 
     def test_mrml_table_node_creation(self):
         """update_results_table() must create a vtkMRMLTableNode with exactly one row."""
-        from ZebrafishAnalysis import ZebrafishAnalysisLogic
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
 
-        logic = ZebrafishAnalysisLogic()
+        logic = ZebrafishEmbryoAnalyzerLogic()
         result = {
             "filename": "test.png",
             "length": 1000,
@@ -121,9 +121,9 @@ class ZebrafishAnalysisTest(ScriptedLoadableModuleTest):
 
     def test_mrml_table_node_reuse(self):
         """Calling update_results_table() twice must reuse the same node."""
-        from ZebrafishAnalysis import ZebrafishAnalysisLogic
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
 
-        logic = ZebrafishAnalysisLogic()
+        logic = ZebrafishEmbryoAnalyzerLogic()
         result = {
             "filename": "a.png",
             "length": 500,
@@ -149,7 +149,7 @@ class ZebrafishAnalysisTest(ScriptedLoadableModuleTest):
     def test_results_to_rows_pure(self):
         """results_to_rows() is pure Python — no Slicer dependency."""
         import math
-        from ZebrafishAnalysisLib.mrml import results_to_rows, TABLE_SCHEMA
+        from ZebrafishEmbryoAnalyzerLib.mrml import results_to_rows, TABLE_SCHEMA
 
         # Empty input → empty output.
         rows = results_to_rows([])
@@ -181,10 +181,10 @@ class ZebrafishAnalysisTest(ScriptedLoadableModuleTest):
 
     def test_scene_close_cleanup(self):
         """Scene clear must not crash; a fresh parameter node must be obtainable after."""
-        from ZebrafishAnalysis import ZebrafishAnalysisLogic
-        from ZebrafishAnalysisLib.widget import PARAM_DEFAULTS
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+        from ZebrafishEmbryoAnalyzerLib.widget import PARAM_DEFAULTS
 
-        logic = ZebrafishAnalysisLogic()
+        logic = ZebrafishEmbryoAnalyzerLogic()
         # Populate some MRML nodes first.
         logic.update_results_table([{
             "filename": "x.png",
@@ -208,5 +208,5 @@ class ZebrafishAnalysisTest(ScriptedLoadableModuleTest):
             if not param_node.GetParameter(name):
                 param_node.SetParameter(name, default)
 
-        from ZebrafishAnalysisLib.widget import PARAM_LENGTH_ENABLED
+        from ZebrafishEmbryoAnalyzerLib.widget import PARAM_LENGTH_ENABLED
         self.assertEqual(param_node.GetParameter(PARAM_LENGTH_ENABLED), "true")

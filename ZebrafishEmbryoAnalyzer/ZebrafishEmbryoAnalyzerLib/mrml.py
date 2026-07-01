@@ -1,5 +1,5 @@
 """
-MRML adapter for ZebrafishAnalysis.
+MRML adapter for ZebrafishEmbryoAnalyzer.
 
 ``results_to_rows`` is pure Python with no Slicer or VTK dependency and is
 testable with standard pytest.
@@ -98,7 +98,7 @@ def get_or_create_table_node(param_node, scene):
         return existing
 
     node = scene.AddNewNodeByClass("vtkMRMLTableNode")
-    node.SetName("ZebrafishAnalysis Results")
+    node.SetName("ZebrafishEmbryoAnalyzer Results")
     param_node.SetNodeReferenceID(ROLE_RESULTS_TABLE, node.GetID())
     return node
 
@@ -181,7 +181,7 @@ def get_or_create_image_node(param_node, scene):
     """Return the existing CurrentImage node or create exactly one new node.
 
     Looks up by reference role ROLE_CURRENT_IMAGE (not display name).
-    Creates a new vtkMRMLVectorVolumeNode named "ZebrafishAnalysis Current Image"
+    Creates a new vtkMRMLVectorVolumeNode named "ZebrafishEmbryoAnalyzer Current Image"
     if no valid reference exists. Stores new node ID in param_node.
     A wrong-type foreign node is left in scene unchanged; a new node is created.
     """
@@ -189,7 +189,7 @@ def get_or_create_image_node(param_node, scene):
     if existing is not None and existing.IsA("vtkMRMLVectorVolumeNode"):
         return existing
     node = scene.AddNewNodeByClass(
-        "vtkMRMLVectorVolumeNode", "ZebrafishAnalysis Current Image"
+        "vtkMRMLVectorVolumeNode", "ZebrafishEmbryoAnalyzer Current Image"
     )
     param_node.SetNodeReferenceID(ROLE_CURRENT_IMAGE, node.GetID())
     return node
@@ -282,7 +282,7 @@ def get_or_create_segmentation_node(param_node, scene):
 
     Looks up by reference role ROLE_CURRENT_SEGMENTATION (not display name).
     Creates a new vtkMRMLSegmentationNode named
-    "ZebrafishAnalysis Current Segmentation" if no valid reference exists.
+    "ZebrafishEmbryoAnalyzer Current Segmentation" if no valid reference exists.
     Stores new node ID in param_node.
     A wrong-type foreign node is left in scene unchanged; a new node is created.
     """
@@ -290,7 +290,7 @@ def get_or_create_segmentation_node(param_node, scene):
     if existing is not None and existing.IsA("vtkMRMLSegmentationNode"):
         return existing
     node = scene.AddNewNodeByClass(
-        "vtkMRMLSegmentationNode", "ZebrafishAnalysis Current Segmentation"
+        "vtkMRMLSegmentationNode", "ZebrafishEmbryoAnalyzer Current Segmentation"
     )
     node.CreateDefaultDisplayNodes()
     param_node.SetNodeReferenceID(ROLE_CURRENT_SEGMENTATION, node.GetID())

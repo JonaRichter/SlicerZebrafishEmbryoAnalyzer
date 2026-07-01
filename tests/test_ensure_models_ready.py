@@ -21,11 +21,11 @@ def _stub_slicer_env(testing_enabled=False, user_answer=0x10000):
     sys.modules["slicer"] = slicer_mock
     sys.modules["qt"] = qt_mock
     sys.modules["ctk"] = MagicMock()
-    sys.modules.pop("ZebrafishAnalysisLib.widget", None)
+    sys.modules.pop("ZebrafishEmbryoAnalyzerLib.widget", None)
     try:
         yield qt_mock, msg_instance, slicer_mock
     finally:
-        for k in ("slicer", "qt", "ctk", "ZebrafishAnalysisLib.widget"):
+        for k in ("slicer", "qt", "ctk", "ZebrafishEmbryoAnalyzerLib.widget"):
             sys.modules.pop(k, None)
         sys.modules.update(saved)
 
@@ -37,9 +37,9 @@ def _make_checkbox(checked=False):
 
 
 def _make_widget(eyes_checked=False, curvature_checked=True):
-    from ZebrafishAnalysisLib.widget import ZebrafishAnalysisMainWidget
+    from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
 
-    widget = object.__new__(ZebrafishAnalysisMainWidget)
+    widget = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
     widget._chk_eyes = _make_checkbox(checked=eyes_checked)
     widget._chk_curvature = _make_checkbox(checked=curvature_checked)
     return widget
@@ -47,7 +47,7 @@ def _make_widget(eyes_checked=False, curvature_checked=True):
 
 def test_missing_models_uses_get_missing_models():
     with _stub_slicer_env():
-        import ZebrafishAnalysisLib.model_manifest as manifest
+        import ZebrafishEmbryoAnalyzerLib.model_manifest as manifest
 
         get_missing = MagicMock(return_value=[])
         with patch.object(manifest, "get_missing_models", get_missing):

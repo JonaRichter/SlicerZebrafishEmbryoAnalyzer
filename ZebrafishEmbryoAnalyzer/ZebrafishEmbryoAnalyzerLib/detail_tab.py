@@ -6,7 +6,7 @@ show_result(index, results) — display result at index.
 
 import qt
 import numpy as np
-from ZebrafishAnalysisLib.zoom_view import ZoomableImageView
+from ZebrafishEmbryoAnalyzerLib.zoom_view import ZoomableImageView
 
 
 def _numpy_to_qpixmap(rgb_array: np.ndarray) -> "qt.QPixmap":
@@ -23,7 +23,7 @@ def _numpy_to_qpixmap(rgb_array: np.ndarray) -> "qt.QPixmap":
 
 def _build_rgb_array(result: dict) -> np.ndarray:
     """Build the RGB overlay array synchronously on the main thread."""
-    from ZebrafishAnalysisLib.overlay import make_full_overlay
+    from ZebrafishEmbryoAnalyzerLib.overlay import make_full_overlay
     import cv2
     bgr = make_full_overlay(result)
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)

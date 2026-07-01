@@ -58,7 +58,7 @@ def test_segmentation_pipeline_returns_three_tuple(synthetic_fish_image, tmp_pat
 
     with patch.dict(sys.modules, {"torch": mock_torch}), \
          patch("segmentation_models_pytorch.Unet") as mock_unet, \
-         patch("ZebrafishAnalysisCore.seg.segment_fish") as mock_seg:
+         patch("ZebrafishEmbryoAnalyzerCore.seg.segment_fish") as mock_seg:
 
         mock_unet.return_value = dummy_model
 
@@ -66,7 +66,7 @@ def test_segmentation_pipeline_returns_three_tuple(synthetic_fish_image, tmp_pat
         confidence = np.zeros((256, 256), dtype=np.uint8)
         mock_seg.return_value = (pil_mask, confidence)
 
-        from ZebrafishAnalysisCore.seg import segmentation_pipeline
+        from ZebrafishEmbryoAnalyzerCore.seg import segmentation_pipeline
         result = segmentation_pipeline(
             folder_path=str(tmp_path),
             include_eyes=False,
@@ -82,7 +82,7 @@ def test_segmentation_pipeline_accepts_local_model_paths():
     # Slicer passes pre-downloaded weights as body_model_path/eye_model_path.
     # Regression: body_model_path was missing from the signature.
     import inspect
-    from ZebrafishAnalysisCore.seg import segmentation_pipeline
+    from ZebrafishEmbryoAnalyzerCore.seg import segmentation_pipeline
 
     params = inspect.signature(segmentation_pipeline).parameters
     assert "body_model_path" in params
@@ -113,12 +113,12 @@ def test_segmentation_pipeline_sorted_order(tmp_path):
 
     with patch.dict(sys.modules, {"torch": mock_torch}), \
          patch("segmentation_models_pytorch.Unet") as mock_unet, \
-         patch("ZebrafishAnalysisCore.seg.segment_fish") as mock_seg:
+         patch("ZebrafishEmbryoAnalyzerCore.seg.segment_fish") as mock_seg:
 
         mock_unet.return_value = dummy_model
         mock_seg.return_value = (pil_mask, confidence)
 
-        from ZebrafishAnalysisCore.seg import segmentation_pipeline
+        from ZebrafishEmbryoAnalyzerCore.seg import segmentation_pipeline
         originals, masks, growns = segmentation_pipeline(
             folder_path=str(tmp_path),
             include_eyes=False,
@@ -155,12 +155,12 @@ def test_segmentation_pipeline_include_eyes_returns_four_tuple(tmp_path):
 
     with patch.dict(sys.modules, {"torch": mock_torch}), \
          patch("segmentation_models_pytorch.Unet") as mock_unet, \
-         patch("ZebrafishAnalysisCore.seg.segment_fish") as mock_seg:
+         patch("ZebrafishEmbryoAnalyzerCore.seg.segment_fish") as mock_seg:
 
         mock_unet.return_value = dummy_model
         mock_seg.return_value = (pil_mask, confidence)
 
-        from ZebrafishAnalysisCore.seg import segmentation_pipeline
+        from ZebrafishEmbryoAnalyzerCore.seg import segmentation_pipeline
         result = segmentation_pipeline(
             folder_path=str(tmp_path),
             include_eyes=True,
@@ -176,14 +176,14 @@ def test_segmentation_pipeline_include_eyes_returns_four_tuple(tmp_path):
 def test_segmentation_pipeline_model_load_failure_raises(tmp_path):
     """RuntimeError is raised when the body model cannot be loaded."""
     import cv2
-    import ZebrafishAnalysisCore.seg as seg_mod
+    import ZebrafishEmbryoAnalyzerCore.seg as seg_mod
 
     cv2.imwrite(str(tmp_path / "fish.png"), np.zeros((64, 64, 3), dtype=np.uint8))
 
     # Patch _load_unet_model directly — logic.py may have monkey-patched it at import
     # time, so patching hf_hub_download would be bypassed by the caching wrapper.
     with patch.object(seg_mod, "_load_unet_model", return_value=None):
-        from ZebrafishAnalysisCore.seg import segmentation_pipeline
+        from ZebrafishEmbryoAnalyzerCore.seg import segmentation_pipeline
         with pytest.raises(RuntimeError):
             segmentation_pipeline(
                 folder_path=str(tmp_path),

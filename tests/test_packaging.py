@@ -1,4 +1,4 @@
-"""Verify that every .py file under ZebrafishAnalysis/ is listed in the
+"""Verify that every .py file under ZebrafishEmbryoAnalyzer/ is listed in the
 CMakeLists.txt SCRIPTS section and that every SCRIPTS entry exists on disk.
 """
 
@@ -6,8 +6,8 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
-CMAKE_FILE = ROOT / "ZebrafishAnalysis" / "CMakeLists.txt"
-ZEBRA_DIR = ROOT / "ZebrafishAnalysis"
+CMAKE_FILE = ROOT / "ZebrafishEmbryoAnalyzer" / "CMakeLists.txt"
+ZEBRA_DIR = ROOT / "ZebrafishEmbryoAnalyzer"
 
 _EXCLUDE_DIRS = {"__pycache__", "Testing"}
 

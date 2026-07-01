@@ -1,5 +1,5 @@
 """
-Zoomable, pannable image viewer for the ZebrafishAnalysis detail tab.
+Zoomable, pannable image viewer for the ZebrafishEmbryoAnalyzer detail tab.
 
 ZoomableImageView  — QGraphicsView subclass: zoom, pan, swipe nav, manual dots
 _MinimapOverlay    — picture-in-picture thumbnail with viewport rect

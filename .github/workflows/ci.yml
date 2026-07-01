@@ -21,7 +21,7 @@ jobs:
         python-version: ["3.11", "3.12"]
 
     env:
-      PYTHONPATH: ${{ github.workspace }}/ZebrafishAnalysis
+      PYTHONPATH: ${{ github.workspace }}/ZebrafishEmbryoAnalyzer
 
     steps:
       - name: Checkout
@@ -39,7 +39,7 @@ jobs:
         run: pytest tests/ -q --tb=short
 
       - name: Syntax check
-        run: python -m compileall -q ZebrafishAnalysis/
+        run: python -m compileall -q ZebrafishEmbryoAnalyzer/
 
       - name: Forbidden-files check
         shell: bash

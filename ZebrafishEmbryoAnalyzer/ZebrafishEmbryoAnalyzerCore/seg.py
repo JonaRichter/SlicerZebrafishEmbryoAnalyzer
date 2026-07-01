@@ -12,7 +12,7 @@ def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model"
     ``filename``, ``revision``, and ``force_download`` parameters are accepted
     for backward-compatible call sites but are ignored — Hugging Face Hub
     downloads have been removed from the core layer.  Use
-    ZebrafishAnalysisLib.model_downloader to download model files before
+    ZebrafishEmbryoAnalyzerLib.model_downloader to download model files before
     calling this function.
 
     Returns the model instance when successful, otherwise None.
@@ -36,7 +36,7 @@ def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model"
     if not resolved_path:
         raise RuntimeError(
             f"{label.capitalize()} not found at {model_path!r}. "
-            "Download models via ZebrafishAnalysisLib.model_downloader before running analysis."
+            "Download models via ZebrafishEmbryoAnalyzerLib.model_downloader before running analysis."
         )
 
     try:

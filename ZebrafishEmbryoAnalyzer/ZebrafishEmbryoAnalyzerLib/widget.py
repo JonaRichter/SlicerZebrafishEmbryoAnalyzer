@@ -1,5 +1,5 @@
 """
-Main widget for the ZebrafishAnalysis Slicer extension.
+Main widget for the ZebrafishEmbryoAnalyzer Slicer extension.
 
 Left panel: input, analysis toggles, model selection, scalebar, run, export.
 Right panel: QTabWidget with Gallery / Detail / Results tabs.
@@ -12,7 +12,7 @@ import qt
 import ctk
 import slicer
 
-from ZebrafishAnalysisLib.errors import AnalysisInputError, MRMLAdapterError
+from ZebrafishEmbryoAnalyzerLib.errors import AnalysisInputError, MRMLAdapterError
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ PARAM_DEFAULTS = {
 
 
 
-class ZebrafishAnalysisMainWidget:
+class ZebrafishEmbryoAnalyzerMainWidget:
     def __init__(self, parent_layout, logic):
         self._logic = logic
 
@@ -64,7 +64,7 @@ class ZebrafishAnalysisMainWidget:
         self._image_paths = []
         self._current_detail_idx = 0
         self._updatingGUIFromParameterNode = False
-        self._on_settings_changed = None  # callable set by ZebrafishAnalysisWidget
+        self._on_settings_changed = None  # callable set by ZebrafishEmbryoAnalyzerWidget
         self._active_downloader = None
         self._active_runner = None
         self._disposed = False
@@ -101,7 +101,7 @@ class ZebrafishAnalysisMainWidget:
     def apply_shell_layout(self):
         """Save current Slicer shell state and apply module-specific layout.
 
-        Called from ZebrafishAnalysisWidget.enter(). Must be paired with
+        Called from ZebrafishEmbryoAnalyzerWidget.enter(). Must be paired with
         restore_shell_layout() in exit() so the host application is not
         permanently altered.
         """
@@ -156,7 +156,7 @@ class ZebrafishAnalysisMainWidget:
     def restore_shell_layout(self):
         """Restore Slicer shell state saved in apply_shell_layout().
 
-        Called from ZebrafishAnalysisWidget.exit(). Safe to call even if
+        Called from ZebrafishEmbryoAnalyzerWidget.exit(). Safe to call even if
         apply_shell_layout() was never called.
         """
         try:
@@ -380,11 +380,11 @@ class ZebrafishAnalysisMainWidget:
         self._tabs = qt.QTabWidget()
         splitter.addWidget(self._tabs)
 
-        from ZebrafishAnalysisLib.gallery_tab import GalleryTab
+        from ZebrafishEmbryoAnalyzerLib.gallery_tab import GalleryTab
         self._gallery = GalleryTab(on_select=self._on_gallery_select)
         self._tabs.addTab(self._gallery, "Gallery")
 
-        from ZebrafishAnalysisLib.detail_tab import DetailTab
+        from ZebrafishEmbryoAnalyzerLib.detail_tab import DetailTab
         self._detail = DetailTab(
             on_navigate=self._navigate_detail,
             on_back=lambda: self._tabs.setCurrentIndex(0),
@@ -394,7 +394,7 @@ class ZebrafishAnalysisMainWidget:
         self._detail._params_getter = self._get_correction_params
         self._tabs.addTab(self._detail, "Detail")
 
-        from ZebrafishAnalysisLib.results_tab import ResultsTab
+        from ZebrafishEmbryoAnalyzerLib.results_tab import ResultsTab
         self._results_tab = ResultsTab(on_exclude_change=self._on_exclude_change)
         self._tabs.addTab(self._results_tab, "Results")
 
@@ -423,12 +423,12 @@ class ZebrafishAnalysisMainWidget:
 
     def _on_load_folder(self):
         settings = qt.QSettings()
-        last = str(settings.value("ZebrafishAnalysis/lastFolder", "")) or ""
+        last = str(settings.value("ZebrafishEmbryoAnalyzer/lastFolder", "")) or ""
         folder = qt.QFileDialog.getExistingDirectory(None, "Select image folder", last)
         if not folder:
             return
         folder = str(folder)
-        settings.setValue("ZebrafishAnalysis/lastFolder", folder)
+        settings.setValue("ZebrafishEmbryoAnalyzer/lastFolder", folder)
         import os
         exts = {".png", ".tif", ".tiff", ".jpg", ".jpeg"}
         paths = sorted([
@@ -490,7 +490,7 @@ class ZebrafishAnalysisMainWidget:
     def _load_originals(self, paths, stubs):
         """Load original images after an explicit user action."""
         import cv2
-        from ZebrafishAnalysisLib.gallery_tab import THUMB_SIZE as _THUMB_SIZE
+        from ZebrafishEmbryoAnalyzerLib.gallery_tab import THUMB_SIZE as _THUMB_SIZE
 
         for i, p in enumerate(paths):
             if stubs is not self._results:
@@ -506,7 +506,7 @@ class ZebrafishAnalysisMainWidget:
 
     def _required_model_entries(self, model_id):
         """Return the model entries required by the current settings."""
-        from ZebrafishAnalysisLib.model_manifest import MODEL_SETS
+        from ZebrafishEmbryoAnalyzerLib.model_manifest import MODEL_SETS
         model_set = MODEL_SETS.get(model_id, MODEL_SETS[_DEFAULT_MODEL_ID])
         required = {"body": model_set["body"]}
         if self._chk_curvature.isChecked() and "curvature" in model_set:
@@ -516,7 +516,7 @@ class ZebrafishAnalysisMainWidget:
         return required
 
     def _missing_required_models(self, model_id):
-        from ZebrafishAnalysisLib.model_manifest import get_missing_models
+        from ZebrafishEmbryoAnalyzerLib.model_manifest import get_missing_models
         return get_missing_models(self._required_model_entries(model_id))
 
     def _prompt_download_models(self, missing):
@@ -646,7 +646,7 @@ class ZebrafishAnalysisMainWidget:
             self._run_progress.setFormat("")
             self._run_stack.setCurrentIndex(1)
 
-            from ZebrafishAnalysisLib.model_downloader import start_model_download
+            from ZebrafishEmbryoAnalyzerLib.model_downloader import start_model_download
 
             def _finished(success, state, message, controller):
                 if self._disposed or controller is not self._active_downloader:
@@ -692,7 +692,7 @@ class ZebrafishAnalysisMainWidget:
             # Restore UI to idle state if download setup raised before connecting.
             self._run_stack.setCurrentIndex(0)
             self._active_downloader = None
-            logging.exception("ZebrafishAnalysis: failed to start model download")
+            logging.exception("ZebrafishEmbryoAnalyzer: failed to start model download")
             slicer.util.errorDisplay(f"Could not start model download:\n{exc}")
 
     def _start_inference_process(self, model_id, params, token):
@@ -733,7 +733,7 @@ class ZebrafishAnalysisMainWidget:
                 self._on_results_ready()
                 self._try_update_mrml_table(self._results)
 
-            from ZebrafishAnalysisLib.inference_runner import start_inference
+            from ZebrafishEmbryoAnalyzerLib.inference_runner import start_inference
             self._active_runner = start_inference(
                 image_paths, model_id, params, originals,
                 on_finished=_on_runner_finished,
@@ -743,7 +743,7 @@ class ZebrafishAnalysisMainWidget:
         except Exception as exc:
             self._active_runner = None
             self._run_stack.setCurrentIndex(0)
-            logging.exception("ZebrafishAnalysis: failed to start inference process")
+            logging.exception("ZebrafishEmbryoAnalyzer: failed to start inference process")
             slicer.util.errorDisplay(f"Could not start analysis:\n{exc}")
 
     def _try_update_mrml_table(self, results):
@@ -751,7 +751,7 @@ class ZebrafishAnalysisMainWidget:
         try:
             self._logic.update_results_table(results)
         except MRMLAdapterError as exc:
-            logging.warning("ZebrafishAnalysis: MRML table update failed: %s", exc)
+            logging.warning("ZebrafishEmbryoAnalyzer: MRML table update failed: %s", exc)
             slicer.util.showStatusMessage(
                 "Analysis complete — results table update failed. Check the application log.",
                 5000,
@@ -764,7 +764,7 @@ class ZebrafishAnalysisMainWidget:
         try:
             self._logic.update_current_image_node(result, self._um_per_px.value)
         except MRMLAdapterError as exc:
-            logging.warning("ZebrafishAnalysis: MRML image node update failed: %s", exc)
+            logging.warning("ZebrafishEmbryoAnalyzer: MRML image node update failed: %s", exc)
             slicer.util.showStatusMessage(
                 "Image node update failed. Check the application log.",
                 5000,
@@ -774,7 +774,7 @@ class ZebrafishAnalysisMainWidget:
         try:
             self._logic.update_current_segmentation_node(result, self._um_per_px.value)
         except MRMLAdapterError as exc:
-            logging.warning("ZebrafishAnalysis: MRML segmentation node update failed: %s", exc)
+            logging.warning("ZebrafishEmbryoAnalyzer: MRML segmentation node update failed: %s", exc)
             slicer.util.showStatusMessage(
                 "Segmentation node update failed. Check the application log.",
                 5000,
@@ -914,7 +914,7 @@ class ZebrafishAnalysisMainWidget:
 
         # Raw Python traceback: log full text, show generic UI message.
         if "Traceback" in msg:
-            logging.warning("ZebrafishAnalysis: inference traceback:\n%s", msg)
+            logging.warning("ZebrafishEmbryoAnalyzer: inference traceback:\n%s", msg)
             return "Analysis failed. Check the application log for details."
 
         if exit_code == 1:
@@ -937,7 +937,7 @@ class ZebrafishAnalysisMainWidget:
         except ImportError:
             return
 
-        from ZebrafishAnalysisLib import dependency_installer
+        from ZebrafishEmbryoAnalyzerLib import dependency_installer
         missing = dependency_installer.get_missing_packages()
         if not any(missing.values()):
             return
@@ -951,12 +951,12 @@ class ZebrafishAnalysisMainWidget:
             items.append("numpy<2 (pin for PyTorch compatibility)")
 
         import qt
-        from ZebrafishAnalysisLib.model_manifest import collect_all_model_entries, get_missing_models
+        from ZebrafishEmbryoAnalyzerLib.model_manifest import collect_all_model_entries, get_missing_models
         all_entries = collect_all_model_entries()
         missing_models = get_missing_models(all_entries)
 
         dlg = qt.QDialog(slicer.util.mainWindow())
-        dlg.setWindowTitle("ZebrafishAnalysis — Setup")
+        dlg.setWindowTitle("ZebrafishEmbryoAnalyzer — Setup")
         layout = qt.QVBoxLayout(dlg)
 
         # Packages section
@@ -1067,7 +1067,7 @@ class ZebrafishAnalysisMainWidget:
             self._run_progress.setFormat("")
             self._run_stack.setCurrentIndex(1)
 
-            from ZebrafishAnalysisLib.model_downloader import start_model_download
+            from ZebrafishEmbryoAnalyzerLib.model_downloader import start_model_download
 
             def _finished(success, state, message, controller):
                 if self._disposed or controller is not self._active_downloader:
@@ -1084,7 +1084,7 @@ class ZebrafishAnalysisMainWidget:
         except Exception as exc:
             self._run_stack.setCurrentIndex(0)
             self._active_downloader = None
-            logging.exception("ZebrafishAnalysis: failed to start initial model download")
+            logging.exception("ZebrafishEmbryoAnalyzer: failed to start initial model download")
             slicer.util.errorDisplay(f"Could not start model download:\n{exc}")
 
     def _cancel_workers(self):
@@ -1143,7 +1143,7 @@ class ZebrafishAnalysisMainWidget:
             slicer.util.warningDisplay(f"Errors in {len(errors)} image(s):\n\n{msg}")
 
     def _on_export_excel(self):
-        from ZebrafishAnalysisLib.export import export_excel
+        from ZebrafishEmbryoAnalyzerLib.export import export_excel
         if not self._results:
             slicer.util.warningDisplay("No results to export. Run analysis first.")
             return
@@ -1159,7 +1159,7 @@ class ZebrafishAnalysisMainWidget:
                 slicer.util.errorDisplay(f"Export failed:\n{e}")
 
     def _on_export_csv(self):
-        from ZebrafishAnalysisLib.export import export_csv
+        from ZebrafishEmbryoAnalyzerLib.export import export_csv
         if not self._results:
             slicer.util.warningDisplay("No results to export. Run analysis first.")
             return
