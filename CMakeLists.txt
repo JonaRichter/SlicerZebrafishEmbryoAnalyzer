@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.16.3...3.19.7 FATAL_ERROR)
 project(ZebrafishEmbryoAnalyzer)
 
 set(EXTENSION_HOMEPAGE "https://github.com/MarkDanielArndt/SlicerZebrafishEmbryoAnalyzer")
-set(EXTENSION_CATEGORY "Quantification")
+set(EXTENSION_CATEGORY "Analysis")
 set(EXTENSION_CONTRIBUTORS "Jona Richter, Mark Daniel Arndt")
 set(EXTENSION_DESCRIPTION "Zebrafish body length, curvature, and eye metrics from 2D microscopy images.")
 set(EXTENSION_ICONURL "https://raw.githubusercontent.com/MarkDanielArndt/SlicerZebrafishEmbryoAnalyzer/master/ZebrafishEmbryoAnalyzer/Resources/Icons/ZebrafishEmbryoAnalyzer.png")
