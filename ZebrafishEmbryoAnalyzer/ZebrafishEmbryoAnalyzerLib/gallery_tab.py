@@ -94,9 +94,14 @@ class GalleryTab(qt.QWidget):
 
             caption = qt.QLabel()
             caption.setFixedWidth(THUMB_SIZE)
-            caption.setAlignment(qt.Qt.AlignCenter)
+            caption.setAlignment(qt.Qt.AlignTop | qt.Qt.AlignHCenter)
             caption.setWordWrap(False)
             caption.setStyleSheet("font-size: 10px;")
+            # Issue #16 (re-refinement): always reserve space for two lines of
+            # caption, even if the second line carries no text. This makes every
+            # cell in any row the same height, so the gallery never shows a
+            # vertical gap between thumbnail and caption in mixed-caption rows.
+            caption.setMinimumHeight(2 * caption.fontMetrics().lineSpacing() + 4)
             caption.setToolTip(r["filename"])
             _elided = caption.fontMetrics().elidedText(
                 r["filename"], qt.Qt.ElideRight, THUMB_SIZE
@@ -115,6 +120,11 @@ class GalleryTab(qt.QWidget):
             cell_layout.setSpacing(2)
             cell_layout.addWidget(label)
             cell_layout.addWidget(caption)
+            # Issue #16 (re-refinement): bottom-stretch keeps any extra cell
+            # height (shouldn't happen now that captions reserve two lines,
+            # but defensive against future size variation) below the caption,
+            # never between image and caption.
+            cell_layout.addStretch(1)
 
             self._cells.append(cell)
             self._thumbnails.append(label)
