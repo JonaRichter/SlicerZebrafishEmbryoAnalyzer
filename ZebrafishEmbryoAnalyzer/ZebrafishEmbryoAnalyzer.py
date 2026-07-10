@@ -351,13 +351,91 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
         try:
             import slicer
             from ZebrafishEmbryoAnalyzerLib.mrml import (
+                build_vtk_table,
+                get_or_create_table_node,
                 results_to_rows,
+            )
+            # Route through the single shared build/observe path: the run
+            # path supplies ``results`` here (legacy entry point); the
+            # reload path (#41) calls ``update_results_table_from_volume_nodes``
+            # which uses the same ``_update_table_with_rows`` tail. Both
+            # produce identical table content for identical metric state.
+            return self._update_table_with_rows(results_to_rows(results))
+        except MRMLAdapterError:
+            raise
+        except Exception as exc:
+            raise MRMLAdapterError(
+                f"Failed to update results table: {exc}"
+            ) from exc
+
+    def update_results_table_from_volume_nodes(self, volume_nodes):
+        """Issue #40 / #41: rebuild the results table from per-image volume nodes.
+
+        Reads each volume node's ``ZebrafishAnalysis.*`` attributes (written
+        by ``apply_analysis_to_volume_node`` in #39) and rebuilds the same
+        table content as :meth:`update_results_table` would. Used both:
+
+        * after a fresh analysis run (the widget now routes the table
+          build through this path instead of the in-memory ``results``
+          list, to satisfy the "single code path" acceptance criterion),
+        * and during scene reload (#41) where the only state available
+          is the volume nodes already in the MRML scene.
+
+        ``volume_nodes`` must be ordered the same way the user expects to
+        see in the table; both the run path and the reload path read
+        ``ROLE_ZEBRAFISH_IMAGES`` from the parameter node for that order.
+
+        Returns ``vtkMRMLTableNode`` on success, ``None`` if no parameter
+        node exists. Raises ``MRMLAdapterError`` on any failure.
+        """
+        from ZebrafishEmbryoAnalyzerLib.errors import MRMLAdapterError
+        try:
+            from ZebrafishEmbryoAnalyzerLib.mrml import volume_nodes_to_rows
+            rows = volume_nodes_to_rows(list(volume_nodes))
+            return self._update_table_with_rows(rows)
+        except MRMLAdapterError:
+            raise
+        except Exception as exc:
+            raise MRMLAdapterError(
+                f"Failed to update results table from volume nodes: {exc}"
+            ) from exc
+
+    def update_results_table_from_tracked_nodes(self):
+        """Issue #40: build the table from the volume nodes currently
+        registered on the parameter node under ``ROLE_ZEBRAFISH_IMAGES``.
+
+        Used by the widget's post-analysis finish path so the run flow and
+        the scene-reload flow share the same code path
+        (``update_results_table_from_volume_nodes`` → ``_update_table_with_rows``).
+        Issue #41 will call this exact method from the scene-reload handler.
+        """
+        try:
+            import slicer
+            from ZebrafishEmbryoAnalyzerLib.mrml import list_tracked_volume_nodes
+        except Exception:
+            return None
+        param_node = self.getParameterNode()
+        if param_node is None:
+            return None
+        scene = getattr(slicer, "mrmlScene", None)
+        nodes = list_tracked_volume_nodes(param_node, scene)
+        return self.update_results_table_from_volume_nodes(nodes)
+
+    def _update_table_with_rows(self, rows):
+        """Shared tail used by ``update_results_table`` and the reload path.
+
+        Builds the vtk table before touching the MRML scene so a build
+        failure cannot leave the existing table in a torn state.
+        ``MRMLAdapterError`` from mrml.build_vtk_table (e.g. invalid
+        values) propagates as-is.
+        """
+        from ZebrafishEmbryoAnalyzerLib.errors import MRMLAdapterError
+        try:
+            import slicer
+            from ZebrafishEmbryoAnalyzerLib.mrml import (
                 build_vtk_table,
                 get_or_create_table_node,
             )
-            rows = results_to_rows(results)
-            # Build the vtk table before touching the MRML scene: if this fails,
-            # no node is created and no reference is stored.
             completed_table = build_vtk_table(rows)
             param_node = self.getParameterNode()
             if param_node is None:
@@ -367,10 +445,6 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
             return table_node
         except MRMLAdapterError:
             raise
-        except Exception as exc:
-            raise MRMLAdapterError(
-                f"Failed to update results table: {exc}"
-            ) from exc
 
     def update_current_image_node(self, result, um_per_px):
         """Create or update the MRML vector volume node for the current image.

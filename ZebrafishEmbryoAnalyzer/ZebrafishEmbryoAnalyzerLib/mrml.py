@@ -184,6 +184,181 @@ def populate_table_node(rows, node):
     node.SetAndObserveTable(table)
 
 
+# ---------------------------------------------------------------------------
+# Issue #40: results table as a derived cache from node attributes (ADR 0001)
+# ---------------------------------------------------------------------------
+#
+# The table is *never* an authoritative store — every cell must be derivable
+# from the per-image volume node attributes written in #39. This module
+# exposes a single conversion path that builds the same in-memory rows
+# whether it is called after a fresh analysis run or during a scene reload
+# (issue #41), so the two callers cannot drift apart.
+#
+# Row↔node linkage no longer relies on the ``Filename`` column. We iterate
+# the caller-supplied volume-node list in order — for the run-after-analysis
+# path the widget passes the order in ``ROLE_ZEBRAFISH_IMAGES``; for the
+# reload path issue #41 passes the same ordering rebuilt from the
+# parameter-node reference list. The volume node's display name is preserved
+# as the row's ``filename`` so existing export scripts keep working.
+
+
+def _coerce_attr_float(node, attr_name):
+    """Return the float value of ``node.GetAttribute(attr_name)`` or math.nan.
+
+    Empty string (the sentinel set by :func:`_format_attr` for "not
+    computed") becomes ``math.nan`` — same value that ``results_to_rows``
+    writes for ``None`` numeric fields, so the table cell renders identically
+    regardless of which side of the derivation pair produced it.
+
+    Raises ``ValueError`` for non-empty values that do not parse as float
+    (e.g. mistakenly-written strings), so the caller can attribute the
+    problem to the right volume node.
+    """
+    raw = node.GetAttribute(attr_name) if hasattr(node, "GetAttribute") else None
+    if raw is None or raw == "":
+        return math.nan
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Volume node attribute {attr_name!r} is not a valid float: {raw!r}"
+        )
+
+
+def _coerce_attr_int_or_str(node, attr_name):
+    """Return int(node.GetAttribute(attr_name)) if parseable, else the raw string.
+
+    The ``curvature`` column is stored under
+    ``ZebrafishAnalysis.curvature_class``; for older rows it may be the
+    class id (``0``/``1``/``2``) and for newer ones a string label. We
+    attempt int first and fall back to the raw string so both schemas
+    round-trip.
+    """
+    raw = node.GetAttribute(attr_name) if hasattr(node, "GetAttribute") else None
+    if raw is None or raw == "":
+        return ""
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return str(raw)
+
+
+def volume_node_to_result_dict(node):
+    """Reconstruct one result dict from a volume node's own attributes.
+
+    Reads each metric key under :data:`ATTR_PREFIX` and converts back to the
+    Python type the rest of the codebase expects:
+
+    * ``length``, ``ratio``, ``eye_area``, ``eye_diameter`` → ``float`` or
+      ``None`` when the attribute is absent/empty.
+    * ``curvature`` → ``int`` if parseable, otherwise the raw string.
+    * ``exclude`` → ``bool`` (default ``False`` when missing).
+    * ``error`` → ``str`` or empty string.
+    * ``filename`` → display name of the volume node (preserves
+      provenance without depending on the source path; reload works even
+      when the original folder is gone — issue #41).
+    * ``original`` → ``None``. Callers that need the pixel array for
+      gallery rebuilds must read it from the volume node directly via
+      issue #41's reload path; this helper only covers the
+      table-derivation contract.
+    * ``segMTime`` is intentionally not propagated to the result dict —
+      it is metadata for issue #5, not a metric.
+    """
+    length = _coerce_attr_float(node, ATTR_LENGTH)
+    ratio = _coerce_attr_float(node, ATTR_RATIO)
+    eye_area = _coerce_attr_float(node, ATTR_EYE_AREA)
+    eye_diameter = _coerce_attr_float(node, ATTR_EYE_DIAMETER)
+
+    # math.nan is the canonical "missing" sentinel in results_to_rows; mirror
+    # it here so a run-after-analysis reload comparison is value-equal.
+    def _nn(x):
+        return None if isinstance(x, float) and math.isnan(x) else x
+
+    exclude_raw = node.GetAttribute(ATTR_EXCLUDE) if hasattr(node, "GetAttribute") else None
+    exclude_val = exclude_raw == "true" if exclude_raw in (None, "", "true", "false") else False
+
+    error_raw = node.GetAttribute("ZebrafishAnalysis.error") if hasattr(node, "GetAttribute") else None
+    error_val = error_raw if isinstance(error_raw, str) else ""
+
+    name = node.GetName() if hasattr(node, "GetName") else ""
+
+    return {
+        "filename": name,
+        "length": _nn(length),
+        "curvature": _coerce_attr_int_or_str(node, ATTR_CURVATURE_CLASS),
+        "ratio": _nn(ratio),
+        "eye_area": _nn(eye_area),
+        "eye_diameter": _nn(eye_diameter),
+        "exclude": exclude_val,
+        "error": error_val,
+        # No ``original`` — see docstring.
+    }
+
+
+def volume_nodes_to_results(volume_nodes):
+    """Map a list of volume nodes to the canonical results list shape.
+
+    Order is preserved — the caller is responsible for passing the same
+    order both after a fresh run (insertion order of the loaded folder)
+    and after a scene reload (the ``ROLE_ZEBRAFISH_IMAGES`` reference
+    order on the parameter node).
+    """
+    return [volume_node_to_result_dict(n) for n in volume_nodes]
+
+
+def volume_nodes_to_rows(volume_nodes):
+    """Single conversion path used by both the run-after-analysis table
+    build and the scene-reload table build (issue #41).
+
+    Returns rows in the same format as :func:`results_to_rows` so the
+    downstream ``build_vtk_table`` / ``populate_table_node`` pipeline is
+    untouched. This is the function that satisfies the "single code path"
+    acceptance criterion in issue #40.
+    """
+    return results_to_rows(volume_nodes_to_results(volume_nodes))
+
+
+def list_tracked_volume_nodes(param_node, scene):
+    """Return the volume nodes currently registered on ``param_node`` under
+    :data:`ROLE_ZEBRAFISH_IMAGES`, in insertion order.
+
+    The order matters: ``volume_nodes_to_rows`` produces a row per node in
+    the order received, and the table's Filename column inherits each
+    node's display name. Issue #38 sets up the references in folder-load
+    order; #41 must reproduce the same order from the scene after reload.
+
+    Looks up each ID through ``scene.GetNodeByID``. Missing IDs (e.g. a
+    node the user deleted from the Data module between load and run) are
+    silently skipped — they will surface as a missing row in the table
+    rather than crash the build.
+    """
+    if param_node is None or scene is None:
+        return []
+    if not hasattr(param_node, "GetNodeReferenceIDs"):
+        return []
+    try:
+        ids = list(param_node.GetNodeReferenceIDs(ROLE_ZEBRAFISH_IMAGES) or [])
+    except Exception:
+        return []
+    out = []
+    for nid in ids:
+        if not nid:
+            continue
+        try:
+            node = scene.GetNodeByID(nid)
+        except Exception:
+            node = None
+        if node is None:
+            continue
+        try:
+            if hasattr(node, "IsA") and not node.IsA("vtkMRMLVolumeNode"):
+                continue
+        except Exception:
+            continue
+        out.append(node)
+    return out
+
+
 def image_geometry(h_orig: int, w_orig: int, um_per_px: float):
     """Return (dims, spacing, origin) for a vtkMRMLVectorVolumeNode.
 

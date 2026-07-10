@@ -957,9 +957,17 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             slicer.util.errorDisplay(f"Could not start analysis:\n{exc}")
 
     def _try_update_mrml_table(self, results):
-        """Update the MRML results table; log and show a status warning on failure."""
+        """Update the MRML results table; log and show a status warning on failure.
+
+        Issues #40 / #41: the table is now always rebuilt from the per-image
+        volume nodes (single code path), not from the in-memory ``results``
+        list — the volume nodes carry the ``ZebrafishAnalysis.*`` attributes
+        that are the source of truth (ADR 0001). The ``results`` argument
+        is still accepted so callers stay backward-compatible but it is
+        ignored once the volume-node path is in use.
+        """
         try:
-            self._logic.update_results_table(results)
+            self._logic.update_results_table_from_tracked_nodes()
         except MRMLAdapterError as exc:
             logging.warning("ZebrafishEmbryoAnalyzer: MRML table update failed: %s", exc)
             slicer.util.showStatusMessage(
