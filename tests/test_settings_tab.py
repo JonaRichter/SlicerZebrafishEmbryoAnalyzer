@@ -1,9 +1,9 @@
 """Tests for SettingsTab (issue #46) — model cache deletion UI + helpers.
 
-Pure-Python helpers (`_format_size`, `_list_cached_models`, `_delete_files`,
-`_wipe_cache_directory`) are tested directly. Widget methods are exercised
-via AST-extracted method source bound to a MagicMock-backed stub, so the
-real production code runs without a live Slicer/Qt environment.
+Pure-Python helpers (`_format_size`, `_list_cached_models`, `_delete_files`)
+are tested directly. Widget methods are exercised via AST-extracted method
+source bound to a MagicMock-backed stub, so the real production code runs
+without a live Slicer/Qt environment.
 """
 
 import ast
@@ -114,7 +114,6 @@ def _make_stub():
     # can override just the few that matter for their assertion.
     obj._select_all = MagicMock()
     obj._btn_delete_selected = MagicMock()
-    obj._btn_delete_all = MagicMock()
     obj._row_widgets = []
     return obj
 
@@ -182,30 +181,6 @@ def test_delete_files_handles_directory_path_gracefully(settings_module, tmp_pat
     assert d.exists()
 
 
-def test_wipe_cache_directory_removes_only_top_level_files(settings_module, tmp_path):
-    """`_wipe_cache_directory` clears the top-level files; subdirs and their
-    contents are intentionally left intact (sibling-tooling protection)."""
-    (tmp_path / "a.pth").write_bytes(b"x")
-    (tmp_path / "b.pth").write_bytes(b"x")
-    subdir = tmp_path / "sub"
-    subdir.mkdir()
-    nested = subdir / "c.pth"
-    nested.write_bytes(b"x")
-
-    n = settings_module._wipe_cache_directory(tmp_path)
-    assert n == 2
-    assert not (tmp_path / "a.pth").exists()
-    assert not (tmp_path / "b.pth").exists()
-    assert subdir.exists()
-    assert nested.exists()
-
-
-def test_wipe_cache_directory_missing_dir_is_safe(settings_module, tmp_path):
-    """Calling wipe on a non-existent directory returns 0 (no exception)."""
-    n = settings_module._wipe_cache_directory(tmp_path / "does-not-exist")
-    assert n == 0
-
-
 # ---------------------------------------------------------------------------
 # Widget behaviour: AST-extracted methods on a stub
 # ---------------------------------------------------------------------------
@@ -246,11 +221,9 @@ def test_on_select_all_toggled_skips_missing_rows(settings_module):
 def test_update_button_labels_reflects_selection_count(settings_module):
     obj = _make_stub()
     btn_sel = MagicMock()
-    btn_all = MagicMock()
     master = MagicMock()
     blocker_mock = MagicMock()
     obj._btn_delete_selected = btn_sel
-    obj._btn_delete_all = btn_all
     obj._select_all = master
     # Two existing rows, one checked.
     cb1 = MagicMock(); cb1.isChecked.return_value = True
@@ -268,18 +241,15 @@ def test_update_button_labels_reflects_selection_count(settings_module):
 
     btn_sel.setText.assert_called_with("Delete selected models (1)")
     btn_sel.setEnabled.assert_called_with(True)
-    btn_all.setEnabled.assert_called_with(True)
     master.setText.assert_called_with("Select all")  # not all selected → "Select all"
 
 
 def test_update_button_labels_all_selected_flips_master_label(settings_module):
     obj = _make_stub()
     btn_sel = MagicMock()
-    btn_all = MagicMock()
     master = MagicMock()
     blocker_mock = MagicMock()
     obj._btn_delete_selected = btn_sel
-    obj._btn_delete_all = btn_all
     obj._select_all = master
     cb1 = MagicMock(); cb1.isChecked.return_value = True
     cb2 = MagicMock(); cb2.isChecked.return_value = True
@@ -301,11 +271,9 @@ def test_update_button_labels_all_selected_flips_master_label(settings_module):
 def test_set_actions_enabled_disables_all_when_false(settings_module):
     obj = _make_stub()
     btn_sel = MagicMock()
-    btn_all = MagicMock()
     master = MagicMock()
     cb_existing = MagicMock(); cb_existing.isChecked.return_value = True  # selected
     obj._btn_delete_selected = btn_sel
-    obj._btn_delete_all = btn_all
     obj._select_all = master
     obj._row_widgets = [
         ("a", cb_existing, MagicMock(), True),
@@ -315,7 +283,6 @@ def test_set_actions_enabled_disables_all_when_false(settings_module):
     obj.set_actions_enabled(False)
 
     btn_sel.setEnabled.assert_called_with(False)
-    btn_all.setEnabled.assert_called_with(False)
     master.setEnabled.assert_called_with(False)
     cb_existing.setEnabled.assert_called_with(False)
 
@@ -323,11 +290,9 @@ def test_set_actions_enabled_disables_all_when_false(settings_module):
 def test_set_actions_enabled_true_with_selection_keeps_button_enabled(settings_module):
     obj = _make_stub()
     btn_sel = MagicMock()
-    btn_all = MagicMock()
     master = MagicMock()
     cb = MagicMock(); cb.isChecked.return_value = True
     obj._btn_delete_selected = btn_sel
-    obj._btn_delete_all = btn_all
     obj._select_all = master
     obj._row_widgets = [
         ("a", cb, MagicMock(), True),
@@ -337,6 +302,5 @@ def test_set_actions_enabled_true_with_selection_keeps_button_enabled(settings_m
     obj.set_actions_enabled(True)
 
     btn_sel.setEnabled.assert_called_with(True)
-    btn_all.setEnabled.assert_called_with(True)
     master.setEnabled.assert_called_with(True)
     cb.setEnabled.assert_called_with(True)

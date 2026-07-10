@@ -13,7 +13,6 @@ from pathlib import Path
 import qt
 
 from ZebrafishEmbryoAnalyzerLib.model_manifest import (
-    _CACHE_DIR,
     collect_all_model_entries,
     get_cached_path,
 )
@@ -84,25 +83,6 @@ def _delete_files(paths) -> int:
     return n
 
 
-def _wipe_cache_directory(cache_dir=None) -> int:
-    """Delete every regular file directly inside cache_dir (not the dir itself,
-    not nested files inside subdirectories). Returns count actually deleted.
-    """
-    cache_dir = Path(cache_dir) if cache_dir is not None else Path(_CACHE_DIR)
-    n = 0
-    try:
-        for entry in cache_dir.iterdir():
-            try:
-                if entry.is_file():
-                    entry.unlink()
-                    n += 1
-            except OSError:
-                pass
-    except OSError:
-        pass
-    return n
-
-
 # ---------------------------------------------------------------------------
 # Widget
 # ---------------------------------------------------------------------------
@@ -148,8 +128,6 @@ class SettingsTab(qt.QWidget):
 
         self._btn_delete_selected = qt.QPushButton("Delete selected models")
         layout.addWidget(self._btn_delete_selected)
-        self._btn_delete_all = qt.QPushButton("Delete all cached models")
-        layout.addWidget(self._btn_delete_all)
 
         layout.addStretch(1)
         scroll.setWidget(container)
@@ -159,7 +137,6 @@ class SettingsTab(qt.QWidget):
         outer.addWidget(scroll)
 
         self._btn_delete_selected.clicked.connect(self._on_delete_selected)
-        self._btn_delete_all.clicked.connect(self._on_delete_all)
 
         self.refresh()
 
@@ -233,29 +210,16 @@ class SettingsTab(qt.QWidget):
             pass
         self.refresh()
 
-    def _on_delete_all(self):
-        n = _wipe_cache_directory()
-        try:
-            import slicer
-            slicer.util.showStatusMessage(
-                f"Cleared model cache ({n} file(s)). They will be re-downloaded on next analysis.",
-                5000,
-            )
-        except Exception:
-            pass
-        self.refresh()
-
     # ----- state-driven enable / disable -----
 
     def set_actions_enabled(self, enabled):
-        """Disable both destructive buttons (and per-row checkboxes) while
+        """Disable the destructive button (and per-row checkboxes) while
         inference or model download is in flight. Called from the parent
         widget at every start/finish point of those operations.
         """
         has_selection = self._has_selection()
         has_any = self._has_any_existing()
         self._btn_delete_selected.setEnabled(enabled and has_selection)
-        self._btn_delete_all.setEnabled(enabled and has_any)
         for _id, cb, _size, exists in self._row_widgets:
             cb.setEnabled(enabled and exists)
         self._select_all.setEnabled(enabled and has_any)
@@ -285,7 +249,6 @@ class SettingsTab(qt.QWidget):
         )
 
         self._btn_delete_selected.setEnabled(n_selected > 0)
-        self._btn_delete_all.setEnabled(n_enabled > 0)
 
     def _has_selection(self):
         return any(
