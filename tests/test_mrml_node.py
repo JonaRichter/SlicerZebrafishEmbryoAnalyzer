@@ -293,6 +293,29 @@ def test_mrml_in_reload_eviction_list():
     )
 
 
+def test_core_submodules_in_reload_eviction_list():
+    """All five ZebrafishEmbryoAnalyzerCore submodules must be evicted on reload.
+
+    Regression guard for issue #49: without explicit eviction, plain Python
+    import caching keeps stale Core code in sys.modules across Developer Tools
+    reloads, so editing seg.py / seg_helper.py / length.py / manual.py /
+    scalebar.py requires a full Slicer restart.
+    """
+    src = open(_MAIN_PY).read()
+    expected = (
+        '"ZebrafishEmbryoAnalyzerCore.seg"',
+        '"ZebrafishEmbryoAnalyzerCore.seg_helper"',
+        '"ZebrafishEmbryoAnalyzerCore.length"',
+        '"ZebrafishEmbryoAnalyzerCore.manual"',
+        '"ZebrafishEmbryoAnalyzerCore.scalebar"',
+    )
+    for module in expected:
+        assert module in src, (
+            f"{module} must be in the reload eviction list in "
+            f"ZebrafishEmbryoAnalyzer.py (issue #49)"
+        )
+
+
 def test_no_get_first_node_by_name_in_mrml():
     """mrml.py must not use GetFirstNodeByName for ownership lookups."""
     src = open(_MRML_PY).read()

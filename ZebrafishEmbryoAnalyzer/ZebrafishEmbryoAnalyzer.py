@@ -31,11 +31,23 @@ _LIB_MODULES = (
     "ZebrafishEmbryoAnalyzerLib.zoom_view",
 )
 
-def _evict_lib_modules():
-    for _m in _LIB_MODULES:
+_CORE_MODULES = (
+    "ZebrafishEmbryoAnalyzerCore.seg",
+    "ZebrafishEmbryoAnalyzerCore.seg_helper",
+    "ZebrafishEmbryoAnalyzerCore.length",
+    "ZebrafishEmbryoAnalyzerCore.manual",
+    "ZebrafishEmbryoAnalyzerCore.scalebar",
+)
+
+_RELOAD_MODULES = _LIB_MODULES + _CORE_MODULES
+
+
+def _evict_reload_modules():
+    for _m in _RELOAD_MODULES:
         sys.modules.pop(_m, None)
 
-_evict_lib_modules()
+
+_evict_reload_modules()
 
 
 class ZebrafishEmbryoAnalyzer(ScriptedLoadableModule):
@@ -66,7 +78,7 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
 
     def setup(self):
         ScriptedLoadableModuleWidget.setup(self)
-        _evict_lib_modules()
+        _evict_reload_modules()
 
         self.logic = ZebrafishEmbryoAnalyzerLogic()
 
