@@ -32,7 +32,7 @@ def _install_reflow_on_stub():
     """Define `_reflow` as a module-level function that operates on `self`."""
     from ZebrafishEmbryoAnalyzerLib.gallery_tab import THUMB_SIZE
     src = _extract_reflow_source()
-    namespace = {"THUMB_SIZE": THUMB_SIZE}
+    namespace = {"THUMB_SIZE": THUMB_SIZE, "qt": sys.modules["qt"]}
     exec(src, namespace)
     return namespace["_reflow"]
 
@@ -51,6 +51,7 @@ class _StubGalleryTab:
         grid_mock.spacing = 6
         self._grid = grid_mock
         self._container = MagicMock()
+        self._scroll = MagicMock()
 
 
 @pytest.fixture
@@ -158,11 +159,13 @@ def test_reflow_skipped_when_column_count_unchanged(gallery_module):
     g._reflow()  # first call populates n_cols
     g._grid.reset_mock()
     g._container.reset_mock()
+    sys.modules["qt"].QApplication.sendEvent.reset_mock()
     g._reflow()  # second call: should early-return
     g._grid.setColumnStretch.assert_not_called()
     g._grid.addWidget.assert_not_called()
     g._grid.activate.assert_not_called()
     g._container.adjustSize.assert_not_called()
+    sys.modules["qt"].QApplication.sendEvent.assert_not_called()
 
 
 def test_reflow_calls_container_adjust_size_when_repositioning(gallery_module):
@@ -188,6 +191,28 @@ def test_reflow_activates_grid_before_adjusting_container_size(gallery_module):
     g._reflow()
     g._grid.activate.assert_called_once()
     g._container.adjustSize.assert_called_once()
+
+
+def test_reflow_sends_synthetic_resize_event_to_scroll_area(gallery_module):
+    """Issue #51 (root cause): with widgetResizable(False), QScrollArea only
+    repositions/repaints its scrolled widget from inside its own
+    resizeEvent() handler — resizing the container from _reflow() (as the
+    two fixes above do) never triggers that handler by itself. Confirmed
+    live: forcing container.adjustSize() and even explicit repaint() calls
+    left the gallery blank after the initial image load, while any action
+    that made Slicer genuinely resize the scroll area (switching modules
+    away and back, which resizes the module panel dock) fixed it
+    immediately. _reflow() must dispatch a synthetic QResizeEvent to the
+    scroll area itself so this doesn't depend on an unrelated ancestor
+    happening to resize it.
+    """
+    g = _make_gallery(_stub_cells(3), width=2000)
+    g._reflow()
+    qt = sys.modules["qt"]
+    assert qt.QApplication.sendEvent.call_count == 1
+    call_args = qt.QApplication.sendEvent.call_args.args
+    assert call_args[0] is g._scroll
+    qt.QResizeEvent.assert_called_once_with(g._scroll.size, g._scroll.size)
 
 
 def test_reflow_does_not_call_set_row_stretch(gallery_module):
@@ -288,6 +313,7 @@ class _StubGalleryTabForPopulate:
         self._thumbnails = []
         self._n_cols = 0
         self._container = MagicMock()
+        self._scroll = MagicMock()
 
 
 @pytest.fixture

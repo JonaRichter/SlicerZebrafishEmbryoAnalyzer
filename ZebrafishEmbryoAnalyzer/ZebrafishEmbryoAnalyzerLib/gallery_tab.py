@@ -206,6 +206,19 @@ class GalleryTab(qt.QWidget):
         # adjustSize() resizes the container to the now-current hint.
         self._grid.activate()
         self._container.adjustSize()
+        # Issue #51 (root cause): with widgetResizable(False), QScrollArea
+        # only repositions/repaints its scrolled widget from inside its own
+        # resizeEvent() handler — it never notices when *we* resize the
+        # container from here. A genuine top-level resize that happens to
+        # change the scroll area's own size (e.g. Slicer's shell-layout dock
+        # resize on module re-entry) triggers that handler and "fixes" the
+        # gallery; a plain window resize that leaves the module panel's own
+        # width unchanged does not, and neither does the container resize
+        # above. Sending the scroll area a synthetic resize event forces the
+        # same internal repositioning without depending on an unrelated
+        # ancestor happening to resize it.
+        scroll_size = self._scroll.size
+        qt.QApplication.sendEvent(self._scroll, qt.QResizeEvent(scroll_size, scroll_size))
         # Issue #16: the previous code called setRowStretch(rows, 1) on a
         # notional empty row to "push content up". This interacted
         # inconsistently with variable row heights (multi-line captions are
