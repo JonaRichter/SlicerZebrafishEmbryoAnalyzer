@@ -50,6 +50,7 @@ class _StubGalleryTab:
         grid_mock = MagicMock()
         grid_mock.spacing = 6
         self._grid = grid_mock
+        self._container = MagicMock()
 
 
 @pytest.fixture
@@ -156,9 +157,22 @@ def test_reflow_skipped_when_column_count_unchanged(gallery_module):
     g = _make_gallery(_stub_cells(3), width=2000)
     g._reflow()  # first call populates n_cols
     g._grid.reset_mock()
+    g._container.reset_mock()
     g._reflow()  # second call: should early-return
     g._grid.setColumnStretch.assert_not_called()
     g._grid.addWidget.assert_not_called()
+    g._container.adjustSize.assert_not_called()
+
+
+def test_reflow_calls_container_adjust_size_when_repositioning(gallery_module):
+    """Issue #51: with widgetResizable(False), QScrollArea no longer force-
+    resizes the container to the viewport, so _reflow must explicitly call
+    self._container.adjustSize() after repositioning cells — otherwise the
+    container keeps its stale/default size and the gallery appears empty.
+    """
+    g = _make_gallery(_stub_cells(3), width=2000)
+    g._reflow()
+    g._container.adjustSize.assert_called_once()
 
 
 def test_reflow_does_not_call_set_row_stretch(gallery_module):
@@ -258,6 +272,7 @@ class _StubGalleryTabForPopulate:
         self._cells = []
         self._thumbnails = []
         self._n_cols = 0
+        self._container = MagicMock()
 
 
 @pytest.fixture
