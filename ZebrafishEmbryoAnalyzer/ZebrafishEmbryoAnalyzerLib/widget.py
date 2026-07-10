@@ -433,6 +433,10 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             for f in os.listdir(folder)
             if os.path.splitext(f)[1].lower() in exts and not f.startswith(".")
         ])
+        if not paths:
+            self._scale_status.setText(
+                "No supported images found in the selected folder."
+            )
         self._set_queue(paths)
 
     def _on_load_files(self):

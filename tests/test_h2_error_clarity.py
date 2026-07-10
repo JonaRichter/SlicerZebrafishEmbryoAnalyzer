@@ -147,6 +147,84 @@ def test_set_queue_does_not_enable_button_when_deps_missing(widget_module):
 
 
 # ---------------------------------------------------------------------------
+# Folder-load feedback (issue #30)
+# ---------------------------------------------------------------------------
+
+def test_on_load_folder_shows_message_when_no_supported_images(widget_module, tmp_path, monkeypatch):
+    """Issue #30: silent empty queue is a UX bug.
+
+    Selecting a folder that contains no .png/.tif/.tiff/.jpg/.jpeg files must
+    surface a visible status message instead of leaving the user staring at
+    an empty queue with no explanation.
+    """
+    import qt  # the MagicMock installed by the fixture
+    from unittest.mock import MagicMock
+
+    w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
+    w._scale_status = MagicMock()
+    w._queue_list = MagicMock()
+    w._results = []
+    w._excluded = set()
+    w._run_token = 0
+    w._active_runner = None
+    w._run_stack = MagicMock()
+    w._tabs = MagicMock()
+    w._gallery = MagicMock()
+    w._detail = MagicMock()
+    w._results_tab = MagicMock()
+
+    # Stub out the QSettings / QFileDialog / _set_queue calls so we only
+    # observe the feedback branch.
+    qsettings_mock = MagicMock()
+    monkeypatch.setattr(qt, "QSettings", lambda *a, **k: qsettings_mock)
+    monkeypatch.setattr(qt, "QFileDialog", MagicMock(getExistingDirectory=lambda *a, **k: str(tmp_path)))
+    monkeypatch.setattr(w, "_set_queue", MagicMock())
+
+    w._on_load_folder()
+
+    w._scale_status.setText.assert_called_once_with(
+        "No supported images found in the selected folder."
+    )
+    # Queue is still cleared via _set_queue — user sees an empty queue plus
+    # the explanation above, not stale contents from a previous load.
+    w._set_queue.assert_called_once_with([])
+
+
+def test_on_load_folder_no_message_when_folder_has_images(widget_module, tmp_path, monkeypatch):
+    """Counter-test for issue #30: a successful load must not show the empty-folder message."""
+    import qt
+    from unittest.mock import MagicMock
+
+    # Create a supported image file inside tmp_path so the listing yields
+    # a non-empty result.
+    (tmp_path / "sample.png").write_bytes(b"")
+
+    w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
+    w._scale_status = MagicMock()
+    w._queue_list = MagicMock()
+    w._results = []
+    w._excluded = set()
+    w._run_token = 0
+    w._active_runner = None
+    w._run_stack = MagicMock()
+    w._tabs = MagicMock()
+    w._gallery = MagicMock()
+    w._detail = MagicMock()
+    w._results_tab = MagicMock()
+
+    qsettings_mock = MagicMock()
+    monkeypatch.setattr(qt, "QSettings", lambda *a, **k: qsettings_mock)
+    monkeypatch.setattr(qt, "QFileDialog", MagicMock(getExistingDirectory=lambda *a, **k: str(tmp_path)))
+    monkeypatch.setattr(w, "_set_queue", MagicMock())
+
+    w._on_load_folder()
+
+    w._scale_status.setText.assert_not_called()
+    w._set_queue.assert_called_once()
+    assert len(w._set_queue.call_args[0][0]) == 1
+
+
+# ---------------------------------------------------------------------------
 # Error categorization
 # ---------------------------------------------------------------------------
 
