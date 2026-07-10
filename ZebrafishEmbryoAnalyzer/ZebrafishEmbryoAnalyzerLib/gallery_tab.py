@@ -145,6 +145,18 @@ class GalleryTab(qt.QWidget):
             self._thumbnails.append(label)
 
         self._reflow()
+        # Issue #51 (follow-up): on the very first populate() after opening
+        # the module, self.width can still reflect a stale/default size —
+        # Qt hasn't yet processed the module panel's own pending resize/show
+        # events at this point in the synchronous Load Folder... handler.
+        # _reflow() then locks in a wrong column count from that stale
+        # width, and nothing corrects it until some later event (e.g.
+        # leaving and re-entering the module) forces a real resizeEvent.
+        # Scheduling a second reflow for the next event-loop tick lets it
+        # re-run once the real geometry is available; _reflow()'s own
+        # early-return makes this a no-op if the column count already
+        # matched.
+        qt.QTimer.singleShot(0, self._reflow)
 
     def update_thumb(self, index: int, rgb_array: np.ndarray) -> None:
         """Update a single thumbnail — builds thumb from full-res rgb on main thread."""

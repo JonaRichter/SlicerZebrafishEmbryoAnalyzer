@@ -438,6 +438,21 @@ def test_populate_adds_bottom_stretch_to_each_cell(populated_stub):
         )
 
 
+def test_populate_schedules_deferred_reflow(populated_stub):
+    """Issue #51 (follow-up): on the very first populate() after opening the
+    module, self.width can still reflect a stale/default size because Qt
+    hasn't yet processed the module panel's pending resize/show events at
+    that point in the synchronous Load Folder... handler. populate() must
+    schedule a second _reflow() via QTimer.singleShot(0, ...) so it re-runs
+    once real geometry is available — otherwise the gallery can stay empty
+    until some unrelated event (e.g. leaving and re-entering the module)
+    happens to trigger a real resizeEvent.
+    """
+    stub, _, _ = populated_stub
+    qt = sys.modules["qt"]
+    qt.QTimer.singleShot.assert_called_once_with(0, stub._reflow)
+
+
 # ---------------------------------------------------------------------------
 # Grid-alignment regression tests for issue #16 (third layer)
 # ---------------------------------------------------------------------------
