@@ -185,8 +185,14 @@ class GalleryTab(qt.QWidget):
         for col in range(cols):
             self._grid.setColumnStretch(col, 0)
         # Issue #51: with widgetResizable(False) the scroll area no longer
-        # auto-resizes the container to fit the grid, so ask it to recompute
-        # its own size now that the cells have been repositioned.
+        # auto-resizes the container to fit the grid. addWidget() only
+        # invalidates the layout — actual geometry recompute is deferred to a
+        # posted LayoutRequest event, which a hidden widget (Gallery not the
+        # active tab yet, e.g. right after Load Folder...) never receives. So
+        # adjustSize() alone can read a stale size hint. activate() forces
+        # the grid to recompute immediately regardless of visibility, then
+        # adjustSize() resizes the container to the now-current hint.
+        self._grid.activate()
         self._container.adjustSize()
         # Issue #16: the previous code called setRowStretch(rows, 1) on a
         # notional empty row to "push content up". This interacted
