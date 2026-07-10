@@ -1154,12 +1154,29 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             msg = "\n".join(f"• {r['filename']}: {r['error']}" for r in errors)
             slicer.util.warningDisplay(f"Errors in {len(errors)} image(s):\n\n{msg}")
 
+    def _resolve_export_start_dir(self):
+        settings = qt.QSettings()
+        last_export = str(settings.value("ZebrafishEmbryoAnalyzer/lastExportFolder", "")) or ""
+        if last_export:
+            return last_export
+        last = str(settings.value("ZebrafishEmbryoAnalyzer/lastFolder", "")) or ""
+        return last
+
+    def _remember_export_dir(self, path):
+        import os
+        folder = os.path.dirname(str(path))
+        if not folder:
+            return
+        settings = qt.QSettings()
+        settings.setValue("ZebrafishEmbryoAnalyzer/lastExportFolder", folder)
+
     def _on_export_excel(self):
         from ZebrafishEmbryoAnalyzerLib.export import export_excel
         if not self._results:
             slicer.util.warningDisplay("No results to export. Run analysis first.")
             return
-        path = qt.QFileDialog.getSaveFileName(None, "Save Excel", "", "Excel (*.xlsx)")
+        start_dir = self._resolve_export_start_dir()
+        path = qt.QFileDialog.getSaveFileName(None, "Save Excel", start_dir, "Excel (*.xlsx)")
         if path:
             if not path.endswith(".xlsx"):
                 path += ".xlsx"
@@ -1167,6 +1184,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             try:
                 export_excel(active, path)
                 slicer.util.infoDisplay(f"Saved {len(active)} rows to:\n{path}")
+                self._remember_export_dir(path)
             except Exception as e:
                 slicer.util.errorDisplay(f"Export failed:\n{e}")
 
@@ -1175,7 +1193,8 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         if not self._results:
             slicer.util.warningDisplay("No results to export. Run analysis first.")
             return
-        path = qt.QFileDialog.getSaveFileName(None, "Save CSV", "", "CSV (*.csv)")
+        start_dir = self._resolve_export_start_dir()
+        path = qt.QFileDialog.getSaveFileName(None, "Save CSV", start_dir, "CSV (*.csv)")
         if path:
             if not path.endswith(".csv"):
                 path += ".csv"
@@ -1183,5 +1202,6 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             try:
                 export_csv(active, path)
                 slicer.util.infoDisplay(f"Saved {len(active)} rows to:\n{path}")
+                self._remember_export_dir(path)
             except Exception as e:
                 slicer.util.errorDisplay(f"Export failed:\n{e}")
