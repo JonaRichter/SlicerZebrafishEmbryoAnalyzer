@@ -404,6 +404,34 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         )
         self._detail._params_getter = self._get_correction_params
         self._tabs.addTab(self._detail, "Detail")
+        # Issue #42: "Recompute metrics" button shown on the detail tab
+        # only when the current image's segmentation is marked stale.
+        # Created lazily so unit tests can run without a full Qt setup.
+        self._recompute_btn = None
+        try:
+            import qt
+            self._recompute_btn = qt.QPushButton("Recompute metrics")
+            self._recompute_btn.setToolTip(
+                "Segmentation was edited in the Segment Editor — "
+                "recompute metrics from the new segmentation."
+            )
+            self._recompute_btn.setEnabled(False)
+            self._recompute_btn.setVisible(False)
+            self._recompute_btn.connect(
+                "clicked()", lambda: self._on_recompute_current_detail()
+            )
+            # Place it in the tab bar area so it is reachable when the
+            # user is viewing the Detail tab.
+            self._tabs.tabBar().setTabButton(
+                self._tabs.indexOf(self._detail),
+                self._tabs.tabBar().RightSide,
+                self._recompute_btn,
+            )
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: detail recompute button init failed"
+            )
+            self._recompute_btn = None
 
         from ZebrafishEmbryoAnalyzerLib.results_tab import ResultsTab
         self._results_tab = ResultsTab(on_exclude_change=self._on_exclude_change)
@@ -1023,6 +1051,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         if index < len(self._results):
             self._try_update_mrml_image(self._results[index])
             self._try_update_mrml_segmentation(self._results[index])
+        self._refresh_detail_recompute_button()
 
     def _navigate_detail(self, delta: int):
         if not self._results:
@@ -1427,6 +1456,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 self._detail.show_result(0, self._results)
                 sync_excl = bool(self._results[0]["filename"] in self._excluded)
                 self._detail.sync_exclude(sync_excl)
+                self._refresh_detail_recompute_button()
         except Exception:
             logging.exception("ZebrafishEmbryoAnalyzer: detail view rebuild failed on scene reload")
         try:
@@ -1454,6 +1484,202 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 except Exception:
                     pass
 
+    # ----------------------------------------------------------------- #
+    # Issue #42: prompt + recompute for stale segment-editor edits.
+    # ----------------------------------------------------------------- #
+    def prompt_recompute_stale_images(self):
+        """On every module re-entry, ask the user whether to recompute
+        metrics for each tracked image whose segmentation has been
+        edited in the Segment Editor since the last analysis.
+
+        Policy is centralised in :meth:`_stale_recompute_prompt_policy`
+        so the per-image decision logic is unit-testable without a Qt
+        message box. This method only handles the UI loop and the
+        recompute call.
+        """
+        if not getattr(self, "_logic", None):
+            return
+        try:
+            stale_nodes = self._logic.list_stale_tracked_volume_nodes()
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: list_stale_tracked_volume_nodes failed"
+            )
+            return
+        if not stale_nodes:
+            return
+
+        for vol in stale_nodes:
+            name = ""
+            try:
+                name = vol.GetName() if hasattr(vol, "GetName") else ""
+            except Exception:
+                name = ""
+            decision = self._stale_recompute_prompt_policy(name)
+            if decision == "yes":
+                self._recompute_for_volume_node(vol)
+            elif decision == "dismiss":
+                break
+
+    def _stale_recompute_prompt_policy(self, filename):
+        """User-facing yes/no prompt for one stale image.
+
+        Centralised so the prompt cadence (ask every enter vs. ask
+        only once) is a one-line change in this function — the rest
+        of the loop in :meth:`prompt_recompute_stale_images` does not
+        need to change. Returns one of ``"yes"``, ``"no"``, or
+        ``"dismiss"``. ``"dismiss"`` is treated like ``"no"`` but
+        stops the prompt loop (lets a user "ask no to all" by closing
+        one prompt with the close button).
+        """
+        try:
+            import qt
+            box = qt.QMessageBox()
+            box.setIcon(qt.QMessageBox.Question)
+            box.setWindowTitle("Recompute metrics?")
+            box.setText(
+                f"Segmentation for {filename or 'this image'} has been edited "
+                f"in the Segment Editor.\n\nRecompute metrics now?"
+            )
+            box.setStandardButtons(qt.QMessageBox.Yes | qt.QMessageBox.No)
+            box.setDefaultButton(qt.QMessageBox.Yes)
+            res = box.exec_()
+            if res == qt.QMessageBox.Yes:
+                return "yes"
+            # No button or dialog closed returns to the caller loop
+            # as "no" so we continue with the next stale image.
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: stale-recompute prompt failed"
+            )
+            return "no"
+        return "no"
+
+    def _recompute_for_volume_node(self, volume_node):
+        """Run the recompute pipeline for one volume node and refresh
+        UI state.
+
+        Updates the matching entry in ``self._results`` in place,
+        removes it from the auto-excluded set, rebuilds the table via
+        the single code path, refreshes the gallery / detail views if
+        applicable, and clears the stale attribute via the Logic
+        layer.
+        """
+        if not getattr(self, "_logic", None) or volume_node is None:
+            return
+        try:
+            new_row = self._logic.recompute_metrics_for_volume_node(volume_node)
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: recompute_metrics_for_volume_node failed"
+            )
+            return
+        if new_row is None:
+            try:
+                import slicer
+                slicer.util.showStatusMessage(
+                    "Recompute failed — see application log.", 5000
+                )
+            except Exception:
+                pass
+            return
+
+        # Find the matching row in self._results and update in place
+        # so the gallery/detail/excluded state stay consistent.
+        new_id = new_row.get("_volume_node_id")
+        for i, r in enumerate(self._results):
+            if r.get("_volume_node_id") == new_id:
+                # Preserve the pixel array — the recompute pipeline
+                # does not carry it forward.
+                if r.get("original") is not None:
+                    new_row["original"] = r["original"]
+                self._results[i] = new_row
+                if new_row["filename"] in self._excluded:
+                    self._excluded.discard(new_row["filename"])
+                break
+
+        # Refresh UI.
+        try:
+            self._gallery.populate(self._results)
+        except Exception:
+            pass
+        try:
+            self._results_tab.populate(self._results, self._excluded)
+        except Exception:
+            pass
+        try:
+            self._logic.update_results_table_from_tracked_nodes()
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: table rebuild after recompute failed"
+            )
+        # If the recomputed image is the currently-shown detail view,
+        # refresh the detail cache so it picks up the new metrics.
+        try:
+            if (
+                0 <= self._current_detail_idx < len(self._results)
+                and self._results[self._current_detail_idx].get("_volume_node_id")
+                == new_id
+            ):
+                self._detail.invalidate_cache()
+                self._detail.show_result(self._current_detail_idx, self._results)
+                self._detail.sync_exclude(False)
+                self._refresh_detail_recompute_button()
+        except Exception:
+            pass
+
+    def _on_recompute_current_detail(self):
+        """Detail-view "Recompute metrics" action — recompute the
+        currently-shown image if it is stale. No-op when the current
+        detail is healthy, when no detail is selected, or when the
+        row has no associated volume node.
+
+        Wired to the recompute button added to the detail view; it is
+        only enabled when the row is stale (see ``_set_detail_buttons_enabled``).
+        """
+        if not (0 <= self._current_detail_idx < len(self._results)):
+            return
+        r = self._results[self._current_detail_idx]
+        vol = r.get("_volume_node")
+        if vol is None:
+            return
+        if not getattr(self._logic, "is_volume_node_stale", lambda _v: False)(vol):
+            return
+        self._recompute_for_volume_node(vol)
+        # After recompute the current row is no longer stale — refresh
+        # the button state.
+        try:
+            self._refresh_detail_recompute_button()
+        except Exception:
+            pass
+
+    def _refresh_detail_recompute_button(self):
+        """Enable / disable the detail-view "Recompute metrics" button
+        based on whether the currently shown row's segmentation is
+        marked stale. No-op when the button has not been created yet
+        (older builds / tests without the widget fully set up).
+        """
+        btn = getattr(self, "_recompute_btn", None)
+        if btn is None:
+            return
+        is_stale = False
+        try:
+            if 0 <= self._current_detail_idx < len(self._results):
+                vol = self._results[self._current_detail_idx].get("_volume_node")
+                is_stale = bool(
+                    vol is not None
+                    and getattr(
+                        self._logic, "is_volume_node_stale", lambda _v: False
+                    )(vol)
+                )
+        except Exception:
+            is_stale = False
+        try:
+            btn.setEnabled(is_stale)
+            btn.setVisible(is_stale)
+        except Exception:
+            pass
+
     def cleanup(self):
         """Stop persistent resources before the widget is torn down."""
         self._disposed = True
@@ -1473,6 +1699,18 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._excluded = {r["filename"] for r in self._results if r.get("error")}
         self._results_tab.populate(self._results, self._excluded)
         self._tabs.setCurrentIndex(0)
+        # Issue #42: wire ModifiedEvent observers on the per-image
+        # segmentation nodes so a later edit in the Segment Editor
+        # marks the row stale. Idempotent — removes previous tags first.
+        try:
+            self._logic.setup_segmentation_staleness_observers()
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: setup_segmentation_staleness_observers failed"
+            )
+        # Refresh the detail-button state — newly-built rows are by
+        # definition not stale, so the button stays hidden.
+        self._refresh_detail_recompute_button()
         errors = [r for r in self._results if r.get("error")]
         if errors:
             msg = "\n".join(f"• {r['filename']}: {r['error']}" for r in errors)

@@ -120,6 +120,12 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
         if self._main is not None:
             self._main.apply_shell_layout()
             self._main.prompt_install_if_missing()
+            # Issue #42: ask the user to recompute metrics for every
+            # tracked image whose segmentation was edited in the Segment
+            # Editor since we last saw it. The policy is "ask once per
+            # image per enter()"; changing it to "ask only once" is a
+            # one-line tweak in the policy function.
+            self._main.prompt_recompute_stale_images()
 
     def exit(self):
         if self._main is not None:
@@ -227,6 +233,76 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
             self._main.reset_for_scene_close()
         self.initializeParameterNode()
 
+    def setup_segmentation_staleness_observers(self):
+        """Issue #42: install a ``ModifiedEvent`` observer on every per-image
+        segmentation node.
+
+        Each observer is cheap — it sets a ``stale`` attribute on the
+        corresponding volume node (via the ``ROLE_ZEBRAFISH_SEGMENTATION``
+        reverse lookup) and auto-excludes the row. No recomputation, no
+        model call. The widget calls this on every analysis completion
+        and on scene reload so newly-tracked nodes are always observed.
+
+        Idempotent: observer tags from a previous setup are removed
+        before the new ones are installed, so repeated setup calls don't
+        pile up duplicate observers on the same segmentation nodes.
+        """
+        try:
+            import slicer
+            import vtk as _vtk
+            from ZebrafishEmbryoAnalyzerLib.mrml import (
+                list_tracked_volume_nodes,
+                ROLE_ZEBRAFISH_SEGMENTATION,
+                mark_volume_node_stale,
+            )
+        except Exception:
+            return
+        param_node = self.getParameterNode()
+        if param_node is None:
+            return
+        scene = getattr(slicer, "mrmlScene", None)
+        if scene is None:
+            return
+
+        # Drop any tags from a previous setup so observers don't stack.
+        prev = getattr(self, "_stale_observer_tags", [])
+        for tag in prev:
+            try:
+                if hasattr(self, "removeObserver"):
+                    self.removeObserver(tag)
+            except Exception:
+                pass
+        self._stale_observer_tags = []
+
+        for vol in list_tracked_volume_nodes(param_node, scene):
+            seg_id = None
+            try:
+                seg_id = vol.GetNodeReferenceID(ROLE_ZEBRAFISH_SEGMENTATION)
+            except Exception:
+                seg_id = None
+            if not seg_id:
+                continue
+            try:
+                seg_node = scene.GetNodeByID(seg_id)
+            except Exception:
+                seg_node = None
+            if seg_node is None:
+                continue
+
+            def _on_seg_modified(_caller=None, _event=None, _vol=vol):
+                mark_volume_node_stale(_vol)
+
+            tag = None
+            try:
+                if hasattr(self, "addObserver"):
+                    tag = self.addObserver(
+                        seg_node, _vtk.vtkCommand.ModifiedEvent, _on_seg_modified
+                    )
+            except Exception:
+                tag = None
+            if tag is not None:
+                self._stale_observer_tags.append(tag)
+
     def _on_scene_end_import(self, caller=None, event=None):
         # Pick up parameter node values from the newly loaded scene.
         self.initializeParameterNode()
@@ -241,6 +317,8 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
             except Exception:
                 # Reload must never crash the module — log and continue.
                 logging.exception("ZebrafishEmbryoAnalyzer: scene-reload rebuild failed")
+        # Re-arm segmentation observers on the freshly imported scene.
+        self.setup_segmentation_staleness_observers()
 
 class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
     """Orchestrates analysis requests on behalf of the widget.
@@ -475,6 +553,163 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
             )
             results.append(row)
         return results
+
+    def list_stale_tracked_volume_nodes(self):
+        """Issue #42: return the volume nodes currently marked stale.
+
+        Walks ``ROLE_ZEBRAFISH_IMAGES`` on the parameter node and filters
+        to those whose ``ZebrafishAnalysis.stale`` attribute is ``"true"``.
+        Used by the widget's ``enter()`` recompute-prompt to know which
+        images to ask about.
+        """
+        try:
+            import slicer
+            from ZebrafishEmbryoAnalyzerLib.mrml import (
+                list_tracked_volume_nodes,
+                is_volume_node_stale,
+            )
+        except Exception:
+            return []
+        param_node = self.getParameterNode()
+        if param_node is None:
+            return []
+        scene = getattr(slicer, "mrmlScene", None)
+        return [n for n in list_tracked_volume_nodes(param_node, scene)
+                if is_volume_node_stale(n)]
+
+    def is_volume_node_stale(self, volume_node):
+        """Issue #42: thin re-export of :func:`mrml.is_volume_node_stale`.
+
+        Lets the widget check a single node's staleness without importing
+        ``ZebrafishEmbryoAnalyzerLib.mrml`` directly (see the test that
+        enforces this rule). Returns False on any error so a missing
+        attribute / bad node never raises into the UI.
+        """
+        try:
+            from ZebrafishEmbryoAnalyzerLib.mrml import is_volume_node_stale
+        except Exception:
+            return False
+        try:
+            return bool(is_volume_node_stale(volume_node))
+        except Exception:
+            return False
+
+    def recompute_metrics_for_volume_node(self, volume_node):
+        """Issue #42: rerun the segmentation→measurement pipeline for one
+        volume node and update its attributes + segmentation node.
+
+        Synchronous on the Slicer main thread (no threading — same
+        pattern as the Run Analysis button). Reads pixel data from the
+        volume node (no original-file dependency), runs the same
+        ``analyse_images`` → ``apply_analysis_to_volume_node`` chain that
+        #39 uses, then clears the stale flag.
+
+        Returns the updated result dict (filename + new metric fields),
+        or ``None`` if the recompute fails (e.g. model unavailable). The
+        widget surfaces a status message on None.
+        """
+        try:
+            import slicer
+            import numpy as np
+            from ZebrafishEmbryoAnalyzerLib.mrml import (
+                volume_node_to_pixels,
+                apply_analysis_to_volume_node,
+                clear_volume_node_stale,
+            )
+        except Exception:
+            return None
+        px = volume_node_to_pixels(volume_node)
+        if px is None:
+            return None
+        params = self._recompute_params()
+        try:
+            from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
+            results = analyse_images(
+                ["__volume_node__"],
+                params,
+                per_image_callback=lambda _path, r: apply_analysis_to_volume_node(
+                    r, volume_node, slicer.mrmlScene, params.get("um_per_px", 22.99)
+                ),
+            )
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: recompute_metrics_for_volume_node failed"
+            )
+            return None
+        if not results or results[0].get("error"):
+            return None
+        clear_volume_node_stale(volume_node)
+        # Restore the un-excluded state — the user explicitly asked for
+        # recompute, so the row no longer counts as "excluded because of
+        # stale segmentation".
+        try:
+            volume_node.SetAttribute("ZebrafishAnalysis.exclude", "false")
+            volume_node.SetAttribute("ZebrafishAnalysis.error", "")
+        except Exception:
+            pass
+        # Surface the recomputed metrics in the widget-visible shape.
+        r = results[0]
+        return {
+            "filename": volume_node.GetName() if hasattr(volume_node, "GetName") else "",
+            "length": r.get("length"),
+            "curvature": r.get("curvature"),
+            "ratio": r.get("ratio"),
+            "eye_area": r.get("eye_area"),
+            "eye_diameter": r.get("eye_diameter"),
+            "exclude": False,
+            "error": "",
+            "_volume_node": volume_node,
+            "_volume_node_id": (
+                volume_node.GetID() if hasattr(volume_node, "GetID") else ""
+            ),
+        }
+
+    def _recompute_params(self):
+        """Build the params dict for a single-image recompute.
+
+        Mirrors the module defaults that the Run button uses — no
+        inference-time override. Um-per-px comes from the parameter
+        node's ``UM_PER_PX`` so the recompute matches the scale the
+        original run used.
+        """
+        try:
+            from ZebrafishEmbryoAnalyzerLib.widget import (
+                PARAM_UM_PER_PX, PARAM_THRESHOLD,
+                PARAM_LENGTH_ENABLED, PARAM_CURVATURE_ENABLED,
+                PARAM_RATIO_ENABLED, PARAM_EYES_ENABLED,
+                PARAM_MODEL_ID, _DEFAULT_MODEL_ID,
+            )
+            node = self.getParameterNode()
+            params = {}
+            if node is not None and hasattr(node, "GetParameter"):
+                try:
+                    params["um_per_px"] = float(node.GetParameter(PARAM_UM_PER_PX) or 22.99)
+                except (TypeError, ValueError):
+                    params["um_per_px"] = 22.99
+                try:
+                    params["threshold"] = float(node.GetParameter(PARAM_THRESHOLD) or 0.85)
+                except (TypeError, ValueError):
+                    params["threshold"] = 0.85
+                params["length_enabled"] = (node.GetParameter(PARAM_LENGTH_ENABLED) == "true")
+                params["curvature_enabled"] = (node.GetParameter(PARAM_CURVATURE_ENABLED) == "true")
+                params["ratio_enabled"] = (node.GetParameter(PARAM_RATIO_ENABLED) == "true")
+                params["eyes_enabled"] = (node.GetParameter(PARAM_EYES_ENABLED) == "true")
+                params["model_id"] = node.GetParameter(PARAM_MODEL_ID) or _DEFAULT_MODEL_ID
+            else:
+                params = {
+                    "um_per_px": 22.99,
+                    "threshold": 0.85,
+                    "length_enabled": True,
+                    "curvature_enabled": True,
+                    "ratio_enabled": True,
+                    "eyes_enabled": True,
+                    "model_id": _DEFAULT_MODEL_ID,
+                }
+            return params
+        except Exception:
+            return {"um_per_px": 22.99, "threshold": 0.85, "length_enabled": True,
+                    "curvature_enabled": True, "ratio_enabled": True,
+                    "eyes_enabled": True, "model_id": "general"}
 
     def _update_table_with_rows(self, rows):
         """Shared tail used by ``update_results_table`` and the reload path.

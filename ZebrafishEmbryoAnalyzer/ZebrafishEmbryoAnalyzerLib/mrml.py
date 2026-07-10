@@ -53,6 +53,10 @@ ATTR_EYE_AREA = ATTR_PREFIX + "eye_area"
 ATTR_EYE_DIAMETER = ATTR_PREFIX + "eye_diameter"
 ATTR_EXCLUDE = ATTR_PREFIX + "exclude"
 ATTR_SEG_MTIME = ATTR_PREFIX + "segMTime"
+# Issue #42: a segmentation node's ``ModifiedEvent`` observer sets
+# ``ZebrafishAnalysis.stale = "true"`` whenever the user edits a Body
+# mask in the Segment Editor. Cleared on successful recompute.
+ATTR_STALE = ATTR_PREFIX + "stale"
 
 # Markups colors mirror ``overlay.py`` so the real MRML nodes match the custom
 # Detail-tab overlay visually. Stored as RGB floats in [0, 1] — VTK's expected
@@ -416,6 +420,80 @@ def volume_node_to_result_dict_with_validation(node):
         row["error"] = err_field
         row["exclude"] = True
     return row
+
+
+# ---------------------------------------------------------------------------
+# Issue #42: Segment Editor staleness flag
+# ---------------------------------------------------------------------------
+#
+# A per-image segmentation node's ``ModifiedEvent`` triggers the cheap
+# bookkeeping in :func:`mark_volume_node_stale` so the volume node's
+# ``ZebrafishAnalysis.stale`` attribute is set immediately on every
+# brush stroke (synchronous, no recomputation). The user is then asked on
+# every module re-entry whether to recompute (policy in widget.py).
+
+# Standard user-facing error message for stale rows; centralised here so
+# the wording stays consistent between the auto-exclude flow and the
+# detail-view helper text.
+STALE_ERROR_MESSAGE = "Segmentation modified — recompute needed"
+
+
+def mark_volume_node_stale(volume_node):
+    """Set the stale attribute and force ``exclude`` + a stable error message.
+
+    Cheap — no recomputation, no model call. Safe to call from an
+    observer that fires many times per brush stroke (issue #42 explicit
+    requirement: the observer must not trigger a perceptible per-stroke
+    delay).
+
+    The error message is set via ``ZebrafishAnalysis.error`` so it
+    surfaces in the existing error-row auto-exclude path that #41 uses
+    for scene-reload robustness — no new schema column.
+    """
+    if volume_node is None or not hasattr(volume_node, "SetAttribute"):
+        return
+    try:
+        volume_node.SetAttribute(ATTR_STALE, "true")
+    except Exception:
+        return
+    # The exclude + error set is what makes the row visibly stale in the
+    # gallery/results table. The user can still see the metric values
+    # (preserved per the "Existing metric values are not deleted, only
+    # flagged" decision).
+    try:
+        volume_node.SetAttribute(ATTR_EXCLUDE, "true")
+    except Exception:
+        pass
+    try:
+        volume_node.SetAttribute(ATTR_PREFIX + "error", STALE_ERROR_MESSAGE)
+    except Exception:
+        pass
+
+
+def is_volume_node_stale(volume_node):
+    """Return True if the volume node's ``ATTR_STALE`` attribute is "true"."""
+    if volume_node is None or not hasattr(volume_node, "GetAttribute"):
+        return False
+    try:
+        return volume_node.GetAttribute(ATTR_STALE) == "true"
+    except Exception:
+        return False
+
+
+def clear_volume_node_stale(volume_node):
+    """Clear the stale flag after a successful recompute.
+
+    Does NOT auto-clear ``error`` / ``exclude`` — the widget decides
+    whether the user is still excluded (they may have manually excluded
+    before the recompute). The recompute function explicitly resets
+    both via :func:`write_metric_attributes` and the widget's exclude set.
+    """
+    if volume_node is None or not hasattr(volume_node, "RemoveAttribute"):
+        return
+    try:
+        volume_node.RemoveAttribute(ATTR_STALE)
+    except Exception:
+        pass
 
 
 def volume_nodes_to_results(volume_nodes):
