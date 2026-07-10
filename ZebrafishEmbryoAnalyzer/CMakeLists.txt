@@ -18,6 +18,7 @@ slicerMacroBuildScriptedModule(
     ZebrafishEmbryoAnalyzerLib/logic.py
     ZebrafishEmbryoAnalyzerLib/overlay.py
     ZebrafishEmbryoAnalyzerLib/results_tab.py
+    ZebrafishEmbryoAnalyzerLib/settings_tab.py
     ZebrafishEmbryoAnalyzerLib/widget.py
     ZebrafishEmbryoAnalyzerLib/zoom_view.py
     ZebrafishEmbryoAnalyzerCore/__init__.py
