@@ -287,6 +287,48 @@ def test_set_actions_enabled_disables_all_when_false(settings_module):
     cb_existing.setEnabled.assert_called_with(False)
 
 
+def test_refresh_greys_out_missing_rows_but_not_present_rows(settings_module, monkeypatch):
+    """Missing rows must read as visually inactive: both label and size get a
+    muted grey stylesheet. Present rows keep the default label color and only
+    the size gets the lighter existing #666 shade."""
+    rows = [
+        {"id": "a", "label": "A label", "filename": "a.pth", "exists": True, "size_text": "1.0 KB"},
+        {"id": "b", "label": "B label", "filename": "b.pth", "exists": False, "size_text": "missing"},
+    ]
+    monkeypatch.setattr(settings_module, "_list_cached_models", lambda: rows)
+
+    created_labels = []
+
+    def _make_label(*args, **kwargs):
+        m = MagicMock()
+        created_labels.append(m)
+        return m
+
+    qt_mod = sys.modules["qt"]
+    qt_mod.QLabel = MagicMock(side_effect=_make_label)
+    qt_mod.QWidget = MagicMock(side_effect=lambda *a, **k: MagicMock())
+    qt_mod.QHBoxLayout = MagicMock(side_effect=lambda *a, **k: MagicMock())
+    qt_mod.QCheckBox = MagicMock(side_effect=lambda *a, **k: MagicMock())
+
+    obj = _make_stub()
+    obj._rows_container = MagicMock()
+    obj._rows_layout = MagicMock()
+    obj._rows_layout.count.return_value = 0
+    _bind_method(obj, "_update_button_labels")
+    _bind_method(obj, "refresh", namespace_extra={"_list_cached_models": lambda: rows})
+
+    obj.refresh()
+
+    assert len(created_labels) == 4  # label + size per row, 2 rows
+    label_a, size_a, label_b, size_b = created_labels
+
+    label_a.setStyleSheet.assert_not_called()
+    size_a.setStyleSheet.assert_called_once_with("color: #666;")
+
+    label_b.setStyleSheet.assert_called_once_with("color: #999;")
+    size_b.setStyleSheet.assert_called_once_with("color: #999;")
+
+
 def test_set_actions_enabled_true_with_selection_keeps_button_enabled(settings_module):
     obj = _make_stub()
     btn_sel = MagicMock()

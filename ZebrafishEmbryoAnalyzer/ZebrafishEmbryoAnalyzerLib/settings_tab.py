@@ -163,7 +163,13 @@ class SettingsTab(qt.QWidget):
             label = qt.QLabel(f"{row['label']}")
             label.setToolTip(row["filename"])
             size = qt.QLabel(row["size_text"])
-            size.setStyleSheet("color: #666;")
+            if row["exists"]:
+                size.setStyleSheet("color: #666;")
+            else:
+                # Missing rows read as inactive: grey out both label and size,
+                # visibly more muted than the present-row size color above.
+                label.setStyleSheet("color: #999;")
+                size.setStyleSheet("color: #999;")
             size.setAlignment(qt.Qt.AlignRight | qt.Qt.AlignVCenter)
             hbox.addWidget(cb)
             hbox.addWidget(label, 1)
