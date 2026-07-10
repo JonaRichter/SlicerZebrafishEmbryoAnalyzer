@@ -60,6 +60,8 @@ def qt_modules(monkeypatch):
     qt_mock.Qt.AlignCenter = 0
     qt_mock.Qt.AlignTop = 32        # 0x20 — Qt.AlignTop
     qt_mock.Qt.AlignHCenter = 4     # 0x04 — Qt.AlignHCenter
+    qt_mock.Qt.AlignLeft = 1        # 0x01 — Qt.AlignLeft
+    qt_mock.Qt.ScrollBarAlwaysOff = 1
     qt_mock.Qt.ElideRight = 1
     monkeypatch.setitem(sys.modules, "qt", qt_mock)
     slicer_mock = MagicMock()
@@ -404,3 +406,242 @@ def test_populate_adds_bottom_stretch_to_each_cell(populated_stub):
             f"addStretch must be the last call on cell_layout, got "
             f"{cell_layout.method_calls[-1]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Grid-alignment regression tests for issue #16 (third layer)
+# ---------------------------------------------------------------------------
+#
+# Choice: AST-extract `__init__` (same pattern as `_reflow` and `populate`)
+# rather than refactoring production to call a small `_build_scroll_area()`
+# helper. Reasons:
+#   1. Consistency — the file already uses AST-extraction for the other
+#      two layout-related methods, so the test rig is uniform.
+#   2. Production code stays minimal — adding a helper would expand the
+#      class surface just to make testing easier, and the three-call
+#      configuration block is small and reads naturally inline.
+#   3. The risk of drift between a helper and its test is the same as the
+#      risk of drift between an inlined block and its AST-extracted test.
+# The trade-off is that exec'ing `__init__` against a stub needs extra
+# ceremony (the `super().__init__()` cell trick), but it stays inside the
+# existing test rig, so we keep it.
+
+
+def _extract_init_source():
+    """Return the source of `GalleryTab.__init__` from gallery_tab.py.
+
+    gallery_tab.py defines two `__init__` methods — one on `_ClickableLabel`
+    and one on `GalleryTab`. A naive `ast.walk` returns whichever it visits
+    first, so we match by parent class to be sure we get the one that
+    configures the scroll area.
+
+    The bare `super().__init__()` call inside GalleryTab.__init__ is
+    stripped before unparsing — without the implicit `__class__` cell
+    that real class definitions provide, a standalone `super()` raises
+    "super(): __class__ cell not found". We don't want to exercise Qt
+    widget construction in these tests anyway (we're only inspecting the
+    scroll-area configuration calls), so dropping the super call is the
+    correct trade-off.
+    """
+    tree = ast.parse(GALLERY_PATH.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        if node.name != "GalleryTab":
+            continue
+        for child in node.body:
+            if isinstance(child, ast.FunctionDef) and child.name == "__init__":
+                init_fn = child
+                break
+        else:
+            continue
+        break
+    else:
+        raise RuntimeError("GalleryTab.__init__ not found in gallery_tab.py")
+
+    # Strip `super().__init__()` from the body — it's a no-op for our
+    # tests since the stub isn't a real Qt widget. The AST shape is
+    # `Expr(value=Call(func=Attribute(value=Call(func=Name('super')))))`
+    # i.e. `super().__init__()`.
+    def _is_super_init_call(stmt):
+        if not isinstance(stmt, ast.Expr):
+            return False
+        call = stmt.value
+        if not isinstance(call, ast.Call):
+            return False
+        attr = call.func
+        if not isinstance(attr, ast.Attribute) or attr.attr != "__init__":
+            return False
+        inner = attr.value
+        if not isinstance(inner, ast.Call):
+            return False
+        return isinstance(inner.func, ast.Name) and inner.func.id == "super"
+
+    init_fn.body = [stmt for stmt in init_fn.body if not _is_super_init_call(stmt)]
+    return ast.unparse(init_fn)
+
+
+class _StubGalleryTabForInit:
+    """Stand-in for GalleryTab used to exercise __init__.
+
+    Skips Qt's metaclass dance (QWidget's __init_subclass__/__new__ chokes
+    when qt is a MagicMock) but provides the attributes __init__ writes to.
+    The bare `super().__init__()` inside GalleryTab.__init__ resolves to
+    `object.__init__()` via the `__class__` cell we inject at exec time.
+    """
+
+    def __init__(self):
+        # Will be overwritten by the AST-extracted GalleryTab.__init__
+        # when bound below. We just need an instance to bind to.
+        pass
+
+
+def _run_init_with_monkey_qt(monkey_qt):
+    """Extract GalleryTab.__init__ with a custom `qt` namespace, run it, and
+    return the stub instance after __init__ has executed.
+
+    The trick: `__class__` is seeded so the bare `super().__init__()`
+    resolves against the stub class (otherwise the AST-extracted function
+    fails with "super(): __class__ cell not found").
+    """
+    src = _extract_init_source()
+    namespace = {"qt": monkey_qt, "__class__": _StubGalleryTabForInit}
+    exec(src, namespace)
+    init_fn = namespace["__init__"]
+    stub = _StubGalleryTabForInit()
+    init_fn(stub, lambda i: None)
+    return stub
+
+
+def _monkey_qt_with_scroll_capture(real_qt):
+    """Build a per-test qt mock that exposes real Qt constants and
+    captures every QScrollArea instance creation.
+
+    QScrollArea is a MagicMock with a side_effect that records every
+    instance it returns. This lets callers both introspect the returned
+    scroll instance (via `scroll_instances`) and count the calls (via
+    `monkey_qt.QScrollArea.call_count`).
+    """
+    scroll_instances = []
+
+    def scroll_factory(*args, **kwargs):
+        instance = MagicMock()
+        scroll_instances.append(instance)
+        return instance
+
+    scroll_mock = MagicMock(side_effect=scroll_factory)
+    monkey_qt = MagicMock()
+    monkey_qt.Qt.AlignTop = real_qt.Qt.AlignTop
+    monkey_qt.Qt.AlignLeft = real_qt.Qt.AlignLeft
+    monkey_qt.Qt.ScrollBarAlwaysOff = real_qt.Qt.ScrollBarAlwaysOff
+    monkey_qt.QScrollArea = scroll_mock
+    return monkey_qt, scroll_instances
+
+
+def test_init_disables_widget_resizable_on_scroll_area(qt_modules):
+    """Issue #16 (grid alignment): setWidgetResizable(False) makes the inner
+    widget size to its grid content instead of being force-resized to the
+    viewport. With True, Qt distributes extra viewport space between rows
+    (vertically) and across columns (horizontally) — which is the bug the
+    user reported even after the row-stretch and column-stretch fixes.
+    """
+    real_qt = sys.modules["qt"]
+    monkey_qt, scroll_instances = _monkey_qt_with_scroll_capture(real_qt)
+    _run_init_with_monkey_qt(monkey_qt)
+
+    assert len(scroll_instances) == 1, (
+        f"Expected exactly one QScrollArea created in __init__, got "
+        f"{len(scroll_instances)}"
+    )
+    scroll = scroll_instances[0]
+    scroll.setWidgetResizable.assert_called_once_with(False)
+
+
+def test_init_anchors_scroll_area_to_top_left(qt_modules):
+    """Issue #16 (grid alignment): setAlignment(Qt.AlignTop | Qt.AlignLeft)
+    positions the inner widget at the top-left of the viewport when the
+    widget is smaller than the viewport. Without this, Qt's default is to
+    center the widget, which makes the grid look vertically and
+    horizontally centered instead of top-left-anchored.
+    """
+    real_qt = sys.modules["qt"]
+    monkey_qt, scroll_instances = _monkey_qt_with_scroll_capture(real_qt)
+    _run_init_with_monkey_qt(monkey_qt)
+
+    assert len(scroll_instances) == 1
+    scroll = scroll_instances[0]
+    scroll.setAlignment.assert_called_once()
+    align_args = scroll.setAlignment.call_args.args
+    alignment = align_args[0]
+    expected = real_qt.Qt.AlignTop | real_qt.Qt.AlignLeft
+    assert alignment == expected, (
+        f"setAlignment must be called with AlignTop | AlignLeft "
+        f"({expected!r}), got {alignment!r}"
+    )
+
+
+def test_init_suppresses_horizontal_scrollbar(qt_modules):
+    """Issue #16 (grid alignment): setHorizontalScrollBarPolicy(
+    ScrollBarAlwaysOff) ensures the gallery never shows a horizontal
+    scrollbar. With widgetResizable=False, horizontal overflow only
+    happens at extremely narrow panel widths (< ~154px); the user prefers
+    clipped cells over a scrollbar in a thumbnail grid.
+    """
+    real_qt = sys.modules["qt"]
+    monkey_qt, scroll_instances = _monkey_qt_with_scroll_capture(real_qt)
+    _run_init_with_monkey_qt(monkey_qt)
+
+    assert len(scroll_instances) == 1
+    scroll = scroll_instances[0]
+    scroll.setHorizontalScrollBarPolicy.assert_called_once_with(
+        real_qt.Qt.ScrollBarAlwaysOff
+    )
+
+
+def test_init_stores_scroll_area_on_instance(qt_modules):
+    """Issue #16 (grid alignment): __init__ must store the QScrollArea as
+    `self._scroll` so tests (and any future introspection helper) can
+    reach it without rebuilding the widget tree. The other init tests
+    rely on this attribute for scroll-area inspection.
+    """
+    real_qt = sys.modules["qt"]
+    monkey_qt, scroll_instances = _monkey_qt_with_scroll_capture(real_qt)
+    stub = _run_init_with_monkey_qt(monkey_qt)
+
+    assert hasattr(stub, "_scroll"), (
+        "GalleryTab.__init__ must store the QScrollArea as self._scroll"
+    )
+    # self._scroll should be the same instance used as the layout host —
+    # it's the only QScrollArea created.
+    assert monkey_qt.QScrollArea.call_count == 1, (
+        f"Expected exactly one QScrollArea() call, got "
+        f"{monkey_qt.QScrollArea.call_count}"
+    )
+    # With side_effect set, return_value is the auto-MagicMock; the real
+    # instance returned is the one we captured.
+    assert stub._scroll is scroll_instances[0]
+
+
+def test_init_three_changes_happen_together(qt_modules):
+    """Issue #16 (grid alignment): the three configuration calls
+    (setWidgetResizable(False), setAlignment(AlignTop|AlignLeft),
+    setHorizontalScrollBarPolicy(ScrollBarAlwaysOff)) form a single
+    atomic fix — removing any one of them re-introduces part of the
+    bug. This test guards against accidental partial-reverts by
+    requiring all three to be present on the same scroll instance.
+    """
+    real_qt = sys.modules["qt"]
+    monkey_qt, scroll_instances = _monkey_qt_with_scroll_capture(real_qt)
+    _run_init_with_monkey_qt(monkey_qt)
+
+    assert len(scroll_instances) == 1
+    scroll = scroll_instances[0]
+    # All three must be called on the SAME scroll instance.
+    scroll.setWidgetResizable.assert_called_with(False)
+    scroll.setAlignment.assert_called_once()
+    align = scroll.setAlignment.call_args.args[0]
+    assert align & real_qt.Qt.AlignTop
+    assert align & real_qt.Qt.AlignLeft
+    scroll.setHorizontalScrollBarPolicy.assert_called_with(
+        real_qt.Qt.ScrollBarAlwaysOff
+    )

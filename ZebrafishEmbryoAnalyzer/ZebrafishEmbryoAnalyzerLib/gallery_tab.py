@@ -50,7 +50,22 @@ class GalleryTab(qt.QWidget):
         self._n_cols = 0
 
         scroll = qt.QScrollArea()
-        scroll.setWidgetResizable(True)
+        # Issue #16 (grid-alignment layer): with widgetResizable=True Qt
+        # resizes the inner widget to the viewport size and distributes
+        # any extra vertical space between rows and any extra horizontal
+        # space across columns — even when setColumnStretch(col, 0) and
+        # no setRowStretch are set. The visible effect is rows spread far
+        # apart vertically and, when fewer cells than columns, cells
+        # spread across the full row width. Setting widgetResizable=False
+        # makes the inner widget size to its grid content instead; the
+        # alignment flag then pins the content to the top-left of the
+        # viewport, and the horizontal scrollbar is suppressed because
+        # cells in a thumbnail grid should clip at the edge rather than
+        # scroll sideways (vertical scrolling remains enabled).
+        scroll.setWidgetResizable(False)
+        scroll.setAlignment(qt.Qt.AlignTop | qt.Qt.AlignLeft)
+        scroll.setHorizontalScrollBarPolicy(qt.Qt.ScrollBarAlwaysOff)
+        self._scroll = scroll
 
         self._container = qt.QWidget()
         self._grid      = qt.QGridLayout(self._container)
