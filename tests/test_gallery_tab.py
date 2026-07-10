@@ -155,3 +155,21 @@ def test_reflow_skipped_when_column_count_unchanged(gallery_module):
     g._reflow()  # second call: should early-return
     g._grid.setColumnStretch.assert_not_called()
     g._grid.addWidget.assert_not_called()
+
+
+def test_reflow_does_not_call_set_row_stretch(gallery_module):
+    """Issue #16: setRowStretch on an empty row caused uneven vertical spacing.
+
+    The previous implementation called `setRowStretch(rows, 1)` on a
+    notional empty row to "push content up" — but this interacted
+    inconsistently with rows of different heights (single-line vs
+    multi-line captions). QGridLayout positions content at the top of
+    each row's allotted space by default, so the explicit stretch is
+    unnecessary.
+
+    Regression guard: _reflow must never call setRowStretch.
+    """
+    for n_cells in (0, 1, 3, 5, 12):
+        g = _make_gallery(_stub_cells(n_cells), width=2000)
+        g._reflow()
+        g._grid.setRowStretch.assert_not_called()

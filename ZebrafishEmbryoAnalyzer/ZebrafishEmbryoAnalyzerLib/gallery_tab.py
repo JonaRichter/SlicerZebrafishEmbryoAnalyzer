@@ -147,15 +147,10 @@ class GalleryTab(qt.QWidget):
         cols = max(1, self.width // (THUMB_SIZE + spacing))
         if cols == self._n_cols:
             return
-        if self._n_cols > 0:
-            old_rows = (len(self._cells) - 1) // self._n_cols + 1
-            self._grid.setRowStretch(old_rows, 0)
         self._n_cols = cols
         for i, cell in enumerate(self._cells):
             row, col = divmod(i, cols)
             self._grid.addWidget(cell, row, col)
-        rows = (len(self._cells) - 1) // cols + 1
-        self._grid.setRowStretch(rows, 1)
         # Issue #28: when fewer images are loaded than columns, thumbnails
         # were spread across the full row width with large gaps instead of
         # sitting next to each other on the left. Setting column stretch to
@@ -164,6 +159,15 @@ class GalleryTab(qt.QWidget):
         # accumulates on the right side of the row.
         for col in range(cols):
             self._grid.setColumnStretch(col, 0)
+        # Issue #16: the previous code called setRowStretch(rows, 1) on a
+        # notional empty row to "push content up". This interacted
+        # inconsistently with variable row heights (multi-line captions are
+        # taller than single-line ones): the first row ended up with
+        # noticeably more space below it than subsequent rows. QGridLayout
+        # already positions each row's content at the top of its allotted
+        # space by default, so the explicit stretch is unnecessary — and
+        # harmful when row heights differ. Removing it gives uniform
+        # spacing between rows.
 
     def resizeEvent(self, event):
         self._reflow()
