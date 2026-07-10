@@ -110,11 +110,13 @@ def test_reflow_sets_zero_column_stretch_to_left_align_thumbnails(gallery_module
     cols = g._n_cols
     assert cols > 3, f"test fixture expects more columns than cells, got cols={cols}"
 
-    # setColumnStretch must be called for every column 0..cols-1 with stretch=0
+    # setColumnStretch must be called for every real column 0..cols-1 with
+    # stretch=0, plus one extra call for the trailing spacer column at index
+    # `cols` (see test_reflow_gives_one_trailing_spacer_column_all_the_column_stretch).
     calls = g._grid.setColumnStretch.call_args_list
-    assert len(calls) == cols, (
-        f"setColumnStretch must be called once per column (cols={cols}), "
-        f"got {len(calls)} calls"
+    assert len(calls) == cols + 1, (
+        f"setColumnStretch must be called once per real column plus the "
+        f"trailing spacer column (cols={cols}), got {len(calls)} calls"
     )
     columns_set = []
     stretches = []
@@ -123,9 +125,10 @@ def test_reflow_sets_zero_column_stretch_to_left_align_thumbnails(gallery_module
         stretch = call.args[1] if len(call.args) > 1 else call.kwargs.get("stretch")
         columns_set.append(col)
         stretches.append(stretch)
-    assert sorted(columns_set) == list(range(cols))
-    assert all(s == 0 for s in stretches), (
-        f"All column stretches must be 0 (left-align), got {stretches}"
+    assert sorted(columns_set) == list(range(cols + 1))
+    real_column_stretches = [s for c, s in zip(columns_set, stretches) if c < cols]
+    assert all(s == 0 for s in real_column_stretches), (
+        f"All real column stretches must be 0 (left-align), got {real_column_stretches}"
     )
 
 
@@ -136,12 +139,13 @@ def test_reflow_left_aligns_with_many_columns_few_cells(gallery_module):
     assert g._n_cols >= 10, "fixture sanity: many more columns than cells"
 
     call_columns = [c.args[0] for c in g._grid.setColumnStretch.call_args_list]
-    assert call_columns == list(range(g._n_cols)), (
-        f"setColumnStretch must be called in column order, got {call_columns}"
+    assert call_columns == list(range(g._n_cols + 1)), (
+        f"setColumnStretch must be called in column order, real columns then "
+        f"the trailing spacer column, got {call_columns}"
     )
-    for call in g._grid.setColumnStretch.call_args_list:
+    for call in g._grid.setColumnStretch.call_args_list[:-1]:
         stretch = call.args[1] if len(call.args) > 1 else call.kwargs.get("stretch")
-        assert stretch == 0, f"every column stretch must be 0, got {stretch}"
+        assert stretch == 0, f"every real column stretch must be 0, got {stretch}"
 
 
 def test_reflow_skipped_when_column_count_unchanged(gallery_module):
@@ -159,22 +163,35 @@ def test_reflow_skipped_when_column_count_unchanged(gallery_module):
     g._grid.addWidget.assert_not_called()
 
 
-def test_reflow_does_not_call_set_row_stretch(gallery_module):
-    """Issue #16: setRowStretch on an empty row caused uneven vertical spacing.
-
-    The previous implementation called `setRowStretch(rows, 1)` on a
-    notional empty row to "push content up" — but this interacted
-    inconsistently with rows of different heights (single-line vs
-    multi-line captions). QGridLayout positions content at the top of
-    each row's allotted space by default, so the explicit stretch is
-    unnecessary.
-
-    Regression guard: _reflow must never call setRowStretch.
+def test_reflow_gives_one_trailing_spacer_row_all_the_row_stretch(gallery_module):
+    """Issue #16 (top-left anchoring, kept widgetResizable(True)):
+    QGridLayout distributes leftover vertical space evenly across every row
+    whose stretch is 0 — even when every *real* row is explicitly set to
+    stretch 0 — which is what caused rows to spread apart vertically.
+    Giving exactly one trailing spacer row (one past the last real content
+    row) a nonzero stretch collects all that leftover space there instead,
+    pinning the real rows to the top. This only works now that every cell's
+    caption reserves a fixed two-line height, so all real rows are already
+    the same height and don't need their own stretch to look even.
     """
-    for n_cells in (0, 1, 3, 5, 12):
+    for n_cells, cols_expected_gt in ((1, 0), (3, 0), (5, 0), (12, 0)):
         g = _make_gallery(_stub_cells(n_cells), width=2000)
         g._reflow()
-        g._grid.setRowStretch.assert_not_called()
+        cols = g._n_cols
+        expected_rows = -(-n_cells // cols)
+        g._grid.setRowStretch.assert_called_once_with(expected_rows, 1)
+
+
+def test_reflow_gives_one_trailing_spacer_column_all_the_column_stretch(gallery_module):
+    """Issue #16 (top-left anchoring): same reasoning as the row spacer, but
+    for horizontal space — one trailing spacer column past the last real
+    content column gets stretch 1, collecting leftover horizontal space so
+    real columns (all stretch 0) don't spread apart.
+    """
+    g = _make_gallery(_stub_cells(3), width=2000)
+    g._reflow()
+    cols = g._n_cols
+    g._grid.setColumnStretch.assert_any_call(cols, 1)
 
 
 # ---------------------------------------------------------------------------
