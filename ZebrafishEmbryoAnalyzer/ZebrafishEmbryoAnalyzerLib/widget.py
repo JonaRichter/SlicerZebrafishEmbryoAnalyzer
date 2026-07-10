@@ -388,6 +388,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
 
 
     def _build_right_panel(self, splitter):
+        import qt
         self._tabs = qt.QTabWidget()
         splitter.addWidget(self._tabs)
 
@@ -409,7 +410,6 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         # Created lazily so unit tests can run without a full Qt setup.
         self._recompute_btn = None
         try:
-            import qt
             self._recompute_btn = qt.QPushButton("Recompute metrics")
             self._recompute_btn.setToolTip(
                 "Segmentation was edited in the Segment Editor — "
