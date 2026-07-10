@@ -161,6 +161,7 @@ def test_reflow_skipped_when_column_count_unchanged(gallery_module):
     g._reflow()  # second call: should early-return
     g._grid.setColumnStretch.assert_not_called()
     g._grid.addWidget.assert_not_called()
+    g._grid.activate.assert_not_called()
     g._container.adjustSize.assert_not_called()
 
 
@@ -172,6 +173,20 @@ def test_reflow_calls_container_adjust_size_when_repositioning(gallery_module):
     """
     g = _make_gallery(_stub_cells(3), width=2000)
     g._reflow()
+    g._container.adjustSize.assert_called_once()
+
+
+def test_reflow_activates_grid_before_adjusting_container_size(gallery_module):
+    """Issue #51 (follow-up): addWidget() only invalidates the grid layout —
+    geometry recompute is deferred to a posted LayoutRequest event, which a
+    hidden widget (Gallery tab not yet active, e.g. right after Load
+    Folder...) never receives. adjustSize() alone then reads a stale size
+    hint. _reflow must call self._grid.activate() first so the layout
+    recomputes immediately regardless of visibility.
+    """
+    g = _make_gallery(_stub_cells(3), width=2000)
+    g._reflow()
+    g._grid.activate.assert_called_once()
     g._container.adjustSize.assert_called_once()
 
 
