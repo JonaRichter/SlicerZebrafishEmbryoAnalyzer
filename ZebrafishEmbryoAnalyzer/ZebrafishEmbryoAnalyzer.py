@@ -433,3 +433,106 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
             raise MRMLAdapterError(
                 f"Failed to update current segmentation node: {exc}"
             ) from exc
+
+    def create_image_volume_nodes(self, batches):
+        """Create one ``vtkMRMLVectorVolumeNode`` per readable image (issue #38).
+
+        Called by the widget after its pre-flight readability check has
+        already loaded every pixel array into a result stub. No second
+        disk read happens here; the pixel arrays are reused directly.
+
+        Each batch is attempted independently. A failure in one image
+        never aborts the remaining batches (CLAUDE.md "avoid partial
+        results appearing as successful" rule): per-image failures are
+        collected into ``failed``, and a fully fatal setup failure
+        (slicer / MRML unavailable) raises ``MRMLAdapterError`` so the
+        widget can surface it.
+
+        Parameters
+        ----------
+        batches : list[dict]
+            Each dict has keys:
+              - ``"filename"`` (str) — display-name hint for the node.
+              - ``"image_rgb"`` (``numpy.ndarray``) — uint8 (H, W, 3).
+              - ``"um_per_px"`` (float) — physical scale metadata.
+
+        Returns
+        -------
+        tuple ``(created, failed)``
+            ``created`` (int) — number of nodes successfully added to the
+            scene; may be 0 when the parameter node was unavailable.
+            ``failed`` (list[str]) — basenames of images whose volume node
+            creation raised; the widget surfaces them in one capped summary.
+        """
+        if not batches:
+            return 0, []
+        # Local imports so the module loads even if slicer / mrml are
+        # unavailable (e.g. during interpreter startup outside Slicer).
+        try:
+            import slicer
+            from ZebrafishEmbryoAnalyzerLib.mrml import create_image_volume_node
+        except Exception as exc:
+            from ZebrafishEmbryoAnalyzerLib.errors import MRMLAdapterError
+            raise MRMLAdapterError(
+                f"Failed to create image volume nodes: {exc}"
+            ) from exc
+
+        param_node = self.getParameterNode()
+        if param_node is None:
+            return 0, [
+                b.get("filename") or "ZebrafishEmbryoAnalyzer Image"
+                for b in batches
+            ]
+        scene = slicer.mrmlScene
+
+        import logging
+        created = 0
+        failed = []
+        for batch in batches:
+            image_rgb = batch.get("image_rgb")
+            filename = batch.get("filename") or "ZebrafishEmbryoAnalyzer Image"
+            if image_rgb is None:
+                failed.append(filename)
+                continue
+            um_per_px = float(batch.get("um_per_px", 22.99))
+            try:
+                create_image_volume_node(image_rgb, um_per_px, filename, param_node, scene)
+                created += 1
+            except Exception as exc:
+                # Half-success guard: keep going, accumulate the failed
+                # filenames, and let the caller surface them all at once.
+                logging.exception(
+                    "ZebrafishEmbryoAnalyzer: image volume node failed for %s: %s",
+                    filename, exc,
+                )
+                failed.append(filename)
+
+        return created, failed
+
+    def replace_image_volume_nodes(self):
+        """Remove every volume node owned by this batch from the scene (#38).
+
+        Used by ``ZebrafishEmbryoAnalyzerMainWidget._set_queue`` so that
+        loading a new folder or file selection replaces the previous one in
+        the MRML scene rather than accumulating orphans in the Data module.
+        Returns the number of top-level image nodes removed. Never raises —
+        scene-cleanup failures are logged and swallowed so a transient scene
+        glitch cannot break the user-facing load flow.
+        """
+        try:
+            import logging
+            import slicer
+            from ZebrafishEmbryoAnalyzerLib.mrml import remove_all_image_volume_nodes
+            param_node = self.getParameterNode()
+            if param_node is None:
+                return 0
+            return remove_all_image_volume_nodes(param_node, slicer.mrmlScene)
+        except Exception as exc:  # noqa: BLE001 — best-effort cleanup, log only
+            try:
+                import logging
+                logging.exception(
+                    "ZebrafishEmbryoAnalyzer: replace_image_volume_nodes failed: %s", exc
+                )
+            except Exception:
+                pass
+            return 0

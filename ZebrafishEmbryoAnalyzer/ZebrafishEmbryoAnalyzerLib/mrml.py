@@ -27,6 +27,10 @@ TABLE_SCHEMA = [
 ROLE_RESULTS_TABLE = "ResultsTable"
 ROLE_CURRENT_IMAGE = "CurrentImage"
 ROLE_CURRENT_SEGMENTATION = "CurrentSegmentation"
+# Role used for the per-image volume node reference list on the parameter
+# node (issue #38). Each successfully loaded image contributes one entry via
+# AddNodeReferenceID; replace-on-load clears the list before the next batch.
+ROLE_ZEBRAFISH_IMAGES = "ZebrafishImage"
 
 # String columns whose values are always preserved verbatim, even on error rows.
 _PRESERVE_ON_ERROR = frozenset({"filename", "error"})
@@ -385,3 +389,186 @@ def update_segmentation_node(result, um_per_px, node, image_node=None):
             node.SetReferenceImageGeometryParameterFromVolumeNode(image_node)
     finally:
         node.EndModify(was_modifying)
+
+
+# ---------------------------------------------------------------------------
+# Per-image volume node batch helpers (issue #38)
+# ---------------------------------------------------------------------------
+
+def _populate_image_node(image_rgb, um_per_px, node):
+    """Thin wrapper around update_image_node used by create_image_volume_node.
+
+    Patching this in tests lets the rest of the create-image logic be
+    exercised without bringing up VTK.
+    """
+    update_image_node(image_rgb, um_per_px, node)
+
+
+def create_image_volume_node(image_rgb, um_per_px, name_hint, param_node, scene):
+    """Create one new ``vtkMRMLVectorVolumeNode`` for an eagerly-loaded image.
+
+    Unlike :func:`get_or_create_image_node`, this function NEVER reuses an
+    existing node — each successful image gets its own persistent volume node
+    created at folder-load time, before "Run Analysis" is clicked.
+
+    Parameters
+    ----------
+    image_rgb : numpy.ndarray
+        ``uint8`` array of shape ``(H, W, 3)`` already loaded by the widget's
+        pre-flight readability check; this function does not read the file
+        from disk again.
+    um_per_px : float
+        Physical scale (micrometres per pixel) used for spacing metadata.
+    name_hint : str
+        Suggested display name for the node (typically the basename).
+    param_node : vtkMRMLScriptedModuleNode
+        Module parameter node that owns the batch reference list.
+    scene : vtkMRMLScene
+        Active MRML scene.
+
+    Returns
+    -------
+    vtkMRMLVectorVolumeNode
+        The newly created node.
+
+    Notes
+    -----
+    The new node ID is appended to the reference list under
+    ``ROLE_ZEBRAFISH_IMAGES`` via ``AddNodeReferenceID``. If image population
+    fails, the half-constructed node is removed from the scene to avoid
+    leaving an empty/orphan volume node visible in the Data module.
+    """
+    display_name = name_hint if name_hint else "ZebrafishEmbryoAnalyzer Image"
+    node = scene.AddNewNodeByClass("vtkMRMLVectorVolumeNode", display_name)
+    try:
+        _populate_image_node(image_rgb, um_per_px, node)
+    except Exception:
+        # Roll back the half-built node so the Data module does not advertise
+        # an empty volume that no GUI state references.
+        try:
+            scene.RemoveNode(node)
+        except Exception:
+            pass
+        raise
+
+    param_node.AddNodeReferenceID(ROLE_ZEBRAFISH_IMAGES, node.GetID())
+    return node
+
+
+def remove_all_image_volume_nodes(param_node, scene):
+    """Remove every volume node tracked under ``ROLE_ZEBRAFISH_IMAGES``.
+
+    Cleans up anything reachable from those volume nodes through their node
+    references, so the recursive cleanup stays correct after sub-issue #39
+    adds segmentation / markups references on the volume node. Today the
+    recursion is a no-op (volume nodes currently own no children) but the
+    structure is in place.
+
+    Parameters
+    ----------
+    param_node : vtkMRMLScriptedModuleNode | None
+        Module parameter node. ``None`` is a no-op.
+    scene : vtkMRMLScene | None
+        Active MRML scene. ``None`` is a no-op.
+
+    Returns
+    -------
+    int
+        Number of top-level volume nodes removed from the scene.
+    """
+    if param_node is None or scene is None:
+        return 0
+
+    ids_snapshot = list(param_node.GetNodeReferenceIDs(ROLE_ZEBRAFISH_IMAGES) or [])
+    if not ids_snapshot:
+        return 0
+
+    removed = 0
+    for nid in ids_snapshot:
+        node = scene.GetNodeByID(nid)
+        if node is None:
+            continue
+        _recursively_remove(node, scene)
+        removed += 1
+
+    # The reference list no longer points at live nodes. Clearing it keeps
+    # the parameter node consistent across Slicer restarts (which currently
+    # do not see #36 scene-merge behaviour, per issue #38 out-of-scope).
+    # ``RemoveAllNodeReferenceIDs`` exists in vtkMRMLNode and clears the list
+    # atomically, so we prefer it over the legacy ``RemoveNodeReferenceIDs``
+    # list-form path whose argument type varies across Slicer/VTK bindings.
+    if hasattr(param_node, "RemoveAllNodeReferenceIDs"):
+        try:
+            param_node.RemoveAllNodeReferenceIDs(ROLE_ZEBRAFISH_IMAGES)
+        except Exception:
+            _remove_node_reference_ids_fallback(param_node, ROLE_ZEBRAFISH_IMAGES, ids_snapshot)
+    else:
+        _remove_node_reference_ids_fallback(param_node, ROLE_ZEBRAFISH_IMAGES, ids_snapshot)
+
+    return removed
+
+
+def _remove_node_reference_ids_fallback(param_node, role, ids_snapshot):
+    """Best-effort fallback for bindings that lack ``RemoveAllNodeReferenceIDs``."""
+    try:
+        param_node.RemoveNodeReferenceIDs(role, ids_snapshot)
+        return
+    except TypeError:
+        # Single-ID signature in older bindings: remove one at a time.
+        for nid in ids_snapshot:
+            try:
+                param_node.RemoveNodeReferenceIDs(role, nid)
+            except Exception:
+                pass
+    except Exception:
+        # Nodes have already been removed from the scene; nothing to do.
+        pass
+
+
+def _recursively_remove(node, scene):
+    """Remove ``node`` and every node it references from ``scene``.
+
+    Children are snapshot before their parent is removed, because
+    ``RemoveNode`` invalidates references. ``scene.GetNodeByID`` may return
+    ``None`` between successive removals; missing nodes are skipped.
+    """
+    seen = set()
+
+    def _visit(n):
+        nid = n.GetID() if hasattr(n, "GetID") else None
+        if nid is None or nid in seen:
+            return
+        seen.add(nid)
+        # Snapshot first — RemoveNode may invalidate references on `n`.
+        child_ids = _collect_node_reference_ids(n)
+        for cid in child_ids:
+            child = scene.GetNodeByID(cid) if hasattr(scene, "GetNodeByID") else None
+            if child is not None:
+                _visit(child)
+        if hasattr(scene, "RemoveNode"):
+            scene.RemoveNode(n)
+
+    _visit(node)
+
+
+def _collect_node_reference_ids(node):
+    """Return every node-reference ID carried by ``node`` across all roles.
+
+    Tries the no-argument form first (``GetNodeReferenceIDs()``); falls back
+    to an empty list when neither signature is available so the recursive
+    cleanup degrades to a single-node removal in older bindings.
+    """
+    if not hasattr(node, "GetNodeReferenceIDs"):
+        return []
+    try:
+        result = node.GetNodeReferenceIDs()
+    except TypeError:
+        # Some bindings require an explicit role argument.
+        return []
+    if result is None:
+        return []
+    # Accept python lists, tuples, or any iterable yielding strings.
+    try:
+        return [str(x) for x in result]
+    except TypeError:
+        return []

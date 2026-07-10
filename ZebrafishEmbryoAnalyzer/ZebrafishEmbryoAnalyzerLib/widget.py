@@ -238,10 +238,24 @@ class ZebrafishEmbryoAnalyzerMainWidget:
 
         self._btn_folder = qt.QPushButton("Load Folder…")
         self._btn_files  = qt.QPushButton("Load Images…")
+        self._btn_folder.setToolTip(
+            "Loading a folder replaces the current selection in this scene."
+        )
+        self._btn_files.setToolTip(
+            "Loading images replaces the current selection in this scene."
+        )
         _load_row = qt.QHBoxLayout()
         _load_row.addWidget(self._btn_folder)
         _load_row.addWidget(self._btn_files)
         in_layout.addLayout(_load_row)
+        # Issue #38: always-visible hint (no modal confirmation) explaining
+        # that loading replaces the previous scene contents.
+        self._load_replace_hint = qt.QLabel(
+            "Loading replaces the current selection in this scene."
+        )
+        self._load_replace_hint.setStyleSheet("color: #888; font-size: 11px;")
+        self._load_replace_hint.setWordWrap(True)
+        in_layout.addWidget(self._load_replace_hint)
         in_layout.addWidget(qt.QLabel("Queue:"))
         self._queue_list = qt.QListWidget()
         self._queue_list.setMaximumHeight(120)
@@ -459,6 +473,32 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 self._run_stack.setCurrentIndex(0)
             except Exception:
                 pass
+
+        # Issue #38: replace-on-load. Remove any volume nodes owned by the
+        # previous selection BEFORE touching the new selection so the Data
+        # module never shows a mixed set of volume nodes from two batches.
+        try:
+            self._logic.replace_image_volume_nodes()
+        except Exception:
+            logging.exception("ZebrafishEmbryoAnalyzer: replace_image_volume_nodes failed")
+
+        # Issue #38: pre-flight readability check. Files that cv2 cannot read
+        # are dropped before queue, stubs, or volume nodes are created; the
+        # user sees one consolidated, capped summary naming them.
+        # The pre-flight also returns the already-decoded RGB arrays so the
+        # subsequent _load_originals / volume-node-creation passes never
+        # repeat the cv2.imread call (issue #38 acceptance: "no image is read
+        # from disk twice").
+        paths, failed, decoded = self._filter_readable_paths(paths)
+        if failed:
+            try:
+                slicer.util.showStatusMessage(
+                    self._format_readability_message(len(failed), failed),
+                    8000,
+                )
+            except Exception:
+                pass
+
         import os
         self._image_paths = paths
         self._queue_list.clear()
@@ -487,25 +527,186 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             except Exception:
                 pass
 
-        self._load_originals(paths, stubs)
+        self._load_originals(paths, stubs, decoded=decoded)
         self._refresh_run_button()
 
-    def _load_originals(self, paths, stubs):
-        """Load original images after an explicit user action."""
+        # Issue #38: eagerly create one vtkMRMLVectorVolumeNode per
+        # successfully-read image, reusing the rgb already in stubs[i]["original"]
+        # so the file is never read from disk a second time. Pre-flight failures
+        # are absent from this list because they were filtered above.
+        self._create_image_volume_nodes_for_batch()
+
+    def _filter_readable_paths(self, paths):
+        """Pre-flight readability check for issue #38.
+
+        Reads every file from disk EXACTLY ONCE: ``cv2.imread`` plus the
+        ``BGR2RGB`` conversion happen here. Files that cv2 cannot decode
+        (decode failure, conversion failure, or any unexpected exception)
+        are dropped from the batch entirely — no volume node, no queue row,
+        no further processing. Unreadable files are surfaced as a single
+        capped summary by the caller, not as a modal popup.
+
+        Returns
+        -------
+        tuple (readable_paths, failed_basenames, decoded_rgb)
+            readable_paths : list[str] of paths that decoded successfully.
+            failed_basenames : list[str] of basenames that failed.
+            decoded_rgb : dict[path, np.ndarray] of uint8 RGB arrays for the
+                readable paths; reused by ``_load_originals`` and the
+                volume-node-creation pass to avoid a second ``cv2.imread``.
+        """
+        import os
+        import cv2
+        readable = []
+        failed = []
+        decoded = {}
+        for p in paths:
+            try:
+                img = cv2.imread(p)
+                if img is None:
+                    failed.append(os.path.basename(p))
+                    continue
+                # cvtColor can fail on grayscales/non-RGB sources; treat them
+                # as pre-flight failures rather than crashing the load flow.
+                rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            except Exception:
+                failed.append(os.path.basename(p))
+                continue
+            readable.append(p)
+            decoded[p] = rgb
+        return readable, failed, decoded
+
+    @staticmethod
+    def _format_readability_message(total_failed, failed_names, cap=10):
+        """Build a single-line capped summary for unreadable files (issue #38).
+
+        Shows the first ``cap`` names verbatim and ``"... and N more"`` when
+        additional failures were truncated.
+        """
+        shown = list(failed_names[:cap])
+        extra = total_failed - len(shown)
+        suffix = f", ... and {extra} more" if extra > 0 else ""
+        plural = "s" if total_failed != 1 else ""
+        return (
+            f"{total_failed} image{plural} could not be read and were not imported: "
+            + ", ".join(shown)
+            + suffix
+        )
+
+    @staticmethod
+    def _format_failed_batch_message(total_failed, failed_names, cap=10):
+        """Build a single-line capped summary for MRML batch failures (issue #38).
+
+        Mirrors :meth:`_format_readability_message` but uses different wording
+        so users can distinguish decode-time failures from runtime failures
+        while reading the eventual volume node into the scene.
+        """
+        shown = list(failed_names[:cap])
+        extra = total_failed - len(shown)
+        suffix = f", ... and {extra} more" if extra > 0 else ""
+        plural = "s" if total_failed != 1 else ""
+        return (
+            f"{total_failed} image{plural} failed to create a scene volume node: "
+            + ", ".join(shown)
+            + suffix
+        )
+
+    def _create_image_volume_nodes_for_batch(self):
+        """Issue #38: eagerly create one ``vtkMRMLVectorVolumeNode`` per
+        successfully-loaded image, reusing pixel arrays already held in
+        ``self._results[i]["original"]`` by :meth:`_load_originals`.
+        """
+        if not getattr(self, "_results", None):
+            return
+        try:
+            um_per_px = float(self._um_per_px.value)
+        except Exception:
+            um_per_px = 22.99
+        batches = []
+        for stub in self._results:
+            rgb = stub.get("original") if isinstance(stub, dict) else None
+            if rgb is None:
+                continue
+            batches.append({
+                "filename": stub.get("filename") or "ZebrafishEmbryoAnalyzer Image",
+                "image_rgb": rgb,
+                "um_per_px": um_per_px,
+            })
+        if not batches:
+            return
+        try:
+            created, failed = self._logic.create_image_volume_nodes(batches)
+        except MRMLAdapterError as exc:
+            logging.warning(
+                "ZebrafishEmbryoAnalyzer: per-image volume node creation failed: %s", exc
+            )
+            try:
+                slicer.util.showStatusMessage(
+                    "Could not create per-image volume nodes. Check the application log.",
+                    5000,
+                )
+            except Exception:
+                pass
+            return
+        except Exception:
+            # Defensive: a half-constructed logic instance (or any
+            # non-MRMLAdapterError failure) must not derail the load flow.
+            # Subsequent batches or a re-load retry the node creation.
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: _create_image_volume_nodes_for_batch failed"
+            )
+            try:
+                slicer.util.showStatusMessage(
+                    "Could not create per-image volume nodes. Check the application log.",
+                    5000,
+                )
+            except Exception:
+                pass
+            return
+
+        if failed:
+            # Partial-success: some images turned into volume nodes, others did
+            # not. The user gets a capped, named summary rather than a silent
+            # partial state (CLAUDE.md error-handling rule).
+            try:
+                slicer.util.showStatusMessage(
+                    self._format_failed_batch_message(len(failed), failed),
+                    8000,
+                )
+            except Exception:
+                pass
+        _ = created  # currently diagnostic-only; tests count via param_node refs
+
+    def _load_originals(self, paths, stubs, decoded=None):
+        """Populate ``stubs[i]["original"]`` with RGB pixel arrays.
+
+        The pixel arrays are reused from the pre-flight pass when
+        ``decoded`` (a path → uint8 RGB dict) is provided, so each image is
+        read from disk exactly once across the full ``_set_queue`` flow
+        (issue #38 acceptance: "No image is read from disk twice"). When
+        ``decoded`` is None the legacy single-read path is used, keeping the
+        helper backward-compatible with the few unit tests that patch
+        ``cv2.imread`` directly.
+        """
         import cv2
         from ZebrafishEmbryoAnalyzerLib.gallery_tab import THUMB_SIZE as _THUMB_SIZE
 
+        decoded = decoded if decoded is not None else {}
         for i, p in enumerate(paths):
             if stubs is not self._results:
                 return
-            img = cv2.imread(p)
-            if img is not None:
+            if p in decoded:
+                rgb = decoded[p]
+            else:
+                img = cv2.imread(p)
+                if img is None:
+                    continue
                 rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                stubs[i]["original"] = rgb
-                h, w = rgb.shape[:2]
-                scale = _THUMB_SIZE / max(h, w)
-                thumb = cv2.resize(rgb, (max(1, int(w * scale)), max(1, int(h * scale))))
-                self._gallery.update_thumb_prebuilt(i, thumb)
+            stubs[i]["original"] = rgb
+            h, w = rgb.shape[:2]
+            scale = _THUMB_SIZE / max(h, w)
+            thumb = cv2.resize(rgb, (max(1, int(w * scale)), max(1, int(h * scale))))
+            self._gallery.update_thumb_prebuilt(i, thumb)
 
     def _required_model_entries(self, model_id):
         """Return the model entries required by the current settings."""
