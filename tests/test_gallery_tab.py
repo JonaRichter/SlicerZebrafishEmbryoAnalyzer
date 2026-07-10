@@ -32,7 +32,7 @@ def _install_reflow_on_stub():
     """Define `_reflow` as a module-level function that operates on `self`."""
     from ZebrafishEmbryoAnalyzerLib.gallery_tab import THUMB_SIZE
     src = _extract_reflow_source()
-    namespace = {"THUMB_SIZE": THUMB_SIZE, "qt": sys.modules["qt"]}
+    namespace = {"THUMB_SIZE": THUMB_SIZE}
     exec(src, namespace)
     return namespace["_reflow"]
 
@@ -50,8 +50,6 @@ class _StubGalleryTab:
         grid_mock = MagicMock()
         grid_mock.spacing = 6
         self._grid = grid_mock
-        self._container = MagicMock()
-        self._scroll = MagicMock()
 
 
 @pytest.fixture
@@ -62,8 +60,6 @@ def qt_modules(monkeypatch):
     qt_mock.Qt.AlignCenter = 0
     qt_mock.Qt.AlignTop = 32        # 0x20 — Qt.AlignTop
     qt_mock.Qt.AlignHCenter = 4     # 0x04 — Qt.AlignHCenter
-    qt_mock.Qt.AlignLeft = 1        # 0x01 — Qt.AlignLeft
-    qt_mock.Qt.ScrollBarAlwaysOff = 1
     qt_mock.Qt.ElideRight = 1
     monkeypatch.setitem(sys.modules, "qt", qt_mock)
     slicer_mock = MagicMock()
@@ -114,11 +110,13 @@ def test_reflow_sets_zero_column_stretch_to_left_align_thumbnails(gallery_module
     cols = g._n_cols
     assert cols > 3, f"test fixture expects more columns than cells, got cols={cols}"
 
-    # setColumnStretch must be called for every column 0..cols-1 with stretch=0
+    # setColumnStretch must be called for every real column 0..cols-1 with
+    # stretch=0, plus one extra call for the trailing spacer column at index
+    # `cols` (see test_reflow_gives_one_trailing_spacer_column_all_the_column_stretch).
     calls = g._grid.setColumnStretch.call_args_list
-    assert len(calls) == cols, (
-        f"setColumnStretch must be called once per column (cols={cols}), "
-        f"got {len(calls)} calls"
+    assert len(calls) == cols + 1, (
+        f"setColumnStretch must be called once per real column plus the "
+        f"trailing spacer column (cols={cols}), got {len(calls)} calls"
     )
     columns_set = []
     stretches = []
@@ -127,9 +125,10 @@ def test_reflow_sets_zero_column_stretch_to_left_align_thumbnails(gallery_module
         stretch = call.args[1] if len(call.args) > 1 else call.kwargs.get("stretch")
         columns_set.append(col)
         stretches.append(stretch)
-    assert sorted(columns_set) == list(range(cols))
-    assert all(s == 0 for s in stretches), (
-        f"All column stretches must be 0 (left-align), got {stretches}"
+    assert sorted(columns_set) == list(range(cols + 1))
+    real_column_stretches = [s for c, s in zip(columns_set, stretches) if c < cols]
+    assert all(s == 0 for s in real_column_stretches), (
+        f"All real column stretches must be 0 (left-align), got {real_column_stretches}"
     )
 
 
@@ -140,12 +139,13 @@ def test_reflow_left_aligns_with_many_columns_few_cells(gallery_module):
     assert g._n_cols >= 10, "fixture sanity: many more columns than cells"
 
     call_columns = [c.args[0] for c in g._grid.setColumnStretch.call_args_list]
-    assert call_columns == list(range(g._n_cols)), (
-        f"setColumnStretch must be called in column order, got {call_columns}"
+    assert call_columns == list(range(g._n_cols + 1)), (
+        f"setColumnStretch must be called in column order, real columns then "
+        f"the trailing spacer column, got {call_columns}"
     )
-    for call in g._grid.setColumnStretch.call_args_list:
+    for call in g._grid.setColumnStretch.call_args_list[:-1]:
         stretch = call.args[1] if len(call.args) > 1 else call.kwargs.get("stretch")
-        assert stretch == 0, f"every column stretch must be 0, got {stretch}"
+        assert stretch == 0, f"every real column stretch must be 0, got {stretch}"
 
 
 def test_reflow_skipped_when_column_count_unchanged(gallery_module):
@@ -158,79 +158,40 @@ def test_reflow_skipped_when_column_count_unchanged(gallery_module):
     g = _make_gallery(_stub_cells(3), width=2000)
     g._reflow()  # first call populates n_cols
     g._grid.reset_mock()
-    g._container.reset_mock()
-    sys.modules["qt"].QApplication.sendEvent.reset_mock()
     g._reflow()  # second call: should early-return
     g._grid.setColumnStretch.assert_not_called()
     g._grid.addWidget.assert_not_called()
-    g._grid.activate.assert_not_called()
-    g._container.adjustSize.assert_not_called()
-    sys.modules["qt"].QApplication.sendEvent.assert_not_called()
 
 
-def test_reflow_calls_container_adjust_size_when_repositioning(gallery_module):
-    """Issue #51: with widgetResizable(False), QScrollArea no longer force-
-    resizes the container to the viewport, so _reflow must explicitly call
-    self._container.adjustSize() after repositioning cells — otherwise the
-    container keeps its stale/default size and the gallery appears empty.
+def test_reflow_gives_one_trailing_spacer_row_all_the_row_stretch(gallery_module):
+    """Issue #16 (top-left anchoring, kept widgetResizable(True)):
+    QGridLayout distributes leftover vertical space evenly across every row
+    whose stretch is 0 — even when every *real* row is explicitly set to
+    stretch 0 — which is what caused rows to spread apart vertically.
+    Giving exactly one trailing spacer row (one past the last real content
+    row) a nonzero stretch collects all that leftover space there instead,
+    pinning the real rows to the top. This only works now that every cell's
+    caption reserves a fixed two-line height, so all real rows are already
+    the same height and don't need their own stretch to look even.
     """
-    g = _make_gallery(_stub_cells(3), width=2000)
-    g._reflow()
-    g._container.adjustSize.assert_called_once()
-
-
-def test_reflow_activates_grid_before_adjusting_container_size(gallery_module):
-    """Issue #51 (follow-up): addWidget() only invalidates the grid layout —
-    geometry recompute is deferred to a posted LayoutRequest event, which a
-    hidden widget (Gallery tab not yet active, e.g. right after Load
-    Folder...) never receives. adjustSize() alone then reads a stale size
-    hint. _reflow must call self._grid.activate() first so the layout
-    recomputes immediately regardless of visibility.
-    """
-    g = _make_gallery(_stub_cells(3), width=2000)
-    g._reflow()
-    g._grid.activate.assert_called_once()
-    g._container.adjustSize.assert_called_once()
-
-
-def test_reflow_sends_synthetic_resize_event_to_scroll_area(gallery_module):
-    """Issue #51 (root cause): with widgetResizable(False), QScrollArea only
-    repositions/repaints its scrolled widget from inside its own
-    resizeEvent() handler — resizing the container from _reflow() (as the
-    two fixes above do) never triggers that handler by itself. Confirmed
-    live: forcing container.adjustSize() and even explicit repaint() calls
-    left the gallery blank after the initial image load, while any action
-    that made Slicer genuinely resize the scroll area (switching modules
-    away and back, which resizes the module panel dock) fixed it
-    immediately. _reflow() must dispatch a synthetic QResizeEvent to the
-    scroll area itself so this doesn't depend on an unrelated ancestor
-    happening to resize it.
-    """
-    g = _make_gallery(_stub_cells(3), width=2000)
-    g._reflow()
-    qt = sys.modules["qt"]
-    assert qt.QApplication.sendEvent.call_count == 1
-    call_args = qt.QApplication.sendEvent.call_args.args
-    assert call_args[0] is g._scroll
-    qt.QResizeEvent.assert_called_once_with(g._scroll.size, g._scroll.size)
-
-
-def test_reflow_does_not_call_set_row_stretch(gallery_module):
-    """Issue #16: setRowStretch on an empty row caused uneven vertical spacing.
-
-    The previous implementation called `setRowStretch(rows, 1)` on a
-    notional empty row to "push content up" — but this interacted
-    inconsistently with rows of different heights (single-line vs
-    multi-line captions). QGridLayout positions content at the top of
-    each row's allotted space by default, so the explicit stretch is
-    unnecessary.
-
-    Regression guard: _reflow must never call setRowStretch.
-    """
-    for n_cells in (0, 1, 3, 5, 12):
+    for n_cells, cols_expected_gt in ((1, 0), (3, 0), (5, 0), (12, 0)):
         g = _make_gallery(_stub_cells(n_cells), width=2000)
         g._reflow()
-        g._grid.setRowStretch.assert_not_called()
+        cols = g._n_cols
+        expected_rows = -(-n_cells // cols)
+        g._grid.setRowStretch.assert_called_once_with(expected_rows, 1)
+
+
+def test_reflow_gives_one_trailing_spacer_column_all_the_column_stretch(gallery_module):
+    """Issue #16 (top-left anchoring): same reasoning as the row spacer, but
+    for horizontal space — one trailing spacer column past the last real
+    content column gets stretch 1, collecting leftover horizontal space so
+    real columns (all stretch 0) don't spread apart.
+    """
+    g = _make_gallery(_stub_cells(3), width=2000)
+    g._reflow()
+    cols = g._n_cols
+    g._grid.setColumnStretch.assert_any_call(cols, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -312,8 +273,6 @@ class _StubGalleryTabForPopulate:
         self._cells = []
         self._thumbnails = []
         self._n_cols = 0
-        self._container = MagicMock()
-        self._scroll = MagicMock()
 
 
 @pytest.fixture
@@ -462,257 +421,3 @@ def test_populate_adds_bottom_stretch_to_each_cell(populated_stub):
             f"addStretch must be the last call on cell_layout, got "
             f"{cell_layout.method_calls[-1]}"
         )
-
-
-def test_populate_schedules_deferred_reflow(populated_stub):
-    """Issue #51 (follow-up): on the very first populate() after opening the
-    module, self.width can still reflect a stale/default size because Qt
-    hasn't yet processed the module panel's pending resize/show events at
-    that point in the synchronous Load Folder... handler. populate() must
-    schedule a second _reflow() via QTimer.singleShot(0, ...) so it re-runs
-    once real geometry is available — otherwise the gallery can stay empty
-    until some unrelated event (e.g. leaving and re-entering the module)
-    happens to trigger a real resizeEvent.
-    """
-    stub, _, _ = populated_stub
-    qt = sys.modules["qt"]
-    qt.QTimer.singleShot.assert_called_once_with(0, stub._reflow)
-
-
-# ---------------------------------------------------------------------------
-# Grid-alignment regression tests for issue #16 (third layer)
-# ---------------------------------------------------------------------------
-#
-# Choice: AST-extract `__init__` (same pattern as `_reflow` and `populate`)
-# rather than refactoring production to call a small `_build_scroll_area()`
-# helper. Reasons:
-#   1. Consistency — the file already uses AST-extraction for the other
-#      two layout-related methods, so the test rig is uniform.
-#   2. Production code stays minimal — adding a helper would expand the
-#      class surface just to make testing easier, and the three-call
-#      configuration block is small and reads naturally inline.
-#   3. The risk of drift between a helper and its test is the same as the
-#      risk of drift between an inlined block and its AST-extracted test.
-# The trade-off is that exec'ing `__init__` against a stub needs extra
-# ceremony (the `super().__init__()` cell trick), but it stays inside the
-# existing test rig, so we keep it.
-
-
-def _extract_init_source():
-    """Return the source of `GalleryTab.__init__` from gallery_tab.py.
-
-    gallery_tab.py defines two `__init__` methods — one on `_ClickableLabel`
-    and one on `GalleryTab`. A naive `ast.walk` returns whichever it visits
-    first, so we match by parent class to be sure we get the one that
-    configures the scroll area.
-
-    The bare `super().__init__()` call inside GalleryTab.__init__ is
-    stripped before unparsing — without the implicit `__class__` cell
-    that real class definitions provide, a standalone `super()` raises
-    "super(): __class__ cell not found". We don't want to exercise Qt
-    widget construction in these tests anyway (we're only inspecting the
-    scroll-area configuration calls), so dropping the super call is the
-    correct trade-off.
-    """
-    tree = ast.parse(GALLERY_PATH.read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef):
-            continue
-        if node.name != "GalleryTab":
-            continue
-        for child in node.body:
-            if isinstance(child, ast.FunctionDef) and child.name == "__init__":
-                init_fn = child
-                break
-        else:
-            continue
-        break
-    else:
-        raise RuntimeError("GalleryTab.__init__ not found in gallery_tab.py")
-
-    # Strip `super().__init__()` from the body — it's a no-op for our
-    # tests since the stub isn't a real Qt widget. The AST shape is
-    # `Expr(value=Call(func=Attribute(value=Call(func=Name('super')))))`
-    # i.e. `super().__init__()`.
-    def _is_super_init_call(stmt):
-        if not isinstance(stmt, ast.Expr):
-            return False
-        call = stmt.value
-        if not isinstance(call, ast.Call):
-            return False
-        attr = call.func
-        if not isinstance(attr, ast.Attribute) or attr.attr != "__init__":
-            return False
-        inner = attr.value
-        if not isinstance(inner, ast.Call):
-            return False
-        return isinstance(inner.func, ast.Name) and inner.func.id == "super"
-
-    init_fn.body = [stmt for stmt in init_fn.body if not _is_super_init_call(stmt)]
-    return ast.unparse(init_fn)
-
-
-class _StubGalleryTabForInit:
-    """Stand-in for GalleryTab used to exercise __init__.
-
-    Skips Qt's metaclass dance (QWidget's __init_subclass__/__new__ chokes
-    when qt is a MagicMock) but provides the attributes __init__ writes to.
-    The bare `super().__init__()` inside GalleryTab.__init__ resolves to
-    `object.__init__()` via the `__class__` cell we inject at exec time.
-    """
-
-    def __init__(self):
-        # Will be overwritten by the AST-extracted GalleryTab.__init__
-        # when bound below. We just need an instance to bind to.
-        pass
-
-
-def _run_init_with_monkey_qt(monkey_qt):
-    """Extract GalleryTab.__init__ with a custom `qt` namespace, run it, and
-    return the stub instance after __init__ has executed.
-
-    The trick: `__class__` is seeded so the bare `super().__init__()`
-    resolves against the stub class (otherwise the AST-extracted function
-    fails with "super(): __class__ cell not found").
-    """
-    src = _extract_init_source()
-    namespace = {"qt": monkey_qt, "__class__": _StubGalleryTabForInit}
-    exec(src, namespace)
-    init_fn = namespace["__init__"]
-    stub = _StubGalleryTabForInit()
-    init_fn(stub, lambda i: None)
-    return stub
-
-
-def _monkey_qt_with_scroll_capture(real_qt):
-    """Build a per-test qt mock that exposes real Qt constants and
-    captures every QScrollArea instance creation.
-
-    QScrollArea is a MagicMock with a side_effect that records every
-    instance it returns. This lets callers both introspect the returned
-    scroll instance (via `scroll_instances`) and count the calls (via
-    `monkey_qt.QScrollArea.call_count`).
-    """
-    scroll_instances = []
-
-    def scroll_factory(*args, **kwargs):
-        instance = MagicMock()
-        scroll_instances.append(instance)
-        return instance
-
-    scroll_mock = MagicMock(side_effect=scroll_factory)
-    monkey_qt = MagicMock()
-    monkey_qt.Qt.AlignTop = real_qt.Qt.AlignTop
-    monkey_qt.Qt.AlignLeft = real_qt.Qt.AlignLeft
-    monkey_qt.Qt.ScrollBarAlwaysOff = real_qt.Qt.ScrollBarAlwaysOff
-    monkey_qt.QScrollArea = scroll_mock
-    return monkey_qt, scroll_instances
-
-
-def test_init_disables_widget_resizable_on_scroll_area(qt_modules):
-    """Issue #16 (grid alignment): setWidgetResizable(False) makes the inner
-    widget size to its grid content instead of being force-resized to the
-    viewport. With True, Qt distributes extra viewport space between rows
-    (vertically) and across columns (horizontally) — which is the bug the
-    user reported even after the row-stretch and column-stretch fixes.
-    """
-    real_qt = sys.modules["qt"]
-    monkey_qt, scroll_instances = _monkey_qt_with_scroll_capture(real_qt)
-    _run_init_with_monkey_qt(monkey_qt)
-
-    assert len(scroll_instances) == 1, (
-        f"Expected exactly one QScrollArea created in __init__, got "
-        f"{len(scroll_instances)}"
-    )
-    scroll = scroll_instances[0]
-    scroll.setWidgetResizable.assert_called_once_with(False)
-
-
-def test_init_anchors_scroll_area_to_top_left(qt_modules):
-    """Issue #16 (grid alignment): setAlignment(Qt.AlignTop | Qt.AlignLeft)
-    positions the inner widget at the top-left of the viewport when the
-    widget is smaller than the viewport. Without this, Qt's default is to
-    center the widget, which makes the grid look vertically and
-    horizontally centered instead of top-left-anchored.
-    """
-    real_qt = sys.modules["qt"]
-    monkey_qt, scroll_instances = _monkey_qt_with_scroll_capture(real_qt)
-    _run_init_with_monkey_qt(monkey_qt)
-
-    assert len(scroll_instances) == 1
-    scroll = scroll_instances[0]
-    scroll.setAlignment.assert_called_once()
-    align_args = scroll.setAlignment.call_args.args
-    alignment = align_args[0]
-    expected = real_qt.Qt.AlignTop | real_qt.Qt.AlignLeft
-    assert alignment == expected, (
-        f"setAlignment must be called with AlignTop | AlignLeft "
-        f"({expected!r}), got {alignment!r}"
-    )
-
-
-def test_init_suppresses_horizontal_scrollbar(qt_modules):
-    """Issue #16 (grid alignment): setHorizontalScrollBarPolicy(
-    ScrollBarAlwaysOff) ensures the gallery never shows a horizontal
-    scrollbar. With widgetResizable=False, horizontal overflow only
-    happens at extremely narrow panel widths (< ~154px); the user prefers
-    clipped cells over a scrollbar in a thumbnail grid.
-    """
-    real_qt = sys.modules["qt"]
-    monkey_qt, scroll_instances = _monkey_qt_with_scroll_capture(real_qt)
-    _run_init_with_monkey_qt(monkey_qt)
-
-    assert len(scroll_instances) == 1
-    scroll = scroll_instances[0]
-    scroll.setHorizontalScrollBarPolicy.assert_called_once_with(
-        real_qt.Qt.ScrollBarAlwaysOff
-    )
-
-
-def test_init_stores_scroll_area_on_instance(qt_modules):
-    """Issue #16 (grid alignment): __init__ must store the QScrollArea as
-    `self._scroll` so tests (and any future introspection helper) can
-    reach it without rebuilding the widget tree. The other init tests
-    rely on this attribute for scroll-area inspection.
-    """
-    real_qt = sys.modules["qt"]
-    monkey_qt, scroll_instances = _monkey_qt_with_scroll_capture(real_qt)
-    stub = _run_init_with_monkey_qt(monkey_qt)
-
-    assert hasattr(stub, "_scroll"), (
-        "GalleryTab.__init__ must store the QScrollArea as self._scroll"
-    )
-    # self._scroll should be the same instance used as the layout host —
-    # it's the only QScrollArea created.
-    assert monkey_qt.QScrollArea.call_count == 1, (
-        f"Expected exactly one QScrollArea() call, got "
-        f"{monkey_qt.QScrollArea.call_count}"
-    )
-    # With side_effect set, return_value is the auto-MagicMock; the real
-    # instance returned is the one we captured.
-    assert stub._scroll is scroll_instances[0]
-
-
-def test_init_three_changes_happen_together(qt_modules):
-    """Issue #16 (grid alignment): the three configuration calls
-    (setWidgetResizable(False), setAlignment(AlignTop|AlignLeft),
-    setHorizontalScrollBarPolicy(ScrollBarAlwaysOff)) form a single
-    atomic fix — removing any one of them re-introduces part of the
-    bug. This test guards against accidental partial-reverts by
-    requiring all three to be present on the same scroll instance.
-    """
-    real_qt = sys.modules["qt"]
-    monkey_qt, scroll_instances = _monkey_qt_with_scroll_capture(real_qt)
-    _run_init_with_monkey_qt(monkey_qt)
-
-    assert len(scroll_instances) == 1
-    scroll = scroll_instances[0]
-    # All three must be called on the SAME scroll instance.
-    scroll.setWidgetResizable.assert_called_with(False)
-    scroll.setAlignment.assert_called_once()
-    align = scroll.setAlignment.call_args.args[0]
-    assert align & real_qt.Qt.AlignTop
-    assert align & real_qt.Qt.AlignLeft
-    scroll.setHorizontalScrollBarPolicy.assert_called_with(
-        real_qt.Qt.ScrollBarAlwaysOff
-    )

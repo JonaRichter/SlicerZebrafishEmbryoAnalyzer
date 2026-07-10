@@ -50,22 +50,7 @@ class GalleryTab(qt.QWidget):
         self._n_cols = 0
 
         scroll = qt.QScrollArea()
-        # Issue #16 (grid-alignment layer): with widgetResizable=True Qt
-        # resizes the inner widget to the viewport size and distributes
-        # any extra vertical space between rows and any extra horizontal
-        # space across columns — even when setColumnStretch(col, 0) and
-        # no setRowStretch are set. The visible effect is rows spread far
-        # apart vertically and, when fewer cells than columns, cells
-        # spread across the full row width. Setting widgetResizable=False
-        # makes the inner widget size to its grid content instead; the
-        # alignment flag then pins the content to the top-left of the
-        # viewport, and the horizontal scrollbar is suppressed because
-        # cells in a thumbnail grid should clip at the edge rather than
-        # scroll sideways (vertical scrolling remains enabled).
-        scroll.setWidgetResizable(False)
-        scroll.setAlignment(qt.Qt.AlignTop | qt.Qt.AlignLeft)
-        scroll.setHorizontalScrollBarPolicy(qt.Qt.ScrollBarAlwaysOff)
-        self._scroll = scroll
+        scroll.setWidgetResizable(True)
 
         self._container = qt.QWidget()
         self._grid      = qt.QGridLayout(self._container)
@@ -145,18 +130,6 @@ class GalleryTab(qt.QWidget):
             self._thumbnails.append(label)
 
         self._reflow()
-        # Issue #51 (follow-up): on the very first populate() after opening
-        # the module, self.width can still reflect a stale/default size —
-        # Qt hasn't yet processed the module panel's own pending resize/show
-        # events at this point in the synchronous Load Folder... handler.
-        # _reflow() then locks in a wrong column count from that stale
-        # width, and nothing corrects it until some later event (e.g.
-        # leaving and re-entering the module) forces a real resizeEvent.
-        # Scheduling a second reflow for the next event-loop tick lets it
-        # re-run once the real geometry is available; _reflow()'s own
-        # early-return makes this a no-op if the column count already
-        # matched.
-        qt.QTimer.singleShot(0, self._reflow)
 
     def update_thumb(self, index: int, rgb_array: np.ndarray) -> None:
         """Update a single thumbnail — builds thumb from full-res rgb on main thread."""
@@ -196,38 +169,23 @@ class GalleryTab(qt.QWidget):
         # accumulates on the right side of the row.
         for col in range(cols):
             self._grid.setColumnStretch(col, 0)
-        # Issue #51: with widgetResizable(False) the scroll area no longer
-        # auto-resizes the container to fit the grid. addWidget() only
-        # invalidates the layout — actual geometry recompute is deferred to a
-        # posted LayoutRequest event, which a hidden widget (Gallery not the
-        # active tab yet, e.g. right after Load Folder...) never receives. So
-        # adjustSize() alone can read a stale size hint. activate() forces
-        # the grid to recompute immediately regardless of visibility, then
-        # adjustSize() resizes the container to the now-current hint.
-        self._grid.activate()
-        self._container.adjustSize()
-        # Issue #51 (root cause): with widgetResizable(False), QScrollArea
-        # only repositions/repaints its scrolled widget from inside its own
-        # resizeEvent() handler — it never notices when *we* resize the
-        # container from here. A genuine top-level resize that happens to
-        # change the scroll area's own size (e.g. Slicer's shell-layout dock
-        # resize on module re-entry) triggers that handler and "fixes" the
-        # gallery; a plain window resize that leaves the module panel's own
-        # width unchanged does not, and neither does the container resize
-        # above. Sending the scroll area a synthetic resize event forces the
-        # same internal repositioning without depending on an unrelated
-        # ancestor happening to resize it.
-        scroll_size = self._scroll.size
-        qt.QApplication.sendEvent(self._scroll, qt.QResizeEvent(scroll_size, scroll_size))
-        # Issue #16: the previous code called setRowStretch(rows, 1) on a
-        # notional empty row to "push content up". This interacted
-        # inconsistently with variable row heights (multi-line captions are
-        # taller than single-line ones): the first row ended up with
-        # noticeably more space below it than subsequent rows. QGridLayout
-        # already positions each row's content at the top of its allotted
-        # space by default, so the explicit stretch is unnecessary — and
-        # harmful when row heights differ. Removing it gives uniform
-        # spacing between rows.
+        # Issue #16 (top-left anchoring): with widgetResizable(True), the
+        # container always matches the viewport's exact size, so any extra
+        # space beyond the content's natural size has to go *somewhere* in
+        # the grid. QGridLayout distributes it evenly across every row/
+        # column whose stretch is 0 (not zero, as one might expect) — that's
+        # what caused rows to spread apart vertically and, with fewer cells
+        # than columns, cells to spread across the full row width, even
+        # though every real column above is already set to stretch 0.
+        # Giving one trailing "spacer" row/column past the real content a
+        # nonzero stretch makes all the leftover space collect there
+        # instead, pinning the actual thumbnails top-left. This only works
+        # cleanly now that every cell's caption reserves a fixed two-line
+        # height (see populate()), so every row is already the same height
+        # and the spacer isn't fighting uneven row sizes.
+        rows = -(-len(self._cells) // cols)  # ceil division
+        self._grid.setColumnStretch(cols, 1)
+        self._grid.setRowStretch(rows, 1)
 
     def resizeEvent(self, event):
         self._reflow()
