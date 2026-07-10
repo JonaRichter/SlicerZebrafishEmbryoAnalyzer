@@ -295,6 +295,129 @@ def volume_node_to_result_dict(node):
     }
 
 
+def volume_node_to_pixels(node):
+    """Read the volume node's RGB pixel array (uint8 (H, W, 3)) or None.
+
+    Used by the scene-reload path (#41) to rebuild gallery thumbnails
+    without depending on the original source folder. Pixel data is stored
+    in Slicer's scene (.mrb) so this works even when the original image
+    files have been moved or deleted.
+
+    The returned array is the unflipped visual image — i.e. the inverse of
+    the flipud/fliplr transform applied by :func:`update_image_node` on
+    write. Storing the visual-orientation numpy array here keeps the
+    gallery widget's ``_load_originals`` path unchanged.
+
+    Returns ``None`` for nodes that do not expose image data (empty nodes,
+    stubs, or wrong-type nodes). The caller treats ``None`` as "no
+    thumbnail available" rather than an error.
+    """
+    import numpy as np
+    import vtk
+
+    try:
+        image_data = node.GetImageData() if hasattr(node, "GetImageData") else None
+    except Exception:
+        image_data = None
+    if image_data is None:
+        return None
+    try:
+        scalars = image_data.GetPointData().GetScalars()
+    except Exception:
+        return None
+    if scalars is None:
+        return None
+    try:
+        from vtk.util import numpy_support
+        arr = numpy_support.vtk_to_numpy(scalars)
+    except Exception:
+        return None
+    try:
+        dims = image_data.GetDimensions()
+    except Exception:
+        dims = None
+    if dims is None or len(dims) < 2 or dims[0] <= 0 or dims[1] <= 0:
+        return None
+    w_vtk, h_vtk = int(dims[0]), int(dims[1])
+    try:
+        comps = int(scalars.GetNumberOfComponents())
+    except Exception:
+        comps = 1
+    try:
+        flat = arr.reshape(h_vtk * w_vtk, comps)
+        rgb_vtk = flat[:, :3].reshape(h_vtk, w_vtk, 3)
+        # Inverse of update_image_node's flipud+fliplr: bottom-left-origin
+        # back to top-left-origin, radiological back to anatomical left.
+        rgb_visual = np.flipud(np.fliplr(rgb_vtk)).copy()
+        return np.ascontiguousarray(rgb_visual, dtype=np.uint8)
+    except Exception:
+        return None
+
+
+def validate_volume_node(node):
+    """Return ``("", "")`` if the node has the expected attribute set,
+    otherwise a descriptive ``(error_field, error_message)`` tuple.
+
+    Used by the scene-reload path to surface per-image robustness:
+    - missing metric attributes → ``("Missing analysis data", "")`` on
+      the row's error field,
+    - segmentation node reference missing or broken →
+      ``("Segmentation node missing", "")``.
+
+    Issue #41 acceptance: a row with no metric data must auto-exclude
+    via the existing error-row mechanism rather than crash the module.
+    """
+    if node is None:
+        return ("Missing volume node", "")
+    if not hasattr(node, "GetAttribute"):
+        return ("Invalid volume node", "")
+    # At minimum we expect any one of the metric attributes to be present
+    # — an empty node clearly indicates analysis never finished for it.
+    has_metric = False
+    for attr in (ATTR_LENGTH, ATTR_RATIO, ATTR_EYE_AREA, ATTR_EYE_DIAMETER):
+        try:
+            if node.GetAttribute(attr):
+                has_metric = True
+                break
+        except Exception:
+            pass
+    if not has_metric:
+        return ("Missing analysis data", "")
+
+    # segmentation reference must resolve (otherwise the metrics may be
+    # stale relative to a deleted segmentation node).
+    seg_id = None
+    try:
+        if hasattr(node, "GetNodeReferenceID"):
+            seg_id = node.GetNodeReferenceID(ROLE_ZEBRAFISH_SEGMENTATION)
+    except Exception:
+        seg_id = None
+    if not seg_id:
+        # Not an error per se — could be a half-finished image where
+        # analysis set metrics but seg-node attachment failed. Surface as a
+        # specific recoverable error so the user can decide.
+        return ("Segmentation node missing", "")
+    return ("", "")
+
+
+def volume_node_to_result_dict_with_validation(node):
+    """Like :func:`volume_node_to_result_dict`, plus a robustness check.
+
+    If :func:`validate_volume_node` returns a non-empty error, the
+    returned dict's ``error`` key is set to that message and ``exclude``
+    is forced to ``True`` (the existing error-row auto-exclude will catch
+    it). The original ``error`` field on the attribute — if any — is
+    overwritten, because validator errors take precedence over the
+    "Could not read image." error from the pipeline.
+    """
+    row = volume_node_to_result_dict(node)
+    err_field, _msg = validate_volume_node(node)
+    if err_field:
+        row["error"] = err_field
+        row["exclude"] = True
+    return row
+
+
 def volume_nodes_to_results(volume_nodes):
     """Map a list of volume nodes to the canonical results list shape.
 

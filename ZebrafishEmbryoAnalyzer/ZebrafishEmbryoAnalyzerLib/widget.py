@@ -1343,6 +1343,117 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._scale_status.setStyleSheet("color: #888; font-size: 11px;")
         self._bar_um_edit.setText("")
 
+    def rebuild_from_scene(self):
+        """Issue #41: rebuild the widget's full UI from the active scene.
+
+        Called from ``ZebrafishEmbryoAnalyzer._on_scene_end_import`` after a
+        scene file containing Zebrafish analysis state is loaded. Reads the
+        parameter node's ``ROLE_ZEBRAFISH_IMAGES`` volume node list, asks
+        the logic layer to derive ``self._results`` dicts (with pixel
+        arrays for gallery thumbnails), then repopulates the gallery,
+        results table, exclude set, and detail view.
+
+        No-op when the scene carries no tracked volume nodes (e.g. an empty
+        freshly-loaded scene) — the widget keeps its current empty state.
+        Robustness per the #41 acceptance criteria: any volume node with
+        missing attributes or a broken segmentation reference surfaces
+        as an auto-excluded error row rather than crashing the rebuild.
+        """
+        if not getattr(self, "_logic", None):
+            return
+        try:
+            results = self._logic.rebuild_results_from_scene()
+        except Exception:
+            logging.exception("ZebrafishEmbryoAnalyzer: rebuild_results_from_scene failed")
+            return
+        if not results:
+            # Empty scene or no tracked nodes — nothing to rebuild. The
+            # caller (initializeParameterNode etc.) keeps the empty UI.
+            return
+
+        # Mirror results_to_rows error-row auto-exclude, then build a
+        # matching image_paths list from the per-row filenames so the rest
+        # of the widget (queue_list, export) stays consistent.
+        self._results = results
+        self._image_paths = [r.get("filename") or "" for r in results]
+        self._excluded = {r["filename"] for r in self._results if r.get("exclude") or r.get("error")}
+
+        # Gallery thumbnails come from each volume node's pixel array
+        # (issue #41 acceptance: no dependency on the original source
+        # folder).
+        try:
+            import cv2
+            from ZebrafishEmbryoAnalyzerLib.gallery_tab import THUMB_SIZE as _THUMB_SIZE
+            for i, r in enumerate(self._results):
+                rgb = r.get("original")
+                if rgb is None:
+                    continue
+                h, w = rgb.shape[:2]
+                scale = _THUMB_SIZE / max(h, w)
+                thumb = cv2.resize(rgb, (max(1, int(w * scale)), max(1, int(h * scale))))
+                try:
+                    self._gallery.update_thumb_prebuilt(i, thumb)
+                except Exception:
+                    pass
+        except Exception:
+            logging.exception("ZebrafishEmbryoAnalyzer: thumbnail rebuild failed on scene reload")
+
+        try:
+            self._gallery.populate(self._results)
+        except Exception:
+            logging.exception("ZebrafishEmbryoAnalyzer: gallery populate failed on scene reload")
+        try:
+            self._queue_list.clear()
+            for r in self._results:
+                self._queue_list.addItem(r.get("filename") or "")
+        except Exception:
+            pass
+        try:
+            self._results_tab.populate(self._results, self._excluded)
+        except Exception:
+            logging.exception("ZebrafishEmbryoAnalyzer: results tab populate failed on scene reload")
+
+        # Rebuild the table from the same source (#40 single code path).
+        try:
+            self._logic.update_results_table_from_tracked_nodes()
+        except Exception:
+            logging.exception("ZebrafishEmbryoAnalyzer: tracked-nodes table rebuild failed on scene reload")
+
+        # First-row detail view + run-button state.
+        try:
+            self._detail.invalidate_cache()
+            if self._results:
+                self._current_detail_idx = 0
+                self._detail.show_result(0, self._results)
+                sync_excl = bool(self._results[0]["filename"] in self._excluded)
+                self._detail.sync_exclude(sync_excl)
+        except Exception:
+            logging.exception("ZebrafishEmbryoAnalyzer: detail view rebuild failed on scene reload")
+        try:
+            self._refresh_run_button()
+        except Exception:
+            logging.exception("ZebrafishEmbryoAnalyzer: run-button refresh failed on scene reload")
+
+        errors = [r for r in self._results if r.get("error")]
+        if errors:
+            try:
+                msg = "\n".join(f"• {r['filename']}: {r['error']}" for r in errors)
+                qt.QMessageBox.warning(
+                    self._main_widget if hasattr(self, "_main_widget") else None,
+                    "Restored with errors",
+                    f"Some images could not be fully restored from the scene:\n\n{msg}",
+                )
+            except Exception:
+                # Fall back to status message if QMessageBox isn't usable.
+                try:
+                    import slicer
+                    slicer.util.showStatusMessage(
+                        f"Restored {len(self._results) - len(errors)} image(s); {len(errors)} row(s) had errors.",
+                        8000,
+                    )
+                except Exception:
+                    pass
+
     def cleanup(self):
         """Stop persistent resources before the widget is torn down."""
         self._disposed = True

@@ -230,6 +230,17 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
     def _on_scene_end_import(self, caller=None, event=None):
         # Pick up parameter node values from the newly loaded scene.
         self.initializeParameterNode()
+        # Issue #41: rebuild the widget's UI from the freshly imported
+        # scene's volume nodes, seg nodes, and metric attributes — the
+        # full-state reconstruction for scene reload. Runs only when the
+        # new scene actually carries tracked volume nodes (i.e. a save of
+        # our own scene); a fresh empty scene is a no-op.
+        if self._main is not None:
+            try:
+                self._main.rebuild_from_scene()
+            except Exception:
+                # Reload must never crash the module — log and continue.
+                logging.exception("ZebrafishEmbryoAnalyzer: scene-reload rebuild failed")
 
 class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
     """Orchestrates analysis requests on behalf of the widget.
@@ -420,6 +431,50 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
         scene = getattr(slicer, "mrmlScene", None)
         nodes = list_tracked_volume_nodes(param_node, scene)
         return self.update_results_table_from_volume_nodes(nodes)
+
+    def rebuild_results_from_scene(self):
+        """Issue #41: rebuild the widget's ``self._results`` list from the
+        current MRML scene state.
+
+        Walks the parameter node's ``ROLE_ZEBRAFISH_IMAGES`` reference list,
+        reconstructs a result dict per volume node (with ``original``
+        populated from the volume node's pixel array when available), and
+        validates each via :func:`mrml.validate_volume_node` so broken /
+        half-finished entries surface as auto-excluded error rows instead
+        of crashing the widget.
+
+        Returns ``list[dict]`` — one entry per tracked volume node. Returns
+        an empty list when no parameter node or no tracked nodes exist.
+        """
+        try:
+            import slicer
+            from ZebrafishEmbryoAnalyzerLib.mrml import (
+                list_tracked_volume_nodes,
+                volume_node_to_result_dict_with_validation,
+                volume_node_to_pixels,
+            )
+        except Exception:
+            return []
+
+        param_node = self.getParameterNode()
+        if param_node is None:
+            return []
+        scene = getattr(slicer, "mrmlScene", None)
+        nodes = list_tracked_volume_nodes(param_node, scene)
+        results = []
+        for node in nodes:
+            row = volume_node_to_result_dict_with_validation(node)
+            px = volume_node_to_pixels(node)
+            if px is not None:
+                row["original"] = px
+            # stashed so #42's segMTime comparison doesn't need to walk
+            # the MRML scene again — keeps the per-row state self-contained.
+            row["_volume_node"] = node
+            row["_volume_node_id"] = (
+                node.GetID() if hasattr(node, "GetID") else ""
+            )
+            results.append(row)
+        return results
 
     def _update_table_with_rows(self, rows):
         """Shared tail used by ``update_results_table`` and the reload path.
