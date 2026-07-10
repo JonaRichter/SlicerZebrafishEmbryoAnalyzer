@@ -113,7 +113,7 @@ class SettingsTab(qt.QWidget):
             "model file requires re-download on the next analysis run."
         )
         intro.setWordWrap(True)
-        intro.setStyleSheet("color: #555; font-size: 11px;")
+        intro.setStyleSheet("color: #999; font-size: 11px;")
         layout.addWidget(intro)
 
         self._select_all = qt.QCheckBox("Select all")
@@ -163,7 +163,17 @@ class SettingsTab(qt.QWidget):
             label = qt.QLabel(f"{row['label']}")
             label.setToolTip(row["filename"])
             size = qt.QLabel(row["size_text"])
-            size.setStyleSheet("color: #666;")
+            if row["exists"]:
+                size.setStyleSheet("color: #999;")
+            else:
+                # Missing rows read as inactive: grey out both label and size.
+                # Both present- and missing-row size labels share the same
+                # #999 grey; the row distinction comes from the checkbox
+                # being disabled (cb.setEnabled above) and from the label
+                # itself staying default/black for present rows vs. grey
+                # here for missing rows.
+                label.setStyleSheet("color: #999;")
+                size.setStyleSheet("color: #999;")
             size.setAlignment(qt.Qt.AlignRight | qt.Qt.AlignVCenter)
             hbox.addWidget(cb)
             hbox.addWidget(label, 1)
