@@ -31,6 +31,34 @@ ROLE_CURRENT_SEGMENTATION = "CurrentSegmentation"
 # node (issue #38). Each successfully loaded image contributes one entry via
 # AddNodeReferenceID; replace-on-load clears the list before the next batch.
 ROLE_ZEBRAFISH_IMAGES = "ZebrafishImage"
+# Per-image node-reference roles attached to each volume node (issue #39).
+# Each successful analysis writes one segmentation node, one optional
+# MarkupsLineNode (when length was computed), and one optional
+# MarkupsCurveNode (when path_points exist). Sub-issue #5 needs to know the
+# seg-node role to detect external edits.
+ROLE_ZEBRAFISH_SEGMENTATION = "ZebrafishSegmentation"
+ROLE_ZEBRAFISH_MARKUPS_LINE = "ZebrafishMarkupsLine"
+ROLE_ZEBRAFISH_MARKUPS_CURVE = "ZebrafishMarkupsCurve"
+
+# Per-image metric attributes (issue #39, ADR 0001). All attributes share the
+# ``ZebrafishAnalysis.`` namespace so they do not collide with other modules
+# storing data on the same volume node. Values are written verbatim; missing
+# values are stored as the empty string so downstream readers can distinguish
+# "not computed" (length disabled) from "computed and zero".
+ATTR_PREFIX = "ZebrafishAnalysis."
+ATTR_LENGTH = ATTR_PREFIX + "length"
+ATTR_CURVATURE_CLASS = ATTR_PREFIX + "curvature_class"
+ATTR_RATIO = ATTR_PREFIX + "ratio"
+ATTR_EYE_AREA = ATTR_PREFIX + "eye_area"
+ATTR_EYE_DIAMETER = ATTR_PREFIX + "eye_diameter"
+ATTR_EXCLUDE = ATTR_PREFIX + "exclude"
+ATTR_SEG_MTIME = ATTR_PREFIX + "segMTime"
+
+# Markups colors mirror ``overlay.py`` so the real MRML nodes match the custom
+# Detail-tab overlay visually. Stored as RGB floats in [0, 1] — VTK's expected
+# range for ``vtkMRMLDisplayNode.SetColor``.
+_STRAIGHT_CLR = (0.784, 0.0, 0.784)     # magenta (overlay._STRAIGHT_CLR)
+_PATH_COLOR = (0.0, 0.784, 0.784)       # cyan    (overlay._PATH_COLOR)
 
 # String columns whose values are always preserved verbatim, even on error rows.
 _PRESERVE_ON_ERROR = frozenset({"filename", "error"})
@@ -572,3 +600,453 @@ def _collect_node_reference_ids(node):
         return [str(x) for x in result]
     except TypeError:
         return []
+
+
+# ---------------------------------------------------------------------------
+# Per-image analysis streaming helpers (issue #39, ADR 0001)
+# ---------------------------------------------------------------------------
+#
+# analyse_images() in ZebrafishEmbryoAnalyzerLib.logic invokes
+# ``apply_analysis_to_volume_node`` once per completed image, so segmentation
+# nodes, markups nodes, and metric attributes are streamed into the MRML
+# scene as soon as each result is ready — not batched at the end. A Cancel
+# mid-batch therefore leaves fully-formed nodes + attributes for every image
+# processed so far.
+#
+# Attribute namespace: every metric is stored on the volume node under the
+# ``ZebrafishAnalysis.`` prefix. Downstream code (results table derivation in
+# sub-issue #40, segment-editor staleness in sub-issue #5) reads them back
+# via ``volumeNode.GetAttribute("ZebrafishAnalysis.<name>")``.
+#
+# Node-reference roles: the segmentation / markups nodes are attached to the
+# volume node via ``volumeNode.SetNodeReferenceID(role, node.GetID())`` —
+# the same attach pattern as ``ROLE_CURRENT_SEGMENTATION`` on the parameter
+# node. The volume node therefore owns all per-image children, which makes
+# ``remove_all_image_volume_nodes`` recursive cleanup correct (children are
+# reachable through the volume node's references).
+
+
+def _format_attr(value) -> str:
+    """Format a metric value as a string for ``SetAttribute``.
+
+    Floats are written with full precision so the round-trip is lossless;
+    integers (curvature class) keep their natural form. ``None`` becomes
+    empty string so ``GetAttribute`` returns ``None`` rather than the literal
+    string "None" — distinguishing "not computed" from any real value.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value)
+    return str(value)
+
+
+def _write_metric_attributes(result, volume_node):
+    """Write metric attributes onto ``volume_node`` under the ``ZebrafishAnalysis.`` prefix.
+
+    Attribute catalogue (see ADR 0001):
+
+    * ``ZebrafishAnalysis.length``        — float µm or "" if not computed
+    * ``ZebrafishAnalysis.curvature_class`` — int class id (string form) or ""
+    * ``ZebrafishAnalysis.ratio``         — float length/straight or ""
+    * ``ZebrafishAnalysis.eye_area``      — float µm² or ""
+    * ``ZebrafishAnalysis.eye_diameter``  — float µm or ""
+    * ``ZebrafishAnalysis.exclude``       — "true" / "false" (always present;
+      defaults to "false" when the key is missing on the result dict)
+    * ``ZebrafishAnalysis.segMTime``      — float, segmentation node
+      ``GetMTime()`` at the moment the attributes were written; used by
+      sub-issue #5 to detect external edits.
+
+    All attributes are written unconditionally so the reader can distinguish
+    "the value is the empty string because length was disabled" from "the
+    attribute is missing because analysis was never run". ``SetAttribute`` is
+    a no-op when the value is already present and identical, so repeat writes
+    do not bump the volume node's MTime.
+    """
+    if volume_node is None or not hasattr(volume_node, "SetAttribute"):
+        return
+    exclude_raw = result.get("exclude", False)
+    exclude_val = bool(exclude_raw) if exclude_raw is not None else False
+    volume_node.SetAttribute(ATTR_LENGTH, _format_attr(result.get("length")))
+    volume_node.SetAttribute(
+        ATTR_CURVATURE_CLASS, _format_attr(result.get("curvature"))
+    )
+    volume_node.SetAttribute(ATTR_RATIO, _format_attr(result.get("ratio")))
+    volume_node.SetAttribute(ATTR_EYE_AREA, _format_attr(result.get("eye_area")))
+    volume_node.SetAttribute(
+        ATTR_EYE_DIAMETER, _format_attr(result.get("eye_diameter"))
+    )
+    volume_node.SetAttribute(ATTR_EXCLUDE, "true" if exclude_val else "false")
+    # segMTime is supplied by the per-image helper once the segmentation node
+    # is created. The writer sets it via SetAttribute(ATTR_SEG_MTIME, ...)
+    # immediately after ``update_segmentation_node`` returns.
+
+
+def _seg_mtime(seg_node) -> str:
+    """Return ``GetMTime()`` as a string, or "" if unavailable.
+
+    Stored on the volume node so sub-issue #5 can compare against the current
+    segmentation node MTime and detect external Segment Editor edits.
+    """
+    if seg_node is None or not hasattr(seg_node, "GetMTime"):
+        return ""
+    try:
+        return repr(float(seg_node.GetMTime()))
+    except Exception:
+        return ""
+
+
+def _set_node_reference(volume_node, role, child_node):
+    """Attach ``child_node`` to ``volume_node`` under ``role`` (no-op if either is None).
+
+    Used by both the segmentation and markups attach helpers. Honours the
+    additive vs. single-reference distinction by calling ``AddNodeReferenceID``
+    when available (matches the #38 batch pattern) and falling back to
+    ``SetNodeReferenceID`` otherwise — in both cases, downstream readers use
+    ``GetNodeReference(role)`` which resolves the *first* ID.
+    """
+    if volume_node is None or child_node is None:
+        return
+    nid = child_node.GetID() if hasattr(child_node, "GetID") else None
+    if nid is None:
+        return
+    if hasattr(volume_node, "AddNodeReferenceID"):
+        try:
+            volume_node.AddNodeReferenceID(role, nid)
+            return
+        except Exception:
+            pass
+    if hasattr(volume_node, "SetNodeReferenceID"):
+        try:
+            volume_node.SetNodeReferenceID(role, nid)
+        except Exception:
+            pass
+
+
+def _create_segmentation_for_volume(result, volume_node, scene, um_per_px):
+    """Create one segmentation node for ``volume_node`` and attach via ``ROLE_ZEBRAFISH_SEGMENTATION``.
+
+    Reuses :func:`update_segmentation_node` so body + eye segments and
+    reference geometry stay consistent with the existing single-image path.
+    Returns the new node, or ``None`` when the result carries no image
+    (decoding failure / error row) — callers must tolerate ``None``.
+    """
+    if volume_node is None or scene is None:
+        return None
+    original = result.get("original") if result else None
+    if original is None:
+        return None
+    import slicer  # lazy: tests never import slicer
+    seg_node = scene.AddNewNodeByClass("vtkMRMLSegmentationNode")
+    seg_node.CreateDefaultDisplayNodes()
+    seg_node.SetName(_seg_display_name(result, volume_node))
+    update_segmentation_node(result, um_per_px, seg_node, image_node=volume_node)
+    _set_node_reference(volume_node, ROLE_ZEBRAFISH_SEGMENTATION, seg_node)
+    return seg_node
+
+
+def _seg_display_name(result, volume_node):
+    """Return a display name for the segmentation node derived from the volume node's name.
+
+    Falls back to the result filename when the volume node lacks ``GetName``.
+    Keeps the Data module readable when many images are loaded.
+    """
+    base = None
+    if hasattr(volume_node, "GetName"):
+        try:
+            base = volume_node.GetName()
+        except Exception:
+            base = None
+    if not base:
+        base = (result or {}).get("filename") or "ZebrafishEmbryoAnalyzer Segmentation"
+    return f"{base} Segmentation"
+
+
+def _create_markups_line_for_volume(result, volume_node, scene):
+    """Create a MarkupsLineNode with Head/Tail control points when length was computed.
+
+    Skipped when ``result["length"]`` is ``None`` (length disabled) or when
+    ``result["straight_line_points"]`` is unavailable — mirrors the
+    "segment only when available" pattern. The line uses the same two
+    endpoints as the persisted manual-correction target and matches
+    ``overlay._STRAIGHT_CLR`` so the real MRML view matches the Detail tab.
+
+    Returns the new node, or ``None`` when skipped.
+    """
+    if volume_node is None or scene is None:
+        return None
+    if result.get("length") is None:
+        return None
+    sl_pts = result.get("straight_line_points")
+    if sl_pts is None:
+        return None
+    import slicer  # lazy: tests never import slicer
+    line = scene.AddNewNodeByClass("vtkMRMLMarkupsLineNode")
+    line.CreateDefaultDisplayNodes()
+    line.SetName(_markups_display_name(result, volume_node, "Line"))
+    display = line.GetDisplayNode() if hasattr(line, "GetDisplayNode") else None
+    if display is not None:
+        try:
+            display.SetColor(*_STRAIGHT_CLR)
+        except Exception:
+            pass
+        try:
+            display.SetVisibility(True)
+        except Exception:
+            pass
+        try:
+            display.SetVisibility2D(True)
+        except Exception:
+            pass
+        try:
+            display.SetVisibility3D(True)
+        except Exception:
+            pass
+    _add_line_endpoints(line, sl_pts, result, volume_node)
+    _set_node_reference(volume_node, ROLE_ZEBRAFISH_MARKUPS_LINE, line)
+    return line
+
+
+def _markups_display_name(result, volume_node, suffix):
+    """Return a display name for a markups node derived from the volume node's name."""
+    base = None
+    if hasattr(volume_node, "GetName"):
+        try:
+            base = volume_node.GetName()
+        except Exception:
+            base = None
+    if not base:
+        base = (result or {}).get("filename") or "ZebrafishEmbryoAnalyzer"
+    return f"{base} {suffix}"
+
+
+class _Vec3(tuple):
+    """A 3-component position tuple that the real vtk API can index.
+
+    Real ``vtkMRMLMarkupsNode.AddControlPoint`` accepts anything that
+    behaves like a 3-vector (``[0]``/``[1]``/``[2]`` access). The test fakes
+    accept the same interface. Using this tiny named tuple keeps the helper
+    independent of the optional ``vtk`` import — critical because the
+    per-image MRML work runs in both the Slicer process (vtk available)
+    and the inference subprocess (no vtk).
+    """
+
+
+def _vec3(x, y, z=0.0):
+    return _Vec3((float(x), float(y), float(z)))
+
+
+def _add_line_endpoints(line, sl_pts, result, volume_node):
+    """Add Head and Tail control points to ``line`` from ``sl_pts``.
+
+    ``sl_pts`` is the straight-line endpoints tuple produced by
+    ``tube_length_border2border`` — shape ``((row0, col0), (row1, col1))``
+    in mask coordinates. The points are written verbatim; the same flipud /
+    fliplr transform that ``update_image_node`` applies to the volume node's
+    pixel data is replicated here so the markups land on the visible fish.
+
+    In Slicer production, ``line.AddControlPoint`` accepts either a
+    ``vtkVector3d`` or any object supporting ``[0]``/``[1]``/``[2]``. We pass
+    a small ``_Vec3`` named tuple so the helper works under both real Slicer
+    (no vtk import here, the runtime picks the right path) and plain pytest
+    where vtk is unavailable.
+
+    All point additions are wrapped in a single try/except so a failure
+    midway does NOT abort the surrounding apply_analysis_to_volume_node
+    step — cancel-safety contract preserved. The markups node itself is
+    still attached and visible in the Data module; the control points can
+    be re-applied on reload by sub-issue #5.
+    """
+    try:
+        p0, p1 = sl_pts
+    except Exception:
+        return
+    # Mask coords are (row, col). RAS needs (R, A, S) = (col, -row, 0) given
+    # the flip applied to the image (see update_image_node).
+    try:
+        pos_head = _vec3(p0[1], -p0[0], 0.0)
+        pos_tail = _vec3(p1[1], -p1[0], 0.0)
+    except Exception:
+        return
+    try:
+        if hasattr(line, "AddControlPoint"):
+            # In the real Slicer build, line.SetName is the public API for
+            # the node display name (already set above); for individual
+            # control points we rely on the second positional arg of
+            # AddControlPoint. Older bindings exposed only SetNthControlPointLabel;
+            # call both when available so labels survive either path.
+            line.AddControlPoint(pos_head, "Head")
+            line.AddControlPoint(pos_tail, "Tail")
+            # Belt-and-braces: also set labels explicitly so any
+            # double-add path (e.g. AddControlPoint auto-naming) doesn't
+            # overwrite our labels.
+            if hasattr(line, "SetNthControlPointLabel"):
+                try:
+                    line.SetNthControlPointLabel(0, "Head")
+                    line.SetNthControlPointLabel(1, "Tail")
+                except Exception:
+                    pass
+        else:
+            # Older bindings — record via plain attribute so tests can verify.
+            line._control_points = [
+                {"label": "Head", "position": pos_head},
+                {"label": "Tail", "position": pos_tail},
+            ]
+    except Exception:
+        # AddControlPoint may fail when slicer / vtk is unavailable (subprocess).
+        # The markups node itself is still attached and visible in the Data
+        # module; the control points can be re-applied on reload by sub-issue #5.
+        pass
+
+
+def _create_markups_curve_for_volume(result, volume_node, scene):
+    """Create a MarkupsCurveNode for the centerline when ``path_points`` exist.
+
+    Skipped when ``path_points`` is ``None`` or has fewer than two points —
+    the same conditional pattern as ``update_segmentation_node``'s eye segment.
+    Color matches ``overlay._PATH_COLOR`` (cyan). Returned node is attached
+    via ``ROLE_ZEBRAFISH_MARKUPS_CURVE``.
+
+    Returns the new node, or ``None`` when skipped.
+    """
+    if volume_node is None or scene is None:
+        return None
+    path_pts = result.get("path_points")
+    if path_pts is None:
+        return None
+    try:
+        n_pts = len(path_pts)
+    except Exception:
+        n_pts = 0
+    if n_pts < 2:
+        return None
+    import slicer  # lazy: tests never import slicer
+    curve = scene.AddNewNodeByClass("vtkMRMLMarkupsCurveNode")
+    curve.CreateDefaultDisplayNodes()
+    curve.SetName(_markups_display_name(result, volume_node, "Curve"))
+    display = curve.GetDisplayNode() if hasattr(curve, "GetDisplayNode") else None
+    if display is not None:
+        try:
+            display.SetColor(*_PATH_COLOR)
+        except Exception:
+            pass
+        try:
+            display.SetVisibility(True)
+        except Exception:
+            pass
+        try:
+            display.SetVisibility2D(True)
+        except Exception:
+            pass
+        try:
+            display.SetVisibility3D(True)
+        except Exception:
+            pass
+    _add_curve_points(curve, path_pts)
+    _set_node_reference(volume_node, ROLE_ZEBRAFISH_MARKUPS_CURVE, curve)
+    return curve
+
+
+def _add_curve_points(curve, path_pts):
+    """Add all ``path_pts`` to ``curve`` as anonymous control points.
+
+    Each point is converted from mask (row, col) to RAS (R, A, S) using the
+    same flip applied to the image. ``_Vec3`` is used as the position type
+    so the helper works under both real Slicer and plain pytest (see
+    :func:`_add_line_endpoints` for the cancel-safety rationale).
+    """
+    try:
+        positions = [_vec3(p[1], -p[0], 0.0) for p in path_pts]
+    except Exception:
+        return
+    try:
+        if hasattr(curve, "AddControlPoint"):
+            for pos in positions:
+                curve.AddControlPoint(pos, "")
+        else:
+            curve._control_points = [
+                {"label": "", "position": p} for p in positions
+            ]
+    except Exception:
+        # Half-written curves are still attached to the volume node — see
+        # cancel-safety contract in apply_analysis_to_volume_node.
+        pass
+
+
+def apply_analysis_to_volume_node(result, volume_node, scene, um_per_px):
+    """Stream one fully-analysed image's MRML state onto ``volume_node``.
+
+    Writes, in order:
+
+    1. A new ``vtkMRMLSegmentationNode`` (body + eye segments via
+       :func:`update_segmentation_node`) attached via
+       ``ROLE_ZEBRAFISH_SEGMENTATION`` on the volume node.
+    2. A ``vtkMRMLMarkupsLineNode`` with Head/Tail control points, attached
+       via ``ROLE_ZEBRAFISH_MARKUPS_LINE`` — only when ``result["length"]``
+       and ``result["straight_line_points"]`` are present.
+    3. A ``vtkMRMLMarkupsCurveNode`` built from ``path_points``, attached
+       via ``ROLE_ZEBRAFISH_MARKUPS_CURVE`` — only when ``path_points`` has
+       at least two entries.
+    4. Metric attributes under the ``ZebrafishAnalysis.`` prefix, including
+       ``segMTime`` recorded right after step 1 (sub-issue #5 compares this
+       against the segmentation node's current MTime).
+
+    Must be called on the Slicer main thread; MRML / vtk objects live there.
+    Returns ``None`` silently if ``volume_node`` or ``scene`` is ``None`` or
+    if the result carries no image — the caller is expected to log + record
+    ``error`` on the result dict in that case.
+
+    All four steps are best-effort: a failure in any one step (e.g. Slicer
+    is unavailable mid-batch) is logged via ``logging.exception`` and
+    swallowed so a single bad image never aborts a batch. The caller is
+    expected to check ``result.get("error")`` afterwards and route the row
+    to the error column (sub-issue #40).
+    """
+    import logging
+
+    if volume_node is None or scene is None:
+        return None
+    if not result or result.get("original") is None:
+        return None
+
+    seg_node = None
+    try:
+        seg_node = _create_segmentation_for_volume(result, volume_node, scene, um_per_px)
+    except Exception:
+        logging.exception(
+            "apply_analysis_to_volume_node: segmentation node creation failed"
+        )
+
+    line_node = None
+    try:
+        line_node = _create_markups_line_for_volume(result, volume_node, scene)
+    except Exception:
+        logging.exception(
+            "apply_analysis_to_volume_node: MarkupsLineNode creation failed"
+        )
+
+    curve_node = None
+    try:
+        curve_node = _create_markups_curve_for_volume(result, volume_node, scene)
+    except Exception:
+        logging.exception(
+            "apply_analysis_to_volume_node: MarkupsCurveNode creation failed"
+        )
+
+    # Attributes last so segMTime can be recorded after the segmentation node
+    # has actually been written (sub-issue #5 compares this MTime against the
+    # segmentation node's current GetMTime() to detect external edits).
+    try:
+        _write_metric_attributes(result, volume_node)
+        if seg_node is not None:
+            volume_node.SetAttribute(ATTR_SEG_MTIME, _seg_mtime(seg_node))
+    except Exception:
+        logging.exception(
+            "apply_analysis_to_volume_node: attribute write failed"
+        )
+
+    return seg_node
