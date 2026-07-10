@@ -184,6 +184,10 @@ class GalleryTab(qt.QWidget):
         # accumulates on the right side of the row.
         for col in range(cols):
             self._grid.setColumnStretch(col, 0)
+        # Issue #51: with widgetResizable(False) the scroll area no longer
+        # auto-resizes the container to fit the grid, so ask it to recompute
+        # its own size now that the cells have been repositioned.
+        self._container.adjustSize()
         # Issue #16: the previous code called setRowStretch(rows, 1) on a
         # notional empty row to "push content up". This interacted
         # inconsistently with variable row heights (multi-line captions are
