@@ -289,8 +289,9 @@ def test_set_actions_enabled_disables_all_when_false(settings_module):
 
 def test_refresh_greys_out_missing_rows_but_not_present_rows(settings_module, monkeypatch):
     """Missing rows must read as visually inactive: both label and size get a
-    muted grey stylesheet. Present rows keep the default label color and only
-    the size gets the lighter existing #666 shade."""
+    muted grey stylesheet (#999). Present rows keep the default label color;
+    their size also uses #999 (shared shade), with the row distinction
+    coming from the checkbox disabled state and the label color asymmetry."""
     rows = [
         {"id": "a", "label": "A label", "filename": "a.pth", "exists": True, "size_text": "1.0 KB"},
         {"id": "b", "label": "B label", "filename": "b.pth", "exists": False, "size_text": "missing"},
@@ -323,7 +324,7 @@ def test_refresh_greys_out_missing_rows_but_not_present_rows(settings_module, mo
     label_a, size_a, label_b, size_b = created_labels
 
     label_a.setStyleSheet.assert_not_called()
-    size_a.setStyleSheet.assert_called_once_with("color: #666;")
+    size_a.setStyleSheet.assert_called_once_with("color: #999;")
 
     label_b.setStyleSheet.assert_called_once_with("color: #999;")
     size_b.setStyleSheet.assert_called_once_with("color: #999;")
