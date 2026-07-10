@@ -156,6 +156,14 @@ class GalleryTab(qt.QWidget):
             self._grid.addWidget(cell, row, col)
         rows = (len(self._cells) - 1) // cols + 1
         self._grid.setRowStretch(rows, 1)
+        # Issue #28: when fewer images are loaded than columns, thumbnails
+        # were spread across the full row width with large gaps instead of
+        # sitting next to each other on the left. Setting column stretch to
+        # 0 disables horizontal expansion so columns size to their content
+        # (THUMB_SIZE + 2*2px margin) and any remaining horizontal space
+        # accumulates on the right side of the row.
+        for col in range(cols):
+            self._grid.setColumnStretch(col, 0)
 
     def resizeEvent(self, event):
         self._reflow()
