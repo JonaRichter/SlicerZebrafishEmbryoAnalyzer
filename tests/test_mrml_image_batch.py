@@ -50,9 +50,16 @@ class _FakeVolumeNode:
         self._id = f"vtkMRMLVectorVolumeNode{_FakeVolumeNode._counter}"
         self._name = name
         self._ref_ids = []  # child node-reference IDs across all roles
+        self._attrs = {}
 
     def GetID(self):
         return self._id
+
+    def GetAttribute(self, name):
+        return self._attrs.get(name)
+
+    def SetAttribute(self, name, value):
+        self._attrs[name] = value
 
     def SetName(self, name):
         self._name = name
@@ -232,6 +239,28 @@ def test_create_image_volume_node_appends_via_AddNodeReferenceID(stub_populate):
 
     ids = list(param_node._refs.get("ZebrafishImage", []))
     assert ids == [node.GetID()], f"single append expected, got {ids}"
+
+
+def test_create_image_volume_node_stamps_load_order_attribute(stub_populate):
+    """Each node gets ZebrafishAnalysis.loadOrder = its batch position,
+    read from the reference count *before* this call's AddNodeReferenceID —
+    list_tracked_volume_nodes uses this to restore folder-load order even
+    if the reference array itself comes back reordered after a scene
+    reload (found while testing #61).
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import create_image_volume_node
+
+    param_node = _FakeBatchParamNode()
+    scene = _FakeScene()
+    image_rgb = MagicMock()
+
+    n0 = create_image_volume_node(image_rgb, 22.99, "a.png", param_node, scene)
+    n1 = create_image_volume_node(image_rgb, 22.99, "b.png", param_node, scene)
+    n2 = create_image_volume_node(image_rgb, 22.99, "c.png", param_node, scene)
+
+    assert n0.GetAttribute("ZebrafishAnalysis.loadOrder") == "0"
+    assert n1.GetAttribute("ZebrafishAnalysis.loadOrder") == "1"
+    assert n2.GetAttribute("ZebrafishAnalysis.loadOrder") == "2"
 
 
 def test_create_image_volume_node_uses_filename_as_display_name(stub_populate):
