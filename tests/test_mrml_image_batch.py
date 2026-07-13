@@ -64,10 +64,17 @@ class _FakeVolumeNode:
         return class_name == "vtkMRMLVectorVolumeNode"
 
     # Child references — used to verify the recursive cleanup path.
-    def GetNodeReferenceIDs(self, role=None):
-        if role is None:
-            return list(self._ref_ids)
-        return list(self._ref_ids)
+    # Real vtkMRMLNode does not expose a plural GetNodeReferenceIDs(role)
+    # getter in the Python binding; production code enumerates via
+    # GetNumberOfNodeReferences/GetNthNodeReferenceID and GetNodeReferenceRoles.
+    def GetNodeReferenceRoles(self, out_roles):
+        out_roles.extend(["_all"] if self._ref_ids else [])
+
+    def GetNumberOfNodeReferences(self, role):
+        return len(self._ref_ids) if role == "_all" else 0
+
+    def GetNthNodeReferenceID(self, role, n):
+        return self._ref_ids[n] if role == "_all" else None
 
     def AddReference(self, child_id):
         self._ref_ids.append(child_id)
@@ -92,8 +99,14 @@ class _FakeChildNode:
     def IsA(self, class_name):
         return class_name == self._class
 
-    def GetNodeReferenceIDs(self, role=None):
-        return list(self._ref_ids)
+    def GetNodeReferenceRoles(self, out_roles):
+        out_roles.extend(["_all"] if self._ref_ids else [])
+
+    def GetNumberOfNodeReferences(self, role):
+        return len(self._ref_ids) if role == "_all" else 0
+
+    def GetNthNodeReferenceID(self, role, n):
+        return self._ref_ids[n] if role == "_all" else None
 
 
 class _FakeScene:
@@ -143,13 +156,15 @@ class _FakeBatchParamNode:
         # Caller is expected to resolve via scene.GetNodeByID.
         return types.SimpleNamespace(GetID=lambda: ids[0])
 
-    def GetNodeReferenceIDs(self, role=None):
-        if role is None:
-            all_ids = []
-            for lst in self._refs.values():
-                all_ids.extend(lst)
-            return all_ids
-        return list(self._refs.get(role, []))
+    def GetNodeReferenceRoles(self, out_roles):
+        out_roles.extend(r for r, ids in self._refs.items() if ids)
+
+    def GetNumberOfNodeReferences(self, role):
+        return len(self._refs.get(role, []))
+
+    def GetNthNodeReferenceID(self, role, n):
+        ids = self._refs.get(role, [])
+        return ids[n] if 0 <= n < len(ids) else None
 
     def AddNodeReferenceID(self, role, node_id):
         self.add_calls += 1
@@ -215,7 +230,7 @@ def test_create_image_volume_node_appends_via_AddNodeReferenceID(stub_populate):
 
     node = create_image_volume_node(image_rgb, 22.99, "fish01.tif", param_node, scene)
 
-    ids = param_node.GetNodeReferenceIDs("ZebrafishImage")
+    ids = list(param_node._refs.get("ZebrafishImage", []))
     assert ids == [node.GetID()], f"single append expected, got {ids}"
 
 
@@ -352,7 +367,7 @@ def test_remove_all_image_volume_nodes_recurses_into_children(stub_populate):
 
     # Sanity: scene knows about both nodes, reference is recorded.
     assert child.GetID() in [id for id in scene._nodes]
-    assert child.GetID() in owned.GetNodeReferenceIDs()
+    assert child.GetID() in owned._ref_ids
 
     removed = remove_all_image_volume_nodes(param_node, scene)
 

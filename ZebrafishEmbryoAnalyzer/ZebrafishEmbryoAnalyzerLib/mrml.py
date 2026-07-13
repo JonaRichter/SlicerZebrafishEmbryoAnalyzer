@@ -363,30 +363,32 @@ def validate_volume_node(node):
     otherwise a descriptive ``(error_field, error_message)`` tuple.
 
     Used by the scene-reload path to surface per-image robustness:
-    - missing metric attributes → ``("Missing analysis data", "")`` on
-      the row's error field,
-    - segmentation node reference missing or broken →
-      ``("Segmentation node missing", "")``.
+    - tracked but never analyzed (no ``ZebrafishAnalysis.*`` attributes at
+      all — issue #38's eager per-image loading tracks a volume node
+      before "Run Analysis" is ever clicked) → ``("", "")``, i.e. not an
+      error. The row reconstructs with metrics as ``None``/not-computed,
+      same as right after folder-load, ready for the run queue.
+    - was analyzed but its segmentation node reference is missing or
+      broken → ``("Segmentation node missing", "")``.
 
-    Issue #41 acceptance: a row with no metric data must auto-exclude
-    via the existing error-row mechanism rather than crash the module.
+    Issue #41 acceptance: a row with a broken segmentation reference must
+    auto-exclude via the existing error-row mechanism rather than crash
+    the module.
     """
     if node is None:
         return ("Missing volume node", "")
     if not hasattr(node, "GetAttribute"):
         return ("Invalid volume node", "")
-    # At minimum we expect any one of the metric attributes to be present
-    # — an empty node clearly indicates analysis never finished for it.
-    has_metric = False
-    for attr in (ATTR_LENGTH, ATTR_RATIO, ATTR_EYE_AREA, ATTR_EYE_DIAMETER):
-        try:
-            if node.GetAttribute(attr):
-                has_metric = True
-                break
-        except Exception:
-            pass
-    if not has_metric:
-        return ("Missing analysis data", "")
+    # ATTR_EXCLUDE is always written (as "true" or "false") the moment
+    # analysis runs once for this node — see _write_metric_attributes.
+    # Its absence means analysis was never attempted, which is a normal
+    # pending state, not an error.
+    try:
+        was_analyzed = node.GetAttribute(ATTR_EXCLUDE) is not None
+    except Exception:
+        was_analyzed = False
+    if not was_analyzed:
+        return ("", "")
 
     # segmentation reference must resolve (otherwise the metrics may be
     # stale relative to a deleted segmentation node).
@@ -519,6 +521,32 @@ def volume_nodes_to_rows(volume_nodes):
     return results_to_rows(volume_nodes_to_results(volume_nodes))
 
 
+def _node_reference_ids(node, role):
+    """Return every reference ID under ``role`` on ``node``, in order.
+
+    ``GetNodeReferenceIDs(role)`` (plural) is not exposed by the Python
+    binding on ``vtkMRMLNode`` in this Slicer build — only
+    ``GetNumberOfNodeReferences(role)`` and ``GetNthNodeReferenceID(role, n)``
+    are. Every multi-value reference list (``ROLE_ZEBRAFISH_IMAGES``) must
+    go through this helper instead of calling the plural getter directly.
+    """
+    if node is None or not hasattr(node, "GetNumberOfNodeReferences"):
+        return []
+    try:
+        n = node.GetNumberOfNodeReferences(role)
+    except Exception:
+        return []
+    ids = []
+    for i in range(n):
+        try:
+            nid = node.GetNthNodeReferenceID(role, i)
+        except Exception:
+            continue
+        if nid:
+            ids.append(nid)
+    return ids
+
+
 def list_tracked_volume_nodes(param_node, scene):
     """Return the volume nodes currently registered on ``param_node`` under
     :data:`ROLE_ZEBRAFISH_IMAGES`, in insertion order.
@@ -535,12 +563,7 @@ def list_tracked_volume_nodes(param_node, scene):
     """
     if param_node is None or scene is None:
         return []
-    if not hasattr(param_node, "GetNodeReferenceIDs"):
-        return []
-    try:
-        ids = list(param_node.GetNodeReferenceIDs(ROLE_ZEBRAFISH_IMAGES) or [])
-    except Exception:
-        return []
+    ids = _node_reference_ids(param_node, ROLE_ZEBRAFISH_IMAGES)
     out = []
     for nid in ids:
         if not nid:
@@ -883,7 +906,7 @@ def remove_all_image_volume_nodes(param_node, scene):
     if param_node is None or scene is None:
         return 0
 
-    ids_snapshot = list(param_node.GetNodeReferenceIDs(ROLE_ZEBRAFISH_IMAGES) or [])
+    ids_snapshot = _node_reference_ids(param_node, ROLE_ZEBRAFISH_IMAGES)
     if not ids_snapshot:
         return 0
 
@@ -958,24 +981,22 @@ def _recursively_remove(node, scene):
 def _collect_node_reference_ids(node):
     """Return every node-reference ID carried by ``node`` across all roles.
 
-    Tries the no-argument form first (``GetNodeReferenceIDs()``); falls back
-    to an empty list when neither signature is available so the recursive
-    cleanup degrades to a single-node removal in older bindings.
+    ``GetNodeReferenceRoles`` fills a ``std::vector<std::string>`` out-param
+    (pass a plain Python list); each role is then resolved through
+    :func:`_node_reference_ids`, since the plural per-role getter is not
+    exposed by the Python binding either.
     """
-    if not hasattr(node, "GetNodeReferenceIDs"):
+    if node is None or not hasattr(node, "GetNodeReferenceRoles"):
         return []
+    roles = []
     try:
-        result = node.GetNodeReferenceIDs()
-    except TypeError:
-        # Some bindings require an explicit role argument.
+        node.GetNodeReferenceRoles(roles)
+    except Exception:
         return []
-    if result is None:
-        return []
-    # Accept python lists, tuples, or any iterable yielding strings.
-    try:
-        return [str(x) for x in result]
-    except TypeError:
-        return []
+    ids = []
+    for role in roles:
+        ids.extend(_node_reference_ids(node, role))
+    return ids
 
 
 # ---------------------------------------------------------------------------

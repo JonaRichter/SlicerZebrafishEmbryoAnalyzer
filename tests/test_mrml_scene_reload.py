@@ -6,10 +6,12 @@ Covers:
 - ``volume_node_to_pixels`` round-trips a uint8 (H, W, 3) array, applying
   the inverse of update_image_node's flipud+fliplr transform.
 - ``volume_node_to_pixels`` returns None for nodes without image data.
-- ``validate_volume_node`` returns ("", "") for healthy nodes, descriptive
-  errors for empty / missing-seg-ref nodes.
-- ``volume_node_to_result_dict_with_validation`` flags missing-data rows
-  via the existing error-row auto-exclude mechanism.
+- ``validate_volume_node`` returns ("", "") for healthy nodes and for
+  never-analyzed nodes (pending, not an error); a descriptive error only
+  for a node that was analyzed but lost its segmentation reference.
+- ``volume_node_to_result_dict_with_validation`` flags broken-seg-ref rows
+  via the existing error-row auto-exclude mechanism, and leaves
+  never-analyzed rows unflagged.
 - ``logic.rebuild_results_from_scene`` walks ``ROLE_ZEBRAFISH_IMAGES`` in
   insertion order and produces one result dict per node with the right
   fields populated.
@@ -140,8 +142,10 @@ def test_validate_volume_node_healthy(mrml_module):
     assert err_field == ""
 
 
-def test_validate_volume_node_no_metrics(mrml_module):
-    """A volume node with no metric attributes is rejected as missing-analysis-data."""
+def test_validate_volume_node_never_analyzed_is_not_an_error(mrml_module):
+    """A tracked-but-never-analyzed node (no ZebrafishAnalysis.* attributes
+    at all — issue #38 eager-load, before "Run Analysis") is a normal
+    pending state, not an error."""
     from ZebrafishEmbryoAnalyzerLib import mrml
 
     node = MagicMock()
@@ -149,15 +153,18 @@ def test_validate_volume_node_no_metrics(mrml_module):
     node.GetNodeReferenceID.return_value = "segNodeId"
 
     err_field, _msg = mrml.validate_volume_node(node)
-    assert err_field == "Missing analysis data"
+    assert err_field == ""
 
 
 def test_validate_volume_node_no_seg_ref(mrml_module):
-    """A volume node without a segmentation reference is flagged."""
+    """A volume node that was analyzed but lost its segmentation reference
+    is flagged."""
     from ZebrafishEmbryoAnalyzerLib import mrml
 
-    # A single metric attribute so the "no metrics" check passes…
-    attrs = {"ZebrafishAnalysis.length": "1.234"}
+    # ATTR_EXCLUDE present marks this node as "analysis has run" — the
+    # signal validate_volume_node uses to distinguish a broken analyzed
+    # node from a never-analyzed one.
+    attrs = {"ZebrafishAnalysis.length": "1.234", "ZebrafishAnalysis.exclude": "false"}
     node = MagicMock()
     node.GetAttribute.side_effect = attrs.__getitem__
     node.GetNodeReferenceID.return_value = None  # …but seg ref missing
@@ -201,20 +208,20 @@ def test_volume_node_to_result_dict_with_validation_healthy(mrml_module):
     assert row["exclude"] is False
 
 
-def test_volume_node_to_result_dict_with_validation_missing_data(mrml_module):
-    """Missing metrics: error field set, exclude forced True."""
+def test_volume_node_to_result_dict_with_validation_never_analyzed(mrml_module):
+    """Never-analyzed node: no error, not excluded — a normal pending row."""
     from ZebrafishEmbryoAnalyzerLib import mrml
 
     node = MagicMock()
     node.GetName.return_value = "blank.png"
-    # GetAttribute returns None for every key (including the metric attrs
-    # the validator looks at)
+    # GetAttribute returns None for every key — nothing was ever written,
+    # i.e. analysis was never run for this node.
     node.GetAttribute.return_value = None
     node.GetNodeReferenceID.return_value = "segNodeId"
 
     row = mrml.volume_node_to_result_dict_with_validation(node)
-    assert row["error"] == "Missing analysis data"
-    assert row["exclude"] is True
+    assert row["error"] == ""
+    assert row["exclude"] is False
 
 
 def test_volume_node_to_result_dict_with_validation_broken_seg_ref(mrml_module):

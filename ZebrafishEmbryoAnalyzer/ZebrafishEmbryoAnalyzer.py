@@ -1,3 +1,4 @@
+import logging
 import sys
 
 import vtk
@@ -119,6 +120,13 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
             self.initializeParameterNode()
         if self._main is not None:
             self._main.apply_shell_layout()
+            # Issue #41 follow-up: EndImportEvent for a saved scene that was
+            # loaded BEFORE this module was first opened cannot reach us —
+            # scene observers are only registered in setup(), which Slicer
+            # calls the first time the module is selected. No-op when the
+            # widget already has results (do not rebuild on every tab
+            # switch in a long session).
+            self._main.try_rebuild_from_scene_if_empty()
             self._main.prompt_install_if_missing()
             # Issue #42: ask the user to recompute metrics for every
             # tracked image whose segmentation was edited in the Segment
@@ -138,6 +146,17 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
         if self._main is not None:
             self._main.restore_shell_layout()  # ensure restore even on reload (exit() not called)
             self._main.cleanup()
+
+    def getParameterNode(self):
+        """Delegate to the logic object.
+
+        ``ScriptedLoadableModuleWidget`` (a plain Python class) does not
+        provide ``getParameterNode()`` itself — only ``ScriptedLoadableModuleLogic``
+        does. Widget-side code that needs the parameter node outside
+        ``initializeParameterNode()``/``setParameterNode()`` calls this
+        instead of reaching into ``self.logic`` directly at each call site.
+        """
+        return self.logic.getParameterNode()
 
     # ------------------------------------------------------------------
     # Parameter node

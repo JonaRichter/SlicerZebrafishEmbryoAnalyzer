@@ -1485,6 +1485,28 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                     pass
 
     # ----------------------------------------------------------------- #
+    # Issue #41 follow-up: rebuild on enter() if a saved scene was loaded
+    # before the module was ever opened in this session. EndImportEvent
+    # can't reach us in that case because scene observers are only
+    # registered in ZebrafishEmbryoAnalyzerWidget.setup(), which Slicer
+    # only calls once the module is first selected.
+    # ----------------------------------------------------------------- #
+    def try_rebuild_from_scene_if_empty(self):
+        """No-op if the widget already has results (avoids rebuilding on
+        every tab switch); otherwise delegates to :meth:`rebuild_from_scene`,
+        which already reads the tracked volume nodes straight off the
+        current parameter node.
+        """
+        if getattr(self, "_results", None):
+            return
+        try:
+            self.rebuild_from_scene()
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: try_rebuild_from_scene_if_empty failed"
+            )
+
+    # ----------------------------------------------------------------- #
     # Issue #42: prompt + recompute for stale segment-editor edits.
     # ----------------------------------------------------------------- #
     def prompt_recompute_stale_images(self):

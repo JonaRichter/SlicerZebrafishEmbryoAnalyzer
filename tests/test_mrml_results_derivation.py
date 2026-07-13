@@ -358,6 +358,24 @@ def test_missing_attributes_default_to_neutral_empty():
 # Param-node reference list helper
 # ---------------------------------------------------------------------------
 
+def _mock_param_with_refs(ids, role):
+    """MagicMock exposing the real per-role reference-enumeration API.
+
+    Production code (``mrml._node_reference_ids``) reads references via
+    ``GetNumberOfNodeReferences``/``GetNthNodeReferenceID`` — the plural
+    ``GetNodeReferenceIDs(role)`` getter is not exposed by the Python
+    binding on ``vtkMRMLNode`` in real Slicer.
+    """
+    param = MagicMock()
+    param.GetNumberOfNodeReferences = MagicMock(
+        side_effect=lambda r: len(ids) if r == role else 0
+    )
+    param.GetNthNodeReferenceID = MagicMock(
+        side_effect=lambda r, n: ids[n] if r == role and 0 <= n < len(ids) else None
+    )
+    return param
+
+
 def test_list_tracked_volume_nodes_returns_ordered_nodes():
     """Param-node reference list ordering drives row order."""
     from ZebrafishEmbryoAnalyzerLib import mrml
@@ -365,8 +383,7 @@ def test_list_tracked_volume_nodes_returns_ordered_nodes():
     nodes = [_FakeVolumeNode(name=f"n{i}") for i in range(3)]
     ids = [n.GetID() for n in nodes]
 
-    param = MagicMock()
-    param.GetNodeReferenceIDs = MagicMock(return_value=ids)
+    param = _mock_param_with_refs(ids, mrml.ROLE_ZEBRAFISH_IMAGES)
 
     scene = MagicMock()
     def _by_id(nid):
@@ -378,7 +395,7 @@ def test_list_tracked_volume_nodes_returns_ordered_nodes():
 
     listed = mrml.list_tracked_volume_nodes(param, scene)
     assert listed == nodes
-    param.GetNodeReferenceIDs.assert_called_once_with(mrml.ROLE_ZEBRAFISH_IMAGES)
+    param.GetNumberOfNodeReferences.assert_called_once_with(mrml.ROLE_ZEBRAFISH_IMAGES)
 
 
 def test_list_tracked_volume_nodes_skips_missing_ids():
@@ -387,8 +404,7 @@ def test_list_tracked_volume_nodes_skips_missing_ids():
     from ZebrafishEmbryoAnalyzerLib import mrml
 
     real_node = _FakeVolumeNode(name="real")
-    param = MagicMock()
-    param.GetNodeReferenceIDs = MagicMock(return_value=["missing-id", real_node.GetID()])
+    param = _mock_param_with_refs(["missing-id", real_node.GetID()], mrml.ROLE_ZEBRAFISH_IMAGES)
 
     scene = MagicMock()
     scene.GetNodeByID = MagicMock(return_value=None)
@@ -403,8 +419,7 @@ def test_list_tracked_volume_nodes_skips_wrong_type():
 
     good = _FakeVolumeNode(name="good", klass="vtkMRMLVolumeNode")
     bad = _FakeVolumeNode(name="bad", klass="vtkMRMLTableNode")
-    param = MagicMock()
-    param.GetNodeReferenceIDs = MagicMock(return_value=[good.GetID(), bad.GetID()])
+    param = _mock_param_with_refs([good.GetID(), bad.GetID()], mrml.ROLE_ZEBRAFISH_IMAGES)
 
     scene = MagicMock()
     scene.GetNodeByID = MagicMock(side_effect=lambda nid:
