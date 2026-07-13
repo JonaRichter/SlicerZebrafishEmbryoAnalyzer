@@ -1011,3 +1011,145 @@ def test_markups_colors_match_overlay_constants():
     assert _PATH_COLOR == (0.0, 0.784, 0.784), _PATH_COLOR
     # overlay._STRAIGHT_CLR BGR=(200, 0, 200) → RGB=(200, 0, 200) → /255 ≈ (0.784, 0.0, 0.784)
     assert _STRAIGHT_CLR == (0.784, 0.0, 0.784), _STRAIGHT_CLR
+
+
+# ---------------------------------------------------------------------------
+# Issue #58: mask-pixel → mm scaling for line/curve control points
+# ---------------------------------------------------------------------------
+
+def test_mask_spacing_mm_converts_um_to_mm():
+    """result['spacing'] in µm per mask-pixel must convert to mm for RAS."""
+    from ZebrafishEmbryoAnalyzerLib.mrml import _mask_spacing_mm
+
+    assert _mask_spacing_mm({"spacing": (46.0, 46.0)}) == (0.046, 0.046)
+    assert _mask_spacing_mm({"spacing": (22.99, 22.99)}) == (0.02299, 0.02299)
+    # Anisotropic spacing: keep the per-axis values distinct.
+    assert _mask_spacing_mm({"spacing": (10.0, 20.0)}) == (0.010, 0.020)
+
+
+def test_mask_spacing_mm_fallback_on_missing_or_malformed():
+    """Missing/malformed spacing must fall back to (1.0, 1.0) — not crash."""
+    from ZebrafishEmbryoAnalyzerLib.mrml import _mask_spacing_mm
+
+    assert _mask_spacing_mm({}) == (1.0, 1.0)
+    assert _mask_spacing_mm(None) == (1.0, 1.0)
+    assert _mask_spacing_mm({"spacing": None}) == (1.0, 1.0)
+    assert _mask_spacing_mm({"spacing": (1.0,)}) == (1.0, 1.0)  # wrong length
+    assert _mask_spacing_mm({"spacing": ("a", "b")}) == (1.0, 1.0)  # non-numeric
+
+
+def test_add_line_endpoints_scales_by_mask_spacing():
+    """Issue #58: control points land at (col*col_mm, -row*row_mm, 0), not raw pixels."""
+    from ZebrafishEmbryoAnalyzerLib.mrml import _add_line_endpoints
+
+    class _FakeLine:
+        def __init__(self):
+            self._control_points = []
+        def AddControlPoint(self, position, label):
+            # Capture the (R, A, S) coordinates that the production code hands us.
+            self._control_points.append(
+                {"label": label, "position": (position[0], position[1], position[2])}
+            )
+        def SetNthControlPointLabel(self, *a, **kw):
+            pass
+
+    line = _FakeLine()
+    sl_pts = ((64.0, 64.0), (192.0, 192.0))  # (row, col) pairs in mask coords
+    # 22.99 µm per mask-pixel → 0.02299 mm per mask-pixel.
+    result = {"spacing": (22.99, 22.99)}
+    _add_line_endpoints(line, sl_pts, result, volume_node=None)
+
+    assert len(line._control_points) == 2
+    head, tail = line._control_points
+    # Head: (row=64, col=64) → (R=64*0.02299, A=-64*0.02299, S=0)
+    assert head["label"] == "Head"
+    assert head["position"] == pytest.approx(
+        (64 * 0.02299, -64 * 0.02299, 0.0), rel=1e-9
+    )
+    assert tail["label"] == "Tail"
+    assert tail["position"] == pytest.approx(
+        (192 * 0.02299, -192 * 0.02299, 0.0), rel=1e-9
+    )
+
+
+def test_add_line_endpoints_without_spacing_uses_identity():
+    """result without 'spacing' must keep the historical raw-pixel behaviour
+    (the fallback is (1.0, 1.0)) so the helper stays total and never crashes.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import _add_line_endpoints
+
+    class _FakeLine:
+        def __init__(self):
+            self._control_points = []
+        def AddControlPoint(self, position, label):
+            self._control_points.append(
+                {"label": label, "position": (position[0], position[1], position[2])}
+            )
+        def SetNthControlPointLabel(self, *a, **kw):
+            pass
+
+    line = _FakeLine()
+    _add_line_endpoints(line, ((10.0, 20.0), (30.0, 40.0)), {}, volume_node=None)
+    assert line._control_points[0]["position"] == (20.0, -10.0, 0.0)
+    assert line._control_points[1]["position"] == (40.0, -30.0, 0.0)
+
+
+def test_add_curve_points_scales_by_mask_spacing():
+    """Issue #58: every curve control point uses (col*col_mm, -row*row_mm, 0)."""
+    from ZebrafishEmbryoAnalyzerLib.mrml import _add_curve_points
+
+    class _FakeCurve:
+        def __init__(self):
+            self._control_points = []
+        def AddControlPoint(self, position, label):
+            self._control_points.append(
+                {"label": label, "position": (position[0], position[1], position[2])}
+            )
+
+    curve = _FakeCurve()
+    path_pts = np.array([
+        (64.0, 64.0),
+        (80.0, 80.0),
+        (128.0, 128.0),
+        (192.0, 192.0),
+    ])
+    result = {"spacing": (22.99, 22.99)}
+    _add_curve_points(curve, path_pts, result)
+
+    expected = [
+        (64 * 0.02299, -64 * 0.02299, 0.0),
+        (80 * 0.02299, -80 * 0.02299, 0.0),
+        (128 * 0.02299, -128 * 0.02299, 0.0),
+        (192 * 0.02299, -192 * 0.02299, 0.0),
+    ]
+    assert len(curve._control_points) == 4
+    for cp, exp in zip(curve._control_points, expected):
+        assert cp["position"] == pytest.approx(exp, rel=1e-9)
+
+
+def test_apply_analysis_writes_scaled_line_positions(
+    volume_node, scene, stub_update_segmentation_node, stub_slicer_import,
+):
+    """End-to-end: apply_analysis_to_volume_node produces a line whose
+    Head/Tail RAS positions are scaled by result['spacing'] (mm) — not raw
+    mask pixels.  This is the observable behaviour the issue needs.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import apply_analysis_to_volume_node
+
+    result = _make_full_result(with_path=True)  # spacing=(22.99, 22.99)
+    apply_analysis_to_volume_node(result, volume_node, scene, 22.99)
+
+    line_nodes = scene.nodes_of_class("vtkMRMLMarkupsLineNode")
+    assert len(line_nodes) == 1
+    line = line_nodes[0]
+    cps = line._control_points
+    assert len(cps) == 2
+    # sl_pts = ((64, 64), (192, 192)); expected RAS = (col*0.02299, -row*0.02299, 0).
+    assert cps[0]["label"] == "Head"
+    assert cps[0]["position"] == pytest.approx(
+        (64 * 0.02299, -64 * 0.02299, 0.0), rel=1e-9
+    )
+    assert cps[1]["label"] == "Tail"
+    assert cps[1]["position"] == pytest.approx(
+        (192 * 0.02299, -192 * 0.02299, 0.0), rel=1e-9
+    )

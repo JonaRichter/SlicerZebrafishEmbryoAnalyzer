@@ -1277,14 +1277,35 @@ def _vec3(x, y, z=0.0):
     return _Vec3((float(x), float(y), float(z)))
 
 
+def _mask_spacing_mm(result):
+    """Return ``(row_spacing_mm, col_spacing_mm)`` for mask-pixel-index coordinates.
+
+    ``result["spacing"]`` is ``(row_um_per_maskpx, col_um_per_maskpx)``, written
+    by ``logic.py``'s ``analyse_images`` — micrometres per *mask*-pixel (already
+    scaled for the mask-vs-original-image resolution ratio). Converts to
+    millimetres (Slicer RAS units) for use as a per-axis multiplier on raw
+    mask-pixel indices. Falls back to ``(1.0, 1.0)`` only if ``spacing`` is
+    missing or malformed (defensive — should not happen for a real result).
+    """
+    spacing = result.get("spacing") if result else None
+    if not spacing or len(spacing) != 2:
+        return (1.0, 1.0)
+    try:
+        return (float(spacing[0]) / 1000.0, float(spacing[1]) / 1000.0)
+    except (TypeError, ValueError):
+        return (1.0, 1.0)
+
+
 def _add_line_endpoints(line, sl_pts, result, volume_node):
     """Add Head and Tail control points to ``line`` from ``sl_pts``.
 
     ``sl_pts`` is the straight-line endpoints tuple produced by
     ``tube_length_border2border`` — shape ``((row0, col0), (row1, col1))``
-    in mask coordinates. The points are written verbatim; the same flipud /
-    fliplr transform that ``update_image_node`` applies to the volume node's
-    pixel data is replicated here so the markups land on the visible fish.
+    in mask coordinates. Points are scaled by ``_mask_spacing_mm(result)``
+    before being placed in RAS space so they land inside the volume node's
+    actual physical extent (issue #58). The same flipud / fliplr transform
+    that ``update_image_node`` applies to the volume node's pixel data is
+    replicated here so the markups land on the visible fish.
 
     In Slicer production, ``line.AddControlPoint`` accepts either a
     ``vtkVector3d`` or any object supporting ``[0]``/``[1]``/``[2]``. We pass
@@ -1302,11 +1323,15 @@ def _add_line_endpoints(line, sl_pts, result, volume_node):
         p0, p1 = sl_pts
     except Exception:
         return
-    # Mask coords are (row, col). RAS needs (R, A, S) = (col, -row, 0) given
-    # the flip applied to the image (see update_image_node).
+    # Mask coords are (row, col). RAS needs (R, A, S) = (col * col_mm,
+    # -row * row_mm, 0) given the flip applied to the image (see
+    # update_image_node). row_mm/col_mm convert mask pixels to mm so the
+    # control points land inside the volume node's physical extent instead
+    # of far outside it (issue #58).
     try:
-        pos_head = _vec3(p0[1], -p0[0], 0.0)
-        pos_tail = _vec3(p1[1], -p1[0], 0.0)
+        row_mm, col_mm = _mask_spacing_mm(result)
+        pos_head = _vec3(p0[1] * col_mm, -p0[0] * row_mm, 0.0)
+        pos_tail = _vec3(p1[1] * col_mm, -p1[0] * row_mm, 0.0)
     except Exception:
         return
     try:
@@ -1385,22 +1410,25 @@ def _create_markups_curve_for_volume(result, volume_node, scene):
             display.SetVisibility3D(True)
         except Exception:
             pass
-    _add_curve_points(curve, path_pts)
+    _add_curve_points(curve, path_pts, result)
     _set_node_reference(volume_node, ROLE_ZEBRAFISH_MARKUPS_CURVE, curve)
     _reparent_in_subject_hierarchy(scene, curve, volume_node)
     return curve
 
 
-def _add_curve_points(curve, path_pts):
+def _add_curve_points(curve, path_pts, result):
     """Add all ``path_pts`` to ``curve`` as anonymous control points.
 
     Each point is converted from mask (row, col) to RAS (R, A, S) using the
-    same flip applied to the image. ``_Vec3`` is used as the position type
-    so the helper works under both real Slicer and plain pytest (see
-    :func:`_add_line_endpoints` for the cancel-safety rationale).
+    same flip applied to the image, and scaled by ``_mask_spacing_mm(result)``
+    so the curve lands inside the volume node's actual physical extent
+    (issue #58). ``_Vec3`` is used as the position type so the helper works
+    under both real Slicer and plain pytest (see :func:`_add_line_endpoints`
+    for the cancel-safety rationale).
     """
     try:
-        positions = [_vec3(p[1], -p[0], 0.0) for p in path_pts]
+        row_mm, col_mm = _mask_spacing_mm(result)
+        positions = [_vec3(p[1] * col_mm, -p[0] * row_mm, 0.0) for p in path_pts]
     except Exception:
         return
     try:
