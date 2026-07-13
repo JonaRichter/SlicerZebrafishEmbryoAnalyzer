@@ -47,9 +47,6 @@ def _evict_reload_modules():
         sys.modules.pop(_m, None)
 
 
-_evict_reload_modules()
-
-
 class ZebrafishEmbryoAnalyzer(ScriptedLoadableModule):
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
