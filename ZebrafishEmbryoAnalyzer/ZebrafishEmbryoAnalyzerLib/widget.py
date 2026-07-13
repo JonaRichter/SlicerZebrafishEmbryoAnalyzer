@@ -277,6 +277,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         for chk in (self._chk_length, self._chk_curvature, self._chk_ratio,
                     self._chk_eyes, self._chk_hitl):
             an_layout.addWidget(chk)
+        self._enforce_length_ratio_dependency()
 
         self._threshold_slider = ctk.ctkSliderWidget()
         self._threshold_slider.minimum    = 0.0
@@ -460,6 +461,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             self._chk_hitl.toggled,
         ):
             _signal.connect(self._notify_settings_changed)
+        self._chk_length.toggled.connect(self._enforce_length_ratio_dependency)
         self._threshold_slider.valueChanged.connect(self._notify_settings_changed)
         self._um_per_px.valueChanged.connect(self._notify_settings_changed)
         self._model_combo.currentIndexChanged.connect(self._notify_settings_changed)
@@ -1095,6 +1097,19 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         if not self._updatingGUIFromParameterNode and callable(self._on_settings_changed):
             self._on_settings_changed()
 
+    def _enforce_length_ratio_dependency(self):
+        """Issue #60: "Length/straight ratio" only has any effect when
+        "Body length" is also enabled — logic.py's ratio computation is
+        nested inside the length block (see analyse_images), so ratio
+        silently computes nothing otherwise. Keep the UI from representing
+        that invalid combination: grey out ratio when length is off, and
+        force it unchecked so the effective params state can't lie about it.
+        """
+        length_enabled = self._chk_length.isChecked()
+        self._chk_ratio.setEnabled(length_enabled)
+        if not length_enabled:
+            self._chk_ratio.setChecked(False)
+
     def updateGUIFromParameterNode(self, node):
         """Read parameter values from node and apply to all setting controls."""
         if node is None:
@@ -1126,6 +1141,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             self._chk_length.setChecked(_b(PARAM_LENGTH_ENABLED, True))
             self._chk_curvature.setChecked(_b(PARAM_CURVATURE_ENABLED, True))
             self._chk_ratio.setChecked(_b(PARAM_RATIO_ENABLED, True))
+            self._enforce_length_ratio_dependency()
             self._chk_eyes.setChecked(_b(PARAM_EYES_ENABLED, False))
             self._chk_hitl.setChecked(_b(PARAM_CONFIDENCE_THRESHOLD_ENABLED, False))
             self._threshold_slider.value = _f_clamp(PARAM_CONFIDENCE_THRESHOLD, 0.0, 1.0, 0.85)
