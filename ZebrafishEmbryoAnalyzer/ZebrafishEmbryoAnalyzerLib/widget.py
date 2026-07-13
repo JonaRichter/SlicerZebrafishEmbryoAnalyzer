@@ -71,6 +71,10 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._run_token = 0
         self._deps_ok = True
         self._install_declined = False  # set True when user cancels the dependency dialog; reset on dispose
+        # Issue #61: temp files written by _materialize_missing_image_paths to
+        # back in-memory-only images (e.g. after a scene reload). Cleared and
+        # deleted on every _on_runner_finished path (success/cancel/error).
+        self._run_temp_files = []  # internal state; cleaned up below.
 
         self._saved_layout_id = None
         self._saved_central_visible = None
@@ -933,6 +937,67 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             logging.exception("ZebrafishEmbryoAnalyzer: failed to start model download")
             slicer.util.errorDisplay(f"Could not start model download:\n{exc}")
 
+    def _materialize_missing_image_paths(self, image_paths, originals):
+        """Write any in-memory-only image (no real file on disk — e.g. after a
+        scene reload, per #41/#57/#61) to a temp file and substitute that path.
+
+        Needed because analyse_images() ultimately does shutil.copy2(image_path, ...)
+        to hand the file to the out-of-process inference worker — a bare filename
+        with no backing file on disk fails there. Temp files are written once per
+        Run Analysis click and cleaned up in _on_runner_finished's existing
+        teardown path: any temp paths produced here are appended to
+        ``self._run_temp_files`` and deleted (regardless of the run's success /
+        failure / cancellation) before the handler returns.
+        """
+        import os
+        import tempfile
+        import cv2
+        result = []
+        for i, path in enumerate(image_paths):
+            if path and os.path.exists(path):
+                result.append(path)
+                continue
+            original = originals[i] if i < len(originals) else None
+            if original is None:
+                # Nothing to materialize from — let downstream fail as before so
+                # the per-image error field surfaces the actual cause.
+                result.append(path)
+                continue
+            fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="zebrafish_reload_")
+            os.close(fd)
+            try:
+                bgr = cv2.cvtColor(original, cv2.COLOR_RGB2BGR)
+                cv2.imwrite(tmp_path, bgr)
+                result.append(tmp_path)
+                self._run_temp_files.append(tmp_path)
+            except Exception:
+                logging.exception(
+                    "ZebrafishEmbryoAnalyzer: failed to materialize in-memory image for %s", path
+                )
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+                result.append(path)  # fall through to the original (still-broken) path
+        return result
+
+    def _clear_run_temp_files(self):
+        """Delete every temp file produced by _materialize_missing_image_paths.
+
+        Called on every branch of _on_runner_finished (success / failure /
+        cancellation / token mismatch / disposed) so the temp dir doesn't
+        accumulate after Run Analysis clicks.
+        """
+        import os
+        if not self._run_temp_files:
+            return
+        for tmp_path in self._run_temp_files:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        self._run_temp_files = []
+
     def _start_inference_process(self, model_id, params, token):
         """Launch analysis as a QProcess worker subprocess."""
         if self._active_runner is not None:
@@ -941,6 +1006,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         try:
             originals = [r.get("original") for r in self._results]
             image_paths = list(self._image_paths)
+            image_paths = self._materialize_missing_image_paths(image_paths, originals)
 
             self._run_status_label.setText("Loading models…")
             self._run_progress.setRange(0, 0)   # native Qt marquee: fixed chunk moves left→right
@@ -959,6 +1025,10 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 if self._disposed or controller is not self._active_runner:
                     return
                 self._active_runner = None
+                # Issue #61: any temp files we wrote for in-memory images must
+                # be cleaned up on every exit path, regardless of which branch
+                # below runs.
+                self._clear_run_temp_files()
                 self._refresh_settings_actions()
                 if self._run_token != token:
                     self._run_stack.setCurrentIndex(0)
