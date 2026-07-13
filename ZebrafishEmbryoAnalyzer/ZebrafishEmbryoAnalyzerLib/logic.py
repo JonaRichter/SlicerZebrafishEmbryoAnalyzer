@@ -189,6 +189,20 @@ def analyse_images(image_paths: list, params: dict,
           um_per_px                      : float — physical scale (µm/pixel)
           model_id                       : str   — "general" or "desy"
     progress_callback : callable(current, total) | None
+        Called once per image with ``(current, total)`` AFTER the result is
+        appended. Used to drive progress UI.
+    per_image_callback : callable(image_path, result_dict) | None
+        Called once per image with the fully-populated result dict BEFORE
+        progress_callback fires. Used by the MRML streaming layer
+        (issue #39) to write per-image segmentation / markups nodes and
+        metric attributes onto the volume node immediately, so a Cancel
+        mid-batch leaves fully-formed state for completed images.
+
+        Exceptions raised inside the callback are caught and logged; the
+        ``error`` field on the result dict is set to a descriptive message
+        so sub-issue #40's table-derivation code can route the failed
+        image to the error row. The batch is never aborted by a single
+        failing callback.
 
     Returns
     -------
@@ -288,8 +302,9 @@ def analyse_images(image_paths: list, params: dict,
             if orig_bgr is None:
                 r["error"] = "Could not read image."
                 results.append(r)
-                # Issue #59: still fire per_image_callback so the worker can
-                # record this image in result.json before skipping.
+                # Issue #59/#39: still fire per_image_callback so the caller
+                # (worker process writing result.json, or a future MRML
+                # streaming consumer) can record this image before skipping.
                 if per_image_callback is not None:
                     try:
                         per_image_callback(image_path, r)
@@ -367,11 +382,13 @@ def analyse_images(image_paths: list, params: dict,
             r["error"] = f"Unhandled error: {exc}\n{traceback.format_exc()}"
 
         results.append(r)
-        # Issue #59: stream per-image state via per_image_callback so the
-        # worker can persist result.json atomically after every completed
-        # image, not only at batch end. Errors are recorded on the result
-        # dict rather than propagated, so a single bad callback never
-        # aborts the batch.
+        # Issue #59/#39: stream per-image state via per_image_callback so the
+        # caller can persist progress after every completed image, not only
+        # at batch end — the worker process uses this to write result.json
+        # atomically (issue #59); a future MRML-streaming consumer (issue
+        # #39) can reuse the same hook. Errors are recorded on the result
+        # dict rather than propagated, so a single bad callback never aborts
+        # the batch.
         if per_image_callback is not None:
             try:
                 per_image_callback(image_path, r)

@@ -82,6 +82,8 @@ def test_set_queue_empty_disables_run_button(widget_module):
     w._tabs = MagicMock()
     w._um_per_px = MagicMock()
     w._load_originals = MagicMock()
+    w._filter_readable_paths = MagicMock(return_value=([], [], {}))
+    w._logic = MagicMock()
     # No active runner
     w._active_runner = None
 
@@ -89,6 +91,8 @@ def test_set_queue_empty_disables_run_button(widget_module):
 
     # Button must be disabled after clearing queue
     w._btn_run.setEnabled.assert_called_with(False)
+    # Issue #38: pre-flight was exercised with the empty input list.
+    w._filter_readable_paths.assert_called_once_with([])
 
 
 def test_set_queue_with_images_enables_run_button(widget_module):
@@ -107,10 +111,16 @@ def test_set_queue_with_images_enables_run_button(widget_module):
     w._um_per_px = MagicMock()
     w._load_originals = MagicMock()
     w._active_runner = None
+    # Issue #38 stubs: the pre-flight readability check and MRML-batch helpers
+    # are not safe to run against nonexistent files in unit tests, so we treat
+    # every input as readable and let the mocked `_load_originals` no-op.
+    w._filter_readable_paths = MagicMock(return_value=(["/tmp/a.png", "/tmp/b.png"], [], {}))
+    w._logic = MagicMock()
 
     w._set_queue(["/tmp/a.png", "/tmp/b.png"])
 
     w._btn_run.setEnabled.assert_called_with(True)
+    w._filter_readable_paths.assert_called_once_with(["/tmp/a.png", "/tmp/b.png"])
 
 
 def test_run_button_disabled_on_construction_with_no_images(widget_module):
@@ -139,11 +149,14 @@ def test_set_queue_does_not_enable_button_when_deps_missing(widget_module):
     w._um_per_px = MagicMock()
     w._load_originals = MagicMock()
     w._active_runner = None
+    w._filter_readable_paths = MagicMock(return_value=(["/tmp/a.png"], [], {}))
+    w._logic = MagicMock()
 
     w._set_queue(["/tmp/a.png"])
 
     # deps missing → button stays disabled even with images
     w._btn_run.setEnabled.assert_called_with(False)
+    w._filter_readable_paths.assert_called_once_with(["/tmp/a.png"])
 
 
 # ---------------------------------------------------------------------------
