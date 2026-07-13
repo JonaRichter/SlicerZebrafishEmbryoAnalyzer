@@ -150,7 +150,8 @@ class InferenceController:
                 self.qt.QTimer.singleShot(3000, _kill_if_alive)
             except Exception:
                 pass
-        self._finish_once("cancelled", False, None)
+        partial_results = self._read_partial_results()
+        self._finish_once("cancelled", False, None, partial_results=partial_results)
 
     def dispose(self):
         """Suppress the on_finished callback and cancel silently."""
@@ -294,7 +295,26 @@ class InferenceController:
             if i < len(originals) and originals[i] is not None:
                 r["original"] = originals[i]
 
-    def _finish_once(self, state, success, message):
+    def _read_partial_results(self):
+        """Best-effort read of whatever result.json currently contains — the
+        worker (per #59) writes this file atomically after every completed
+        image, not just at full-batch completion. Returns [] if the file
+        doesn't exist yet or can't be parsed (e.g. no image had finished
+        before cancel).
+        """
+        if not self._result_json_path or not os.path.exists(self._result_json_path):
+            return []
+        try:
+            with open(self._result_json_path, "r", encoding="utf-8") as fh:
+                result_data = json.load(fh)
+            worker_results = result_data.get("results", [])
+            internal_results = self._convert_results(worker_results)
+            self._merge_originals(internal_results, self.originals)
+            return internal_results
+        except Exception:
+            return []
+
+    def _finish_once(self, state, success, message, partial_results=None):
         """Idempotent terminal transition: disconnect signals, cleanup, fire callback."""
         if self._finished_called or self.state in TERMINAL_STATES:
             return
@@ -320,7 +340,7 @@ class InferenceController:
         self._tmp_dir = None
 
         if not success:
-            self.results = []
+            self.results = partial_results if partial_results else []
 
         callback = self.on_finished
         self.on_finished = None

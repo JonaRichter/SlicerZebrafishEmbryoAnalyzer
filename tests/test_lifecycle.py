@@ -421,8 +421,14 @@ def test_reset_for_scene_close_calls_detail_reset_and_clears_gallery():
     assert "OK" in r.stdout
 
 
-def test_cancel_workers_replaces_results_and_invalidates_cache():
-    """_cancel_workers() replaces _results and calls detail.invalidate_cache()."""
+def test_cancel_workers_preserves_results_when_nothing_active_and_invalidates_cache():
+    """_cancel_workers() must not wipe _results when there's no active runner
+    to cancel — issue #59 follow-up: cancelling a batch run is expected to
+    *preserve* whatever completed-image results exist (see
+    test_cancel_workers_cancels_runner_before_bumping_run_token below), so
+    this method no longer unconditionally resets _results to []. It still
+    invalidates the detail cache regardless.
+    """
     r = _run("""
         from unittest.mock import MagicMock
         from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
@@ -432,13 +438,57 @@ def test_cancel_workers_replaces_results_and_invalidates_cache():
         w._detail  = MagicMock()
         w._run_stack = MagicMock()
         w._active_downloader = None
+        w._active_runner = None
 
         old_results = w._results
         w._cancel_workers()
 
-        assert w._results is not old_results, "_results must be replaced (sentinel)"
-        assert w._results == [], f"_results must be empty list, got {w._results!r}"
+        assert w._results is old_results, (
+            f"_results must be left untouched when no runner was active, got {w._results!r}"
+        )
         w._detail.invalidate_cache.assert_called_once()
+        print("OK")
+    """)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout
+
+
+def test_cancel_workers_cancels_runner_before_bumping_run_token():
+    """Issue #59 follow-up: _active_runner.cancel() must fire while
+    _run_token still matches the run it belongs to.
+
+    ``cancel()`` synchronously fires the runner's on_finished callback,
+    which routes to ``_handle_runner_finished`` and applies any partial
+    results the worker had completed before Cancel was clicked. That
+    handler bails out early if ``self._run_token != token``. Bumping
+    ``_run_token`` before calling ``cancel()`` therefore made the guard
+    discard the callback — and with it every partial result — even though
+    images had visibly completed (the actual regression this test guards
+    against: cancelled runs left volume nodes with no segmentation).
+    """
+    r = _run("""
+        from unittest.mock import MagicMock
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
+
+        w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
+        w._results = [{"filename": "a.png"}]
+        w._detail  = MagicMock()
+        w._run_stack = MagicMock()
+        w._active_downloader = None
+        w._run_token = 5
+
+        seen_token_at_cancel = []
+        runner = MagicMock()
+        runner.cancel.side_effect = lambda: seen_token_at_cancel.append(w._run_token)
+        w._active_runner = runner
+
+        w._cancel_workers()
+
+        assert seen_token_at_cancel == [5], (
+            f"cancel() must fire while _run_token is still 5 (unbumped), got {seen_token_at_cancel!r}"
+        )
+        assert w._run_token == 6, "run_token must still be bumped after cancel() returns"
+        assert w._active_runner is None
         print("OK")
     """)
     assert r.returncode == 0, r.stderr
