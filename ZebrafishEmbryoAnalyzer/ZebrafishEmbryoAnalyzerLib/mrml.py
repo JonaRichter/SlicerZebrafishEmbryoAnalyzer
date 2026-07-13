@@ -615,6 +615,13 @@ def get_or_create_image_node(param_node, scene):
     Creates a new vtkMRMLVectorVolumeNode named "ZebrafishEmbryoAnalyzer Current Image"
     if no valid reference exists. Stores new node ID in param_node.
     A wrong-type foreign node is left in scene unchanged; a new node is created.
+
+    Newly-created nodes are hidden from the Data module tree (issue #56):
+    these two singleton nodes exist solely to drive the Detail-tab live
+    preview and would otherwise appear as duplicate-looking top-level
+    entries alongside the per-image volume nodes (#38/#39). Hidden via
+    ``SetHideFromEditors(True)`` — guarded with ``hasattr`` so plain-pytest
+    fake nodes without this method stay compatible.
     """
     existing = param_node.GetNodeReference(ROLE_CURRENT_IMAGE)
     if existing is not None and existing.IsA("vtkMRMLVectorVolumeNode"):
@@ -622,6 +629,8 @@ def get_or_create_image_node(param_node, scene):
     node = scene.AddNewNodeByClass(
         "vtkMRMLVectorVolumeNode", "ZebrafishEmbryoAnalyzer Current Image"
     )
+    if hasattr(node, "SetHideFromEditors"):
+        node.SetHideFromEditors(True)
     param_node.SetNodeReferenceID(ROLE_CURRENT_IMAGE, node.GetID())
     return node
 
@@ -716,6 +725,12 @@ def get_or_create_segmentation_node(param_node, scene):
     "ZebrafishEmbryoAnalyzer Current Segmentation" if no valid reference exists.
     Stores new node ID in param_node.
     A wrong-type foreign node is left in scene unchanged; a new node is created.
+
+    Newly-created nodes are hidden from the Data module tree (issue #56):
+    same rationale as ``get_or_create_image_node`` — the singleton
+    segmentation node exists only to drive the Detail-tab live preview and
+    would otherwise clutter the Subject Hierarchy alongside per-image
+    segmentation nodes (#39).
     """
     existing = param_node.GetNodeReference(ROLE_CURRENT_SEGMENTATION)
     if existing is not None and existing.IsA("vtkMRMLSegmentationNode"):
@@ -724,6 +739,8 @@ def get_or_create_segmentation_node(param_node, scene):
         "vtkMRMLSegmentationNode", "ZebrafishEmbryoAnalyzer Current Segmentation"
     )
     node.CreateDefaultDisplayNodes()
+    if hasattr(node, "SetHideFromEditors"):
+        node.SetHideFromEditors(True)
     param_node.SetNodeReferenceID(ROLE_CURRENT_SEGMENTATION, node.GetID())
     return node
 

@@ -207,6 +207,9 @@ class _FakeVectorVolumeNode:
         _FakeVectorVolumeNode._counter += 1
         self._id = f"vtkMRMLVectorVolumeNode{_FakeVectorVolumeNode._counter}"
         self._name = ""
+        # Issue #56: track SetHideFromEditors calls so tests can assert
+        # the singleton CurrentImage node is hidden on creation.
+        self.hide_calls = []
 
     def GetID(self):
         return self._id
@@ -219,6 +222,9 @@ class _FakeVectorVolumeNode:
 
     def IsA(self, class_name):
         return class_name == "vtkMRMLVectorVolumeNode"
+
+    def SetHideFromEditors(self, value):
+        self.hide_calls.append(value)
 
 
 class _FakeNonVectorVolumeNode:
@@ -876,6 +882,136 @@ def test_get_or_create_image_node_wrong_type_creates_new():
         "reference must point to the new node, not the wrong-type node"
     )
     assert result.IsA("vtkMRMLVectorVolumeNode"), "new node must be a vector volume node"
+
+
+# ---------------------------------------------------------------------------
+# Issue #56: hide legacy CurrentImage/CurrentSegmentation nodes from Data tree
+# ---------------------------------------------------------------------------
+
+def test_get_or_create_image_node_hides_new_node_from_data_tree():
+    """Issue #56: SetHideFromEditors(True) is called once on new node creation."""
+    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_image_node
+
+    param_node = _FakeImageParamNode(existing_node=None)
+    scene = _FakeImageScene()
+
+    node = get_or_create_image_node(param_node, scene)
+
+    assert node.hide_calls == [True], (
+        f"new node must be hidden exactly once with True, got {node.hide_calls!r}"
+    )
+
+
+def test_get_or_create_image_node_does_not_rehide_on_reuse():
+    """Reusing an existing reference must NOT call SetHideFromEditors again."""
+    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_image_node
+
+    existing = _FakeVectorVolumeNode()
+    param_node = _FakeImageParamNode(existing_node=existing)
+    scene = _FakeImageScene()
+
+    result = get_or_create_image_node(param_node, scene)
+
+    assert result is existing
+    assert existing.hide_calls == [], (
+        f"existing node must not be re-hidden; got {existing.hide_calls!r}"
+    )
+    assert scene._add_count == 0, "AddNewNodeByClass must not run on reuse"
+
+
+# ---------------------------------------------------------------------------
+# Issue #56: get_or_create_segmentation_node (new behavioural coverage)
+# ---------------------------------------------------------------------------
+
+class _FakeSegmentationNode:
+    _counter = 0
+
+    def __init__(self):
+        _FakeSegmentationNode._counter += 1
+        self._id = f"vtkMRMLSegmentationNode{_FakeSegmentationNode._counter}"
+        self._name = ""
+        self.hide_calls = []
+        self.display_calls = []
+
+    def GetID(self):
+        return self._id
+
+    def SetName(self, name):
+        self._name = name
+
+    def GetName(self):
+        return self._name
+
+    def IsA(self, class_name):
+        return class_name == "vtkMRMLSegmentationNode"
+
+    def CreateDefaultDisplayNodes(self):
+        self.display_calls.append(1)
+
+    def SetHideFromEditors(self, value):
+        self.hide_calls.append(value)
+
+
+class _FakeSegmentationScene:
+    def __init__(self):
+        self._nodes = []
+        self._add_count = 0
+
+    def AddNewNodeByClass(self, class_name, display_name=""):
+        self._add_count += 1
+        node = _FakeSegmentationNode()
+        node.SetName(display_name)
+        self._nodes.append(node)
+        return node
+
+
+class _FakeSegmentationParamNode:
+    def __init__(self, existing_node=None):
+        self._existing = existing_node
+        self._stored_role = None
+        self._stored_id = None
+        self._set_ref_calls = 0
+
+    def GetNodeReference(self, role):
+        return self._existing
+
+    def SetNodeReferenceID(self, role, node_id):
+        self._stored_role = role
+        self._stored_id = node_id
+        self._set_ref_calls += 1
+
+
+def test_get_or_create_segmentation_node_hides_new_node_from_data_tree():
+    """Issue #56: SetHideFromEditors(True) is called once on new segmentation node creation."""
+    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_segmentation_node
+
+    param_node = _FakeSegmentationParamNode(existing_node=None)
+    scene = _FakeSegmentationScene()
+
+    node = get_or_create_segmentation_node(param_node, scene)
+
+    assert node.hide_calls == [True], (
+        f"new segmentation node must be hidden exactly once with True, "
+        f"got {node.hide_calls!r}"
+    )
+    assert node.display_calls == [1], "CreateDefaultDisplayNodes must still run"
+
+
+def test_get_or_create_segmentation_node_does_not_rehide_on_reuse():
+    """Reusing an existing segmentation reference must NOT call SetHideFromEditors again."""
+    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_segmentation_node
+
+    existing = _FakeSegmentationNode()
+    param_node = _FakeSegmentationParamNode(existing_node=existing)
+    scene = _FakeSegmentationScene()
+
+    result = get_or_create_segmentation_node(param_node, scene)
+
+    assert result is existing
+    assert existing.hide_calls == [], (
+        f"existing segmentation node must not be re-hidden; got {existing.hide_calls!r}"
+    )
+    assert scene._add_count == 0
 
 
 # ---------------------------------------------------------------------------
