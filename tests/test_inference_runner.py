@@ -506,3 +506,123 @@ def test_python_exe_unix_fallback_bin_python(tmp_path, monkeypatch):
 
     assert calls == [], f"Should not have failed early; calls={calls}"
     assert str(fake_exe) in proc.started_args
+
+
+# ---------------------------------------------------------------------------
+# Issue #59: cancel() reads partial results before teardown
+# ---------------------------------------------------------------------------
+
+def test_cancel_loads_partial_results_from_existing_result_json(tmp_path):
+    """If the worker has already written K partial results before cancel,
+    ``controller.results`` must contain those K results (not []).
+
+    The runner's ``_read_partial_results`` reads ``_result_json_path`` while
+    the temp dir is still on disk, BEFORE ``_finish_once`` removes it. By
+    the time the on_finished callback fires, ``controller.results`` must
+    hold whatever the worker produced so far.
+    """
+    proc = FakeProcess()
+    original_img = np.zeros((64, 64, 3), dtype=np.uint8)
+    controller, calls, fqt = _make_controller(
+        tmp_path, fake_process=proc, originals=[original_img, original_img]
+    )
+    controller.start()
+
+    # Result JSON lives in the controller's own temp dir (created by start()).
+    result_dir = controller._tmp_dir
+    arrays_dir = os.path.join(result_dir, "arrays")
+    os.makedirs(arrays_dir, exist_ok=True)
+
+    # Write a mask array and a partial result.json reflecting two completed
+    # images — simulating the worker writing atomically after each image.
+    mask = np.ones((16, 16), dtype=np.uint8)
+    npz_path_0 = os.path.join(arrays_dir, "fish_0_0.npz")
+    npz_path_1 = os.path.join(arrays_dir, "fish_1_1.npz")
+    np.savez(npz_path_0, mask=mask)
+    np.savez(npz_path_1, mask=mask)
+
+    _write_result_json(controller._result_json_path, results=[
+        {
+            "filename": "fish_0.png", "image_path": "/tmp/fish_0.png",
+            "length_um": 100.0, "curvature_class": 0, "length_straight_ratio": 0.9,
+            "eye_area_um2": None, "eye_diameter_um": None,
+            "spacing": [22.99, 22.99], "error": None, "arrays_npz": npz_path_0,
+        },
+        {
+            "filename": "fish_1.png", "image_path": "/tmp/fish_1.png",
+            "length_um": 200.0, "curvature_class": 1, "length_straight_ratio": 0.8,
+            "eye_area_um2": None, "eye_diameter_um": None,
+            "spacing": [22.99, 22.99], "error": None, "arrays_npz": npz_path_1,
+        },
+    ])
+
+    controller.cancel()
+
+    # on_finished must have fired exactly once (idempotent terminal).
+    assert len(calls) == 1
+    success, state, message = calls[0]
+    assert success is False
+    assert state == "cancelled"
+
+    # Critical assertion: controller.results holds the partial results,
+    # not the empty list that the pre-#59 implementation produced.
+    assert len(controller.results) == 2
+    assert controller.results[0]["filename"] == "fish_0.png"
+    assert controller.results[0]["length"] == pytest.approx(100.0)
+    assert controller.results[1]["filename"] == "fish_1.png"
+    assert controller.results[1]["length"] == pytest.approx(200.0)
+    # Original images from before the run were re-attached in their slots.
+    assert controller.results[0]["original"] is original_img
+    assert controller.results[1]["original"] is original_img
+    # npz arrays were loaded into memory before the temp dir got cleaned up.
+    assert controller.results[0]["mask"] is not None
+    assert controller.results[0]["mask"].shape == (16, 16)
+
+
+def test_cancel_with_no_partial_results_yields_empty_results():
+    """No result.json on disk yet (worker hasn't completed any image) →
+    ``controller.results`` stays empty after cancel.
+    """
+    proc = FakeProcess()
+    controller, calls, fqt = _make_controller(None, fake_process=proc)
+    controller.start()
+
+    # Don't write a result.json. The worker process was killed before it
+    # could produce one.
+    controller.cancel()
+
+    assert len(calls) == 1
+    assert calls[0][1] == "cancelled"
+    assert controller.results == []
+
+
+def test_cancel_with_corrupt_partial_result_json_returns_empty(tmp_path):
+    """A torn / unreadable result.json on disk falls back to [].
+
+    Defensive: a partial write that ended mid-flush must not crash cancel().
+    """
+    proc = FakeProcess()
+    controller, calls, fqt = _make_controller(tmp_path, fake_process=proc)
+    controller.start()
+
+    # Write garbage to the result file to simulate a torn write.
+    with open(controller._result_json_path, "w") as fh:
+        fh.write("{this is not valid json")
+
+    controller.cancel()
+
+    assert calls[0][1] == "cancelled"
+    assert controller.results == []  # graceful fallback, not an exception
+
+
+def test_read_partial_results_returns_empty_when_result_json_missing(tmp_path):
+    """The runner's _read_partial_results is a no-op when result.json doesn't exist."""
+    proc = FakeProcess()
+    controller, calls, fqt = _make_controller(tmp_path, fake_process=proc)
+    controller.start()
+
+    # Pre-condition: no result.json yet
+    assert not os.path.exists(controller._result_json_path)
+
+    result = controller._read_partial_results()
+    assert result == []  # no exception, empty list

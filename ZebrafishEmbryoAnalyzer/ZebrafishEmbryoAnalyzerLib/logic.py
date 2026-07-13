@@ -10,6 +10,7 @@ puts the module directory on sys.path; no path manipulation here.
 Export functions (export_excel, export_csv) live in export.py.
 """
 
+import logging
 import os
 import shutil
 import tempfile
@@ -171,7 +172,8 @@ def detect_scalebar(image_path: str, label_um: float | None = None) -> dict:
 
 
 def analyse_images(image_paths: list, params: dict,
-                   progress_callback=None) -> list:
+                   progress_callback=None,
+                   per_image_callback=None) -> list:
     """
     Run segmentation + measurements on a list of image paths.
 
@@ -286,6 +288,16 @@ def analyse_images(image_paths: list, params: dict,
             if orig_bgr is None:
                 r["error"] = "Could not read image."
                 results.append(r)
+                # Issue #59: still fire per_image_callback so the worker can
+                # record this image in result.json before skipping.
+                if per_image_callback is not None:
+                    try:
+                        per_image_callback(image_path, r)
+                    except Exception as exc:
+                        logging.exception(
+                            "analyse_images: per_image_callback failed for %s",
+                            image_path,
+                        )
                 if progress_callback:
                     progress_callback(_loop_i + 1, n)
                 continue
@@ -355,6 +367,23 @@ def analyse_images(image_paths: list, params: dict,
             r["error"] = f"Unhandled error: {exc}\n{traceback.format_exc()}"
 
         results.append(r)
+        # Issue #59: stream per-image state via per_image_callback so the
+        # worker can persist result.json atomically after every completed
+        # image, not only at batch end. Errors are recorded on the result
+        # dict rather than propagated, so a single bad callback never
+        # aborts the batch.
+        if per_image_callback is not None:
+            try:
+                per_image_callback(image_path, r)
+            except Exception as exc:
+                logging.exception(
+                    "analyse_images: per_image_callback failed for %s", image_path
+                )
+                if not r.get("error"):
+                    r["error"] = (
+                        f"Per-image write failed for "
+                        f"{os.path.basename(image_path)}: {exc}"
+                    )
         if progress_callback:
             progress_callback(_loop_i + 1, n)
 

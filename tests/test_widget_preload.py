@@ -423,3 +423,108 @@ def test_set_queue_increments_run_token(widget_module):
     w._set_queue([])
 
     assert w._run_token == 6
+
+
+# ---------------------------------------------------------------------------
+# Issue #59: cancel mid-batch preserves completed-image results
+# ---------------------------------------------------------------------------
+
+def _make_runner_finished_widget(widget_module, token=1):
+    """Minimal widget shell with the attributes _handle_runner_finished reads."""
+    w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
+    w._disposed = False
+    w._run_token = token
+    w._active_runner = MagicMock(name="active_runner")
+    w._refresh_settings_actions = MagicMock()
+    w._run_stack = MagicMock()
+    w._results = []
+    w._on_results_ready = MagicMock()
+    w._try_update_mrml_table = MagicMock()
+    w._categorize_inference_error = MagicMock(return_value="formatted error")
+    return w
+
+
+def test_handle_runner_finished_cancel_with_results_applies_partial(widget_module):
+    """Cancelled batch with non-empty controller.results must trigger apply path.
+
+    Issue #59: prior to this, a cancel mid-batch wiped controller.results and
+    the widget returned early — segmentation/attributes for finished images
+    were silently dropped. Now the same apply-path as a successful run fires.
+    """
+    import slicer as _slicer
+    w = _make_runner_finished_widget(widget_module, token=1)
+
+    runner = MagicMock()
+    runner.results = [{"filename": "fish_0.png", "length": 100.0}]
+    w._active_runner = runner
+
+    w._handle_runner_finished(success=False, state="cancelled", message=None,
+                              controller=runner, token=1)
+
+    # Token guard passes, partial results were applied via the success path.
+    w._on_results_ready.assert_called_once()
+    w._try_update_mrml_table.assert_called_once_with(runner.results)
+    assert w._results == runner.results
+    # UI returned to idle stack.
+    w._run_stack.setCurrentIndex.assert_called_with(0)
+    # No error dialog for a cancel.
+    _slicer.util.errorDisplay.assert_not_called()
+
+
+def test_handle_runner_finished_cancel_with_empty_results_is_noop(widget_module):
+    """Cancelled before any image completed — nothing to apply, no error shown.
+
+    The widget must NOT call _on_results_ready or _try_update_mrml_table in
+    this case (there's no segmentation to render), but also must not raise.
+    """
+    import slicer as _slicer
+    w = _make_runner_finished_widget(widget_module, token=1)
+
+    runner = MagicMock()
+    runner.results = []  # worker hadn't finished any image yet
+    w._active_runner = runner
+
+    w._handle_runner_finished(success=False, state="cancelled", message=None,
+                              controller=runner, token=1)
+
+    w._on_results_ready.assert_not_called()
+    w._try_update_mrml_table.assert_not_called()
+    # UI still returned to idle.
+    w._run_stack.setCurrentIndex.assert_called_with(0)
+    _slicer.util.errorDisplay.assert_not_called()
+
+
+def test_handle_runner_finished_failure_shows_error(widget_module):
+    """Non-cancel failure (state != 'cancelled', success=False) → error dialog."""
+    import slicer as _slicer
+    w = _make_runner_finished_widget(widget_module, token=1)
+
+    runner = MagicMock()
+    runner.results = []
+    w._active_runner = runner
+
+    w._handle_runner_finished(success=False, state="failed", message="boom",
+                              controller=runner, token=1)
+
+    w._on_results_ready.assert_not_called()
+    w._try_update_mrml_table.assert_not_called()
+    w._categorize_inference_error.assert_called_once_with("boom", runner)
+    _slicer.util.errorDisplay.assert_called_once_with("formatted error")
+
+
+def test_handle_runner_finished_stale_token_does_not_apply(widget_module):
+    """Stale runner (token mismatch) must discard results without applying."""
+    w = _make_runner_finished_widget(widget_module, token=2)
+
+    runner = MagicMock()
+    runner.results = [{"filename": "fish_0.png"}]
+    w._active_runner = runner
+
+    # Token at finish time is 1, but current _run_token is 2 → stale.
+    w._handle_runner_finished(success=True, state="succeeded", message=None,
+                              controller=runner, token=1)
+
+    w._on_results_ready.assert_not_called()
+    w._try_update_mrml_table.assert_not_called()
+    assert w._results == []  # unchanged
+    w._run_stack.setCurrentIndex.assert_called_with(0)
