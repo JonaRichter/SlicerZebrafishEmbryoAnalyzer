@@ -472,6 +472,46 @@ def test_handle_runner_finished_cancel_with_results_applies_partial(widget_modul
     _slicer.util.errorDisplay.assert_not_called()
 
 
+def test_handle_runner_finished_restores_queue_order_and_original_filenames(widget_module):
+    """analyse_images (logic.py) iterates sorted(image_paths) internally, so
+    a successful run's results come back sorted by whatever path was sent
+    to the worker, not the user's original queue order — and for a
+    materialized post-reload image (issue #61), that sent path's basename
+    is a random temp filename, not the real one. _handle_runner_finished
+    must restore both the original queue order and the original filenames
+    (bug found while testing #61: gallery order changed and captions were
+    renamed to temp filenames after Run Analysis on a reloaded scene).
+    """
+    w = _make_runner_finished_widget(widget_module, token=1)
+    w._try_apply_results_to_volume_nodes = MagicMock()
+    # Queue order: fish_0, fish_1, fish_2. fish_1 was a reload-only (no file
+    # on disk) row, materialized to a random-basename temp file.
+    w._image_paths = ["/real/fish_0.png", "/real/fish_1.png", "/real/fish_2.png"]
+    w._run_sent_paths = [
+        "/real/fish_0.png",
+        "/tmp/zebrafish_reload_ab12cd.png",
+        "/real/fish_2.png",
+    ]
+    w._results = [{"filename": "fish_0.png"}, {"filename": "fish_1.png"}, {"filename": "fish_2.png"}]
+
+    runner = MagicMock()
+    # Worker returns results sorted by sent path, NOT queue order — and the
+    # reload row's filename is the temp file's basename.
+    runner.results = [
+        {"filename": "fish_0.png", "image_path": "/real/fish_0.png", "length": 1.0},
+        {"filename": "fish_2.png", "image_path": "/real/fish_2.png", "length": 3.0},
+        {"filename": "zebrafish_reload_ab12cd.png",
+         "image_path": "/tmp/zebrafish_reload_ab12cd.png", "length": 2.0},
+    ]
+    w._active_runner = runner
+
+    w._handle_runner_finished(success=True, state="succeeded", message=None,
+                              controller=runner, token=1)
+
+    assert [r["filename"] for r in w._results] == ["fish_0.png", "fish_1.png", "fish_2.png"]
+    assert [r["length"] for r in w._results] == [1.0, 2.0, 3.0]
+
+
 def test_handle_runner_finished_cancel_keeps_unprocessed_images_raw(widget_module):
     """Issue #59 follow-up: images the worker never reached before Cancel
     must stay in self._results (raw stub, no segmentation/metrics) instead
@@ -481,6 +521,8 @@ def test_handle_runner_finished_cancel_keeps_unprocessed_images_raw(widget_modul
     """
     w = _make_runner_finished_widget(widget_module, token=1)
     w._try_apply_results_to_volume_nodes = MagicMock()
+    w._image_paths = ["/tmp/fish_0.png", "/tmp/fish_1.png", "/tmp/fish_2.png"]
+    w._run_sent_paths = list(w._image_paths)
 
     # Three images were queued; only the first had finished when Cancel hit.
     stub_1 = {"filename": "fish_1.png", "original": "raw1", "mask": None, "error": None, "length": None}
@@ -492,7 +534,8 @@ def test_handle_runner_finished_cancel_keeps_unprocessed_images_raw(widget_modul
     ]
 
     runner = MagicMock()
-    runner.results = [{"filename": "fish_0.png", "length": 100.0, "mask": "computed"}]
+    runner.results = [{"filename": "fish_0.png", "image_path": "/tmp/fish_0.png",
+                        "length": 100.0, "mask": "computed"}]
     w._active_runner = runner
 
     w._handle_runner_finished(success=False, state="cancelled", message=None,

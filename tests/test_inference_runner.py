@@ -213,6 +213,69 @@ def test_success_exit_reads_result_json_and_merges_originals(tmp_path):
     assert results[0]["mask"].shape == (256, 256)
 
 
+def test_merge_originals_matches_by_filename_not_worker_order(tmp_path):
+    """analyse_images (logic.py) iterates sorted(image_paths) internally, so
+    the worker can return results in a different order than the caller's
+    image_paths/originals lists (e.g. materialized temp files from issue
+    #61's reload path, whose random basenames sort unrelated to the
+    original queue order). _merge_originals must match each result's
+    "original" by filename, not by list position — otherwise a mask
+    computed for one image gets paired with a different image's pixel
+    data (found while working #61: this produced gallery thumbnails with
+    a segmentation overlay for the wrong fish)."""
+    proc = FakeProcess()
+    original_a = np.full((8, 8, 3), fill_value=10, dtype=np.uint8)
+    original_b = np.full((8, 8, 3), fill_value=20, dtype=np.uint8)
+    # Caller order: a.png, b.png — mirrors self._image_paths / self._results order.
+    controller, calls, fqt = _make_controller(
+        tmp_path,
+        fake_process=proc,
+        image_paths=["/tmp/a.png", "/tmp/b.png"],
+        originals=[original_a, original_b],
+    )
+    controller.start()
+
+    result_dir = controller._tmp_dir
+    arrays_dir = os.path.join(result_dir, "arrays")
+    os.makedirs(arrays_dir, exist_ok=True)
+
+    mask_a = np.full((4, 4), 1, dtype=np.uint8)
+    mask_b = np.full((4, 4), 2, dtype=np.uint8)
+    npz_a = os.path.join(arrays_dir, "a.npz")
+    npz_b = os.path.join(arrays_dir, "b.npz")
+    np.savez(npz_a, mask=mask_a)
+    np.savez(npz_b, mask=mask_b)
+
+    # Worker returns results in the OPPOSITE order from image_paths/originals
+    # (simulating analyse_images's internal sorted(image_paths) reordering).
+    wire_results = [
+        {
+            "filename": "b.png", "image_path": "/tmp/b.png",
+            "length_um": None, "curvature_class": None,
+            "length_straight_ratio": None, "eye_area_um2": None,
+            "eye_diameter_um": None, "spacing": None, "error": None,
+            "arrays_npz": npz_b,
+        },
+        {
+            "filename": "a.png", "image_path": "/tmp/a.png",
+            "length_um": None, "curvature_class": None,
+            "length_straight_ratio": None, "eye_area_um2": None,
+            "eye_diameter_um": None, "spacing": None, "error": None,
+            "arrays_npz": npz_a,
+        },
+    ]
+    _write_result_json(controller._result_json_path, results=wire_results)
+
+    proc.finished.emit(0, 0)
+
+    results = controller.results
+    by_name = {r["filename"]: r for r in results}
+    assert np.array_equal(by_name["a.png"]["original"], original_a)
+    assert np.array_equal(by_name["b.png"]["original"], original_b)
+    assert by_name["a.png"]["mask"][0, 0] == 1
+    assert by_name["b.png"]["mask"][0, 0] == 2
+
+
 def test_failure_exit_calls_on_finished_with_false(tmp_path):
     proc = FakeProcess()
     controller, calls, fqt = _make_controller(tmp_path, fake_process=proc)
@@ -524,7 +587,9 @@ def test_cancel_loads_partial_results_from_existing_result_json(tmp_path):
     proc = FakeProcess()
     original_img = np.zeros((64, 64, 3), dtype=np.uint8)
     controller, calls, fqt = _make_controller(
-        tmp_path, fake_process=proc, originals=[original_img, original_img]
+        tmp_path, fake_process=proc,
+        image_paths=["/tmp/fish_0.png", "/tmp/fish_1.png"],
+        originals=[original_img, original_img],
     )
     controller.start()
 

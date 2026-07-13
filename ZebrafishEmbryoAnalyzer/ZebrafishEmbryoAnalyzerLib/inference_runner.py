@@ -290,10 +290,29 @@ class InferenceController:
         return internal
 
     def _merge_originals(self, results, originals):
-        """Re-attach original images captured before worker was launched."""
-        for i, r in enumerate(results):
-            if i < len(originals) and originals[i] is not None:
-                r["original"] = originals[i]
+        """Re-attach original images captured before worker was launched.
+
+        Matched by filename, not list position: ``analyse_images`` (logic.py)
+        iterates ``sorted(image_paths)`` internally, so ``results`` comes back
+        ordered by sorted basename while ``originals``/``self.image_paths``
+        stay in the caller's original (unsorted) order. Folder/file loads
+        already pass pre-sorted paths so the two orders happened to coincide
+        there, but issue #61's materialized temp files
+        (``zebrafish_reload_<random>.png``) sort essentially at random
+        relative to the original list — a positional zip silently paired
+        each mask with a different image's ``original``, producing gallery
+        thumbnails whose overlay was correctly shaped but for the wrong
+        fish (issue found while working #61).
+        """
+        by_filename = {
+            os.path.basename(p): o
+            for p, o in zip(self.image_paths, originals)
+            if o is not None
+        }
+        for r in results:
+            original = by_filename.get(r.get("filename"))
+            if original is not None:
+                r["original"] = original
 
     def _read_partial_results(self):
         """Best-effort read of whatever result.json currently contains — the
