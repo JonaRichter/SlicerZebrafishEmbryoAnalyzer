@@ -365,6 +365,7 @@ def test_set_queue_cancels_active_runner(widget_module):
     w._tabs = MagicMock()
     w._btn_run = MagicMock()
     w._load_originals = MagicMock()
+    w._load_result_label = MagicMock()  # Issue #62
 
     w._set_queue([])
 
@@ -392,6 +393,7 @@ def test_set_queue_bumps_token_before_cancel(widget_module):
     w._tabs = MagicMock()
     w._btn_run = MagicMock()
     w._load_originals = MagicMock()
+    w._load_result_label = MagicMock()  # Issue #62
     runner = MagicMock()
     runner.cancel.side_effect = _cancel
     w._active_runner = runner
@@ -416,6 +418,7 @@ def test_set_queue_increments_run_token(widget_module):
     w._tabs = MagicMock()
     w._um_per_px = MagicMock()
     w._btn_run = MagicMock()
+    w._load_result_label = MagicMock()  # Issue #62
 
     # _load_originals needs to be a no-op (it calls cv2 etc.)
     w._load_originals = MagicMock()
