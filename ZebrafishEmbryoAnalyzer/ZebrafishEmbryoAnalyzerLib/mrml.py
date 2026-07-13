@@ -560,6 +560,15 @@ def list_tracked_volume_nodes(param_node, scene):
     node the user deleted from the Data module between load and run) are
     silently skipped — they will surface as a missing row in the table
     rather than crash the build.
+
+    Result is then sorted by each node's ``ZebrafishAnalysis.loadOrder``
+    attribute (set at eager-creation time, see :func:`create_image_volume_node`)
+    rather than trusting the NodeReference array's own enumeration order —
+    a Save Scene -> Load Scene round-trip was observed to come back with a
+    different gallery/table ordering even though every node and reference
+    was still present (found while testing #61). Nodes without the
+    attribute (e.g. older scenes, test fakes) keep their relative
+    reference-order position, sorted after any attributed nodes.
     """
     if param_node is None or scene is None:
         return []
@@ -580,6 +589,15 @@ def list_tracked_volume_nodes(param_node, scene):
         except Exception:
             continue
         out.append(node)
+
+    def _load_order_key(node):
+        try:
+            raw = node.GetAttribute("ZebrafishAnalysis.loadOrder")
+            return (0, int(raw)) if raw is not None else (1, 0)
+        except Exception:
+            return (1, 0)
+
+    out.sort(key=_load_order_key)
     return out
 
 
@@ -878,6 +896,18 @@ def create_image_volume_node(image_rgb, um_per_px, name_hint, param_node, scene)
             pass
         raise
 
+    # Stamp the batch position as a plain node attribute — unlike
+    # NodeReference array order, attribute strings are known-reliable
+    # through this codebase's scene save/reload path (the ZebrafishAnalysis.*
+    # metric/staleness attributes already round-trip correctly), so
+    # list_tracked_volume_nodes can restore folder-load order after a
+    # Save Scene -> Load Scene round-trip even if the reference list itself
+    # comes back reordered.
+    try:
+        load_order = param_node.GetNumberOfNodeReferences(ROLE_ZEBRAFISH_IMAGES)
+        node.SetAttribute("ZebrafishAnalysis.loadOrder", str(load_order))
+    except Exception:
+        pass
     param_node.AddNodeReferenceID(ROLE_ZEBRAFISH_IMAGES, node.GetID())
     return node
 
