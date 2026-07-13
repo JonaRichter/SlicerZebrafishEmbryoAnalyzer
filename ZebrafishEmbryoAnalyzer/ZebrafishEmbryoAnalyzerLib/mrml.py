@@ -1242,7 +1242,9 @@ def _create_markups_line_for_volume(result, volume_node, scene):
             display.SetVisibility3D(True)
         except Exception:
             pass
+        _style_thin_line_markup(display)
     _add_line_endpoints(line, sl_pts, result, volume_node)
+    _lock_markups_node(line)
     _set_node_reference(volume_node, ROLE_ZEBRAFISH_MARKUPS_LINE, line)
     _reparent_in_subject_hierarchy(scene, line, volume_node)
     return line
@@ -1296,6 +1298,23 @@ def _mask_spacing_mm(result):
         return (1.0, 1.0)
 
 
+def _mask_dims(result):
+    """Return ``(mask_h, mask_w)`` from ``result["mask"]``'s shape, or ``None``.
+
+    Used to mirror the 180-degree rotation (``flipud`` + ``fliplr``) that
+    ``update_image_node`` applies to the volume's pixel data (issue #58
+    follow-up): mask pixel (row, col) is displayed at volume voxel
+    (mask_h-1-row, mask_w-1-col), not (row, col) unchanged. Returns ``None``
+    when ``mask`` is missing/malformed so callers can fall back to the
+    historical unflipped formula (degenerate/test inputs only — real
+    results always carry ``mask``).
+    """
+    mask = result.get("mask") if result else None
+    if mask is None or not hasattr(mask, "shape") or len(mask.shape) < 2:
+        return None
+    return int(mask.shape[0]), int(mask.shape[1])
+
+
 def _add_line_endpoints(line, sl_pts, result, volume_node):
     """Add Head and Tail control points to ``line`` from ``sl_pts``.
 
@@ -1323,15 +1342,24 @@ def _add_line_endpoints(line, sl_pts, result, volume_node):
         p0, p1 = sl_pts
     except Exception:
         return
-    # Mask coords are (row, col). RAS needs (R, A, S) = (col * col_mm,
-    # -row * row_mm, 0) given the flip applied to the image (see
-    # update_image_node). row_mm/col_mm convert mask pixels to mm so the
-    # control points land inside the volume node's physical extent instead
-    # of far outside it (issue #58).
+    # Mask coords are (row, col). update_image_node writes the volume's
+    # pixel data through flipud(fliplr(...)) — a 180-degree rotation — so
+    # mask pixel (row, col) is displayed at voxel (mask_h-1-row, mask_w-1-col),
+    # not (row, col) unchanged. Mirror that rotation here (issue #58 follow-up)
+    # so the control points land on the visible fish instead of off to the
+    # side / outside the volume. row_mm/col_mm convert mask-pixel distances to mm.
     try:
         row_mm, col_mm = _mask_spacing_mm(result)
-        pos_head = _vec3(p0[1] * col_mm, -p0[0] * row_mm, 0.0)
-        pos_tail = _vec3(p1[1] * col_mm, -p1[0] * row_mm, 0.0)
+        dims = _mask_dims(result)
+        if dims is not None:
+            mask_h, mask_w = dims
+            pos_head = _vec3((mask_w - 1 - p0[1]) * col_mm, (mask_h - 1 - p0[0]) * row_mm, 0.0)
+            pos_tail = _vec3((mask_w - 1 - p1[1]) * col_mm, (mask_h - 1 - p1[0]) * row_mm, 0.0)
+        else:
+            # Degenerate input (no mask, e.g. missing spacing) — keep the
+            # historical unflipped formula rather than guessing dimensions.
+            pos_head = _vec3(p0[1] * col_mm, -p0[0] * row_mm, 0.0)
+            pos_tail = _vec3(p1[1] * col_mm, -p1[0] * row_mm, 0.0)
     except Exception:
         return
     try:
@@ -1362,6 +1390,72 @@ def _add_line_endpoints(line, sl_pts, result, volume_node):
         # AddControlPoint may fail when slicer / vtk is unavailable (subprocess).
         # The markups node itself is still attached and visible in the Data
         # module; the control points can be re-applied on reload by sub-issue #5.
+        pass
+
+
+def _style_thin_line_markup(display):
+    """Reduce a MarkupsLine/Curve display node to a thin, non-editable line.
+
+    ``vtkMRMLMarkupsDisplayNode`` defaults (glyph scale ~3% of viewport,
+    default control-point balls, floating name+length label) are tuned for
+    anatomical-scale volumes; on a ~5 mm zebrafish embryo they render as a
+    thick tube with an oversized label dwarfing the segmentation (issue #58
+    follow-up).
+
+    Control-point glyphs are shrunk to near-zero (``GlyphScale``) rather than
+    hidden outright — there is no separate "points off, line on" toggle on
+    this display node. ``LineThickness`` is a *fraction of GlyphScale*, so
+    shrinking GlyphScale to make points invisible also starves the line
+    (first attempt at issue #58 follow-up: line became nearly invisible
+    too). Switching ``CurveLineSizeMode`` to Absolute decouples the tube
+    diameter from GlyphScale entirely — ``LineDiameter`` is then a fixed mm
+    value independent of point size. Each call wrapped individually since
+    the exact API surface varies across Slicer versions.
+    """
+    try:
+        display.SetGlyphScale(0.01)
+    except Exception:
+        pass
+    try:
+        display.SetCurveLineSizeMode(getattr(display, "SizeModeAbsolute", 1))
+    except Exception:
+        pass
+    try:
+        display.SetLineDiameter(0.012)
+    except Exception:
+        pass
+    try:
+        # Without this, the segmentation's 3D surface occludes the thin
+        # line/curve whenever it's behind it from the current camera angle.
+        display.SetOccludedVisibility(True)
+    except Exception:
+        pass
+    try:
+        display.SetOccludedOpacity(1.0)
+    except Exception:
+        pass
+    try:
+        display.SetPropertiesLabelVisibility(False)
+    except Exception:
+        pass
+    try:
+        display.SetPointLabelsVisibility(False)
+    except Exception:
+        pass
+
+
+def _lock_markups_node(node):
+    """Lock a MarkupsLine/Curve node so its control points can't be dragged.
+
+    ``vtkMRMLMarkupsNode.SetLocked(True)`` disables interactive point
+    manipulation in slice/3D views while leaving visibility, color and
+    other display-node properties editable as usual. These markups mirror
+    computed analysis results, not manual annotations, so accidental
+    dragging should not silently desync them from ``result``.
+    """
+    try:
+        node.SetLocked(True)
+    except Exception:
         pass
 
 
@@ -1410,7 +1504,9 @@ def _create_markups_curve_for_volume(result, volume_node, scene):
             display.SetVisibility3D(True)
         except Exception:
             pass
+        _style_thin_line_markup(display)
     _add_curve_points(curve, path_pts, result)
+    _lock_markups_node(curve)
     _set_node_reference(volume_node, ROLE_ZEBRAFISH_MARKUPS_CURVE, curve)
     _reparent_in_subject_hierarchy(scene, curve, volume_node)
     return curve
@@ -1428,7 +1524,16 @@ def _add_curve_points(curve, path_pts, result):
     """
     try:
         row_mm, col_mm = _mask_spacing_mm(result)
-        positions = [_vec3(p[1] * col_mm, -p[0] * row_mm, 0.0) for p in path_pts]
+        dims = _mask_dims(result)
+        if dims is not None:
+            mask_h, mask_w = dims
+            positions = [
+                _vec3((mask_w - 1 - p[1]) * col_mm, (mask_h - 1 - p[0]) * row_mm, 0.0)
+                for p in path_pts
+            ]
+        else:
+            # Degenerate input (no mask) — keep the historical unflipped formula.
+            positions = [_vec3(p[1] * col_mm, -p[0] * row_mm, 0.0) for p in path_pts]
     except Exception:
         return
     try:
