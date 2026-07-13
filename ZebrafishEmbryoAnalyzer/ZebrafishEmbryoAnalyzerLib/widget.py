@@ -965,6 +965,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 self._run_stack.setCurrentIndex(0)
                 logging.debug("ZebrafishEmbryoAnalyzer: results ready, count=%d", len(self._results))
                 try:
+                    self._try_apply_results_to_volume_nodes(self._results)
                     self._on_results_ready()
                     self._try_update_mrml_table(self._results)
                 except Exception:
@@ -983,6 +984,27 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             self._run_stack.setCurrentIndex(0)
             logging.exception("ZebrafishEmbryoAnalyzer: failed to start inference process")
             slicer.util.errorDisplay(f"Could not start analysis:\n{exc}")
+
+    def _try_apply_results_to_volume_nodes(self, results):
+        """Issue #39 follow-up: write segmentation/markups/attributes onto each
+        result's already-existing (#38 eager) volume node before the table
+        and staleness observers are built from those nodes' attributes.
+
+        Best-effort — logs and shows a status message on failure rather than
+        raising, matching ``_try_update_mrml_table``'s pattern.
+        """
+        try:
+            self._logic.apply_results_to_tracked_volume_nodes(
+                results, self._um_per_px.value
+            )
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: apply_results_to_tracked_volume_nodes failed"
+            )
+            slicer.util.showStatusMessage(
+                "Analysis complete — writing segmentation nodes failed. Check the application log.",
+                5000,
+            )
 
     def _try_update_mrml_table(self, results):
         """Update the MRML results table; log and show a status warning on failure.

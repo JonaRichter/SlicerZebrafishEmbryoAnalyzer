@@ -919,3 +919,56 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
             except Exception:
                 pass
             return 0
+
+    def apply_results_to_tracked_volume_nodes(self, results, um_per_px):
+        """Issue #39 follow-up: write per-image segmentation/markups/attributes
+        for a batch of results produced by the subprocess-based Run Analysis
+        flow (``inference_runner``).
+
+        ``analyse_images``'s ``per_image_callback`` (the original streaming
+        hook #39 was scoped against) only fires for the in-process
+        ``recompute_metrics_for_volume_node`` path — the main Run Analysis
+        button runs inference out-of-process via ``inference_runner`` and only
+        gets results back in one batch once the subprocess exits, so there is
+        no per-image callback to hook there. This applies the same
+        ``apply_analysis_to_volume_node`` write, once per result, matched to
+        its already-existing (#38 eager) volume node by filename.
+
+        Returns the number of results successfully applied. Never raises —
+        a missing match or per-node failure is logged and skipped so one bad
+        image cannot block the rest of the batch.
+        """
+        try:
+            import logging
+            import slicer
+            from ZebrafishEmbryoAnalyzerLib.mrml import (
+                list_tracked_volume_nodes,
+                apply_analysis_to_volume_node,
+            )
+        except Exception:
+            return 0
+        param_node = self.getParameterNode()
+        if param_node is None:
+            return 0
+        scene = slicer.mrmlScene
+        nodes_by_name = {}
+        for node in list_tracked_volume_nodes(param_node, scene):
+            try:
+                nodes_by_name[node.GetName()] = node
+            except Exception:
+                continue
+        applied = 0
+        for result in results or []:
+            filename = (result or {}).get("filename")
+            node = nodes_by_name.get(filename)
+            if node is None:
+                continue
+            try:
+                apply_analysis_to_volume_node(result, node, scene, um_per_px)
+                applied += 1
+            except Exception:
+                logging.exception(
+                    "ZebrafishEmbryoAnalyzer: apply_results_to_tracked_volume_nodes "
+                    "failed for %s", filename,
+                )
+        return applied

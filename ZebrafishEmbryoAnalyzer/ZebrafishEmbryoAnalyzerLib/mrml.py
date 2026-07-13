@@ -1124,6 +1124,30 @@ def _set_node_reference(volume_node, role, child_node):
             pass
 
 
+def _reparent_in_subject_hierarchy(scene, child_node, parent_node):
+    """Nest ``child_node`` under ``parent_node`` in the Data module's tree view.
+
+    Node references (``SetNodeReferenceID``/``AddNodeReferenceID``) do not
+    affect Subject Hierarchy placement — every new node defaults to a child
+    of the scene root item. Segment Editor achieves "segmentation nested
+    under its source volume" by explicitly reparenting the SH item once the
+    segmentation is created; this replicates that for the streamed nodes.
+    """
+    if scene is None or child_node is None or parent_node is None:
+        return
+    try:
+        import slicer  # lazy: tests never import slicer
+        sh_node = slicer.vtkMRMLSubjectHierarchyNode.GetSubjectHierarchyNode(scene)
+        if sh_node is None:
+            return
+        parent_item = sh_node.GetItemByDataNode(parent_node)
+        child_item = sh_node.GetItemByDataNode(child_node)
+        if parent_item and child_item:
+            sh_node.SetItemParent(child_item, parent_item)
+    except Exception:
+        pass
+
+
 def _create_segmentation_for_volume(result, volume_node, scene, um_per_px):
     """Create one segmentation node for ``volume_node`` and attach via ``ROLE_ZEBRAFISH_SEGMENTATION``.
 
@@ -1143,6 +1167,19 @@ def _create_segmentation_for_volume(result, volume_node, scene, um_per_px):
     seg_node.SetName(_seg_display_name(result, volume_node))
     update_segmentation_node(result, um_per_px, seg_node, image_node=volume_node)
     _set_node_reference(volume_node, ROLE_ZEBRAFISH_SEGMENTATION, seg_node)
+    _reparent_in_subject_hierarchy(scene, seg_node, volume_node)
+    # Every per-image segmentation is created hidden — without this, a
+    # multi-image batch shows every segmentation stacked on top of each
+    # other in the slice view regardless of which volume is the current
+    # background (Slicer doesn't tie segmentation visibility to the
+    # background volume by default). Users toggle visibility per-node in
+    # the Data module's eye icon as needed.
+    display = seg_node.GetDisplayNode() if hasattr(seg_node, "GetDisplayNode") else None
+    if display is not None:
+        try:
+            display.SetVisibility(False)
+        except Exception:
+            pass
     return seg_node
 
 
@@ -1192,7 +1229,9 @@ def _create_markups_line_for_volume(result, volume_node, scene):
         except Exception:
             pass
         try:
-            display.SetVisibility(True)
+            # Created hidden — see the matching comment in
+            # _create_segmentation_for_volume for why.
+            display.SetVisibility(False)
         except Exception:
             pass
         try:
@@ -1205,6 +1244,7 @@ def _create_markups_line_for_volume(result, volume_node, scene):
             pass
     _add_line_endpoints(line, sl_pts, result, volume_node)
     _set_node_reference(volume_node, ROLE_ZEBRAFISH_MARKUPS_LINE, line)
+    _reparent_in_subject_hierarchy(scene, line, volume_node)
     return line
 
 
@@ -1332,7 +1372,9 @@ def _create_markups_curve_for_volume(result, volume_node, scene):
         except Exception:
             pass
         try:
-            display.SetVisibility(True)
+            # Created hidden — see the matching comment in
+            # _create_segmentation_for_volume for why.
+            display.SetVisibility(False)
         except Exception:
             pass
         try:
@@ -1345,6 +1387,7 @@ def _create_markups_curve_for_volume(result, volume_node, scene):
             pass
     _add_curve_points(curve, path_pts)
     _set_node_reference(volume_node, ROLE_ZEBRAFISH_MARKUPS_CURVE, curve)
+    _reparent_in_subject_hierarchy(scene, curve, volume_node)
     return curve
 
 
@@ -1372,6 +1415,20 @@ def _add_curve_points(curve, path_pts):
         # Half-written curves are still attached to the volume node — see
         # cancel-safety contract in apply_analysis_to_volume_node.
         pass
+
+
+def _sync_volume_node_spacing(volume_node, um_per_px):
+    """Re-apply ``um_per_px`` to ``volume_node``'s spacing (mm), in place.
+
+    Mirrors the isotropic spacing formula in :func:`image_geometry` without
+    touching pixel data, dimensions, or origin — only ``SetSpacing`` is
+    called, so this is safe to call repeatedly and cheap enough to run
+    before every analysis.
+    """
+    if volume_node is None or not hasattr(volume_node, "SetSpacing"):
+        return
+    spacing_mm = float(um_per_px) / 1000.0
+    volume_node.SetSpacing(spacing_mm, spacing_mm, 1.0)
 
 
 def apply_analysis_to_volume_node(result, volume_node, scene, um_per_px):
@@ -1409,6 +1466,20 @@ def apply_analysis_to_volume_node(result, volume_node, scene, um_per_px):
         return None
     if not result or result.get("original") is None:
         return None
+
+    # Volume nodes are created eagerly at folder-load time (#38) using
+    # whatever um_per_px the UI showed then (often a rough header-based
+    # estimate). If the user recalibrates (e.g. "Auto-detect from first
+    # image") before running analysis, that baked-in spacing goes stale —
+    # re-syncing it here to the um_per_px actually used for this analysis
+    # run keeps the volume and its segmentation/markups geometrically
+    # consistent, whatever the calibration timeline was.
+    try:
+        _sync_volume_node_spacing(volume_node, um_per_px)
+    except Exception:
+        logging.exception(
+            "apply_analysis_to_volume_node: volume node spacing sync failed"
+        )
 
     seg_node = None
     try:
