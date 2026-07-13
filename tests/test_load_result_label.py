@@ -234,8 +234,9 @@ def test_set_queue_all_unreadable_still_shows_amber_label():
     assert "OK" in r.stdout
 
 
-def test_set_queue_empty_input_clears_label():
-    """Empty input list → empty text and no style."""
+def test_set_queue_empty_input_shows_red_no_images_label():
+    """Empty input list (issue #62 follow-up) → red 'no images found' message,
+    not a silently cleared label — the user must see why nothing loaded."""
     r = _run("""
         from unittest.mock import MagicMock
         from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
@@ -262,13 +263,14 @@ def test_set_queue_empty_input_clears_label():
         w._filter_readable_paths = MagicMock(return_value=([], [], {}))
         w._set_queue([])
 
-        # Label text must be cleared (empty string) on empty input.
         last_text = w._load_result_label.setText.call_args.args[0]
-        assert last_text == "", (
-            f"empty input must clear the label; got {last_text!r}"
+        assert last_text == "No supported images found in the selected folder.", (
+            f"empty input must inform the user; got {last_text!r}"
         )
         last_style = w._load_result_label.setStyleSheet.call_args.args[0]
-        assert last_style == "", f"empty input must clear the style; got {last_style!r}"
+        assert "F44336" in last_style, (
+            f"empty-input label must use red color; got {last_style!r}"
+        )
         print("OK")
     """)
     assert r.returncode == 0, r.stderr

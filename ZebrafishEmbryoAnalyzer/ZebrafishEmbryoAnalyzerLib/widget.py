@@ -489,10 +489,6 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             for f in os.listdir(folder)
             if os.path.splitext(f)[1].lower() in exts and not f.startswith(".")
         ])
-        if not paths:
-            self._scale_status.setText(
-                "No supported images found in the selected folder."
-            )
         self._set_queue(paths)
 
     def _on_load_files(self):
@@ -550,8 +546,10 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             msg = f"Loaded {len(paths)} image(s)."
             style = "color: #4CAF50; font-size: 11px;"  # green — full success
         else:
-            msg = ""
-            style = ""
+            # total_attempted == 0: folder/selection contained no
+            # supported-extension files at all — must not fail silently.
+            msg = "No supported images found in the selected folder."
+            style = "color: #F44336; font-size: 11px;"  # red — nothing loaded
         self._load_result_label.setText(msg)
         self._load_result_label.setStyleSheet(style)
 

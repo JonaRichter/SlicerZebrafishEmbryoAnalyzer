@@ -167,17 +167,19 @@ def test_set_queue_does_not_enable_button_when_deps_missing(widget_module):
 # ---------------------------------------------------------------------------
 
 def test_on_load_folder_shows_message_when_no_supported_images(widget_module, tmp_path, monkeypatch):
-    """Issue #30: silent empty queue is a UX bug.
+    """Issue #30 / #62: silent empty queue is a UX bug.
 
     Selecting a folder that contains no .png/.tif/.tiff/.jpg/.jpeg files must
     surface a visible status message instead of leaving the user staring at
-    an empty queue with no explanation.
+    an empty queue with no explanation. Since issue #62, the persistent
+    ``_load_result_label`` feedback lives entirely inside ``_set_queue``
+    (see test_load_result_label.py), so ``_on_load_folder`` just needs to
+    still call through to it with the empty list.
     """
     import qt  # the MagicMock installed by the fixture
     from unittest.mock import MagicMock
 
     w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
-    w._scale_status = MagicMock()
     w._queue_list = MagicMock()
     w._results = []
     w._excluded = set()
@@ -198,11 +200,9 @@ def test_on_load_folder_shows_message_when_no_supported_images(widget_module, tm
 
     w._on_load_folder()
 
-    w._scale_status.setText.assert_called_once_with(
-        "No supported images found in the selected folder."
-    )
     # Queue is still cleared via _set_queue — user sees an empty queue plus
-    # the explanation above, not stale contents from a previous load.
+    # the explanation, which _set_queue itself now surfaces on the
+    # persistent label.
     w._set_queue.assert_called_once_with([])
 
 
@@ -216,7 +216,6 @@ def test_on_load_folder_no_message_when_folder_has_images(widget_module, tmp_pat
     (tmp_path / "sample.png").write_bytes(b"")
 
     w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
-    w._scale_status = MagicMock()
     w._queue_list = MagicMock()
     w._results = []
     w._excluded = set()
@@ -235,7 +234,6 @@ def test_on_load_folder_no_message_when_folder_has_images(widget_module, tmp_pat
 
     w._on_load_folder()
 
-    w._scale_status.setText.assert_not_called()
     w._set_queue.assert_called_once()
     assert len(w._set_queue.call_args[0][0]) == 1
 
