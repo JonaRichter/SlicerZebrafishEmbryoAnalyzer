@@ -154,20 +154,29 @@ def _empty_result(image_path: str) -> dict:
 # Public API
 # ---------------------------------------------------------------------------
 
-def detect_scalebar(image_path: str, label_um: float | None = None) -> dict:
+def detect_scalebar(image_path: str, label_um: float | None = None,
+                    img_rgb=None) -> dict:
     """
-    Detect scale bar in an image file.
+    Detect scale bar in an image.
+
+    If ``img_rgb`` (an already-decoded uint8 RGB ndarray) is provided, it is
+    used directly and ``image_path`` is not read from disk at all — needed
+    because after a scene reload (#41), ``image_path`` may be a bare filename
+    with no backing file (see #57). Falls back to reading ``image_path`` from
+    disk when ``img_rgb`` is None, preserving existing behavior for the
+    fresh-load path.
 
     Returns the dict produced by core detect_scalebar, or a failure dict
-    if the image cannot be read.
+    if the image cannot be read/is unavailable.
     """
     import cv2  # deferred: heavy compiled extension, only needed at call time
     from ZebrafishEmbryoAnalyzerCore.scalebar import detect_scalebar as _detect_scalebar
-    img_bgr = cv2.imread(image_path)
-    if img_bgr is None:
-        return {"success": False, "bar_found": False,
-                "message": "Could not read image."}
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    if img_rgb is None:
+        img_bgr = cv2.imread(image_path)
+        if img_bgr is None:
+            return {"success": False, "bar_found": False,
+                    "message": "Could not read image."}
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     return _detect_scalebar(img_rgb, label_um=label_um)
 
 
