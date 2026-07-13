@@ -437,6 +437,10 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._results_tab = ResultsTab(on_exclude_change=self._on_exclude_change)
         self._tabs.addTab(self._results_tab, "Results")
 
+        from ZebrafishEmbryoAnalyzerLib.settings_tab import SettingsTab
+        self._settings_tab = SettingsTab()
+        self._tabs.addTab(self._settings_tab, "Settings")
+
     def _connect_signals(self):
         self._btn_folder.clicked.connect(self._on_load_folder)
         self._btn_files.clicked.connect(self._on_load_files)
@@ -877,6 +881,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             self._run_progress.setValue(0)
             self._run_progress.setFormat("")
             self._run_stack.setCurrentIndex(1)
+            self._refresh_settings_actions()
 
             from ZebrafishEmbryoAnalyzerLib.model_downloader import start_model_download
 
@@ -884,6 +889,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 if self._disposed or controller is not self._active_downloader:
                     return
                 self._active_downloader = None
+                self._refresh_settings_actions()
                 if not success:
                     self._run_stack.setCurrentIndex(0)
                     return
@@ -940,6 +946,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             self._run_progress.setRange(0, 0)   # native Qt marquee: fixed chunk moves left→right
             self._run_progress.setFormat("")    # text shown in label above, not in bar
             self._run_stack.setCurrentIndex(1)
+            self._refresh_settings_actions()
 
             def _on_progress(i, n):
                 self._run_status_label.setText(f"Running analysis…  {i} / {n}")
@@ -952,6 +959,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 if self._disposed or controller is not self._active_runner:
                     return
                 self._active_runner = None
+                self._refresh_settings_actions()
                 if self._run_token != token:
                     self._run_stack.setCurrentIndex(0)
                     return
@@ -1169,6 +1177,21 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         else:
             self._btn_run.setToolTip("")
 
+    def _refresh_settings_actions(self):
+        """Enable Settings-tab destructive buttons only when no inference or
+        model download is in flight. Mirrors the active-runner/downloader
+        state machine elsewhere in this class.
+        """
+        if not hasattr(self, "_settings_tab"):
+            return
+        from ZebrafishEmbryoAnalyzerLib.model_downloader import ModelDownloadController
+        download_active = (
+            self._active_downloader is not None
+            and self._active_downloader.state not in ModelDownloadController.TERMINAL_STATES
+        )
+        runner_active = self._active_runner is not None
+        self._settings_tab.set_actions_enabled(not (download_active or runner_active))
+
     def refresh_dependency_status(self):
         ml = self._logic.dependency_status()  # {"torch": bool, "cv2": bool, ...}
         missing_ml = [k for k, v in ml.items() if not v]
@@ -1342,6 +1365,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             self._run_progress.setValue(0)
             self._run_progress.setFormat("")
             self._run_stack.setCurrentIndex(1)
+            self._refresh_settings_actions()
 
             from ZebrafishEmbryoAnalyzerLib.model_downloader import start_model_download
 
@@ -1349,6 +1373,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 if self._disposed or controller is not self._active_downloader:
                     return
                 self._active_downloader = None
+                self._refresh_settings_actions()
                 self._run_stack.setCurrentIndex(0)
                 self._show_restart_dialog()
 
@@ -1376,6 +1401,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             self._run_stack.setCurrentIndex(0)
         self._results = []
         self._detail.invalidate_cache()
+        self._refresh_settings_actions()
 
     def reset_for_scene_close(self):
         """Clear all session state after the MRML scene is closed."""

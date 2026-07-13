@@ -94,9 +94,14 @@ class GalleryTab(qt.QWidget):
 
             caption = qt.QLabel()
             caption.setFixedWidth(THUMB_SIZE)
-            caption.setAlignment(qt.Qt.AlignCenter)
+            caption.setAlignment(qt.Qt.AlignTop | qt.Qt.AlignHCenter)
             caption.setWordWrap(False)
             caption.setStyleSheet("font-size: 10px;")
+            # Issue #16 (re-refinement): always reserve space for two lines of
+            # caption, even if the second line carries no text. This makes every
+            # cell in any row the same height, so the gallery never shows a
+            # vertical gap between thumbnail and caption in mixed-caption rows.
+            caption.setMinimumHeight(2 * caption.fontMetrics().lineSpacing() + 4)
             caption.setToolTip(r["filename"])
             _elided = caption.fontMetrics().elidedText(
                 r["filename"], qt.Qt.ElideRight, THUMB_SIZE
@@ -115,6 +120,11 @@ class GalleryTab(qt.QWidget):
             cell_layout.setSpacing(2)
             cell_layout.addWidget(label)
             cell_layout.addWidget(caption)
+            # Issue #16 (re-refinement): bottom-stretch keeps any extra cell
+            # height (shouldn't happen now that captions reserve two lines,
+            # but defensive against future size variation) below the caption,
+            # never between image and caption.
+            cell_layout.addStretch(1)
 
             self._cells.append(cell)
             self._thumbnails.append(label)
@@ -159,15 +169,23 @@ class GalleryTab(qt.QWidget):
         # accumulates on the right side of the row.
         for col in range(cols):
             self._grid.setColumnStretch(col, 0)
-        # Issue #16: the previous code called setRowStretch(rows, 1) on a
-        # notional empty row to "push content up". This interacted
-        # inconsistently with variable row heights (multi-line captions are
-        # taller than single-line ones): the first row ended up with
-        # noticeably more space below it than subsequent rows. QGridLayout
-        # already positions each row's content at the top of its allotted
-        # space by default, so the explicit stretch is unnecessary — and
-        # harmful when row heights differ. Removing it gives uniform
-        # spacing between rows.
+        # Issue #16 (top-left anchoring): with widgetResizable(True), the
+        # container always matches the viewport's exact size, so any extra
+        # space beyond the content's natural size has to go *somewhere* in
+        # the grid. QGridLayout distributes it evenly across every row/
+        # column whose stretch is 0 (not zero, as one might expect) — that's
+        # what caused rows to spread apart vertically and, with fewer cells
+        # than columns, cells to spread across the full row width, even
+        # though every real column above is already set to stretch 0.
+        # Giving one trailing "spacer" row/column past the real content a
+        # nonzero stretch makes all the leftover space collect there
+        # instead, pinning the actual thumbnails top-left. This only works
+        # cleanly now that every cell's caption reserves a fixed two-line
+        # height (see populate()), so every row is already the same height
+        # and the spacer isn't fighting uneven row sizes.
+        rows = -(-len(self._cells) // cols)  # ceil division
+        self._grid.setColumnStretch(cols, 1)
+        self._grid.setRowStretch(rows, 1)
 
     def resizeEvent(self, event):
         self._reflow()
