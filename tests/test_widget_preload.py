@@ -471,6 +471,40 @@ def test_handle_runner_finished_cancel_with_results_applies_partial(widget_modul
     _slicer.util.errorDisplay.assert_not_called()
 
 
+def test_handle_runner_finished_cancel_keeps_unprocessed_images_raw(widget_module):
+    """Issue #59 follow-up: images the worker never reached before Cancel
+    must stay in self._results (raw stub, no segmentation/metrics) instead
+    of disappearing from the gallery/table — but must NOT be passed to
+    _try_apply_results_to_volume_nodes, since running apply_analysis on a
+    mask-less stub would create an empty segmentation node.
+    """
+    w = _make_runner_finished_widget(widget_module, token=1)
+    w._try_apply_results_to_volume_nodes = MagicMock()
+
+    # Three images were queued; only the first had finished when Cancel hit.
+    stub_1 = {"filename": "fish_1.png", "original": "raw1", "mask": None, "error": None, "length": None}
+    stub_2 = {"filename": "fish_2.png", "original": "raw2", "mask": None, "error": None, "length": None}
+    w._results = [
+        {"filename": "fish_0.png", "original": "raw0", "mask": None, "error": None, "length": None},
+        stub_1,
+        stub_2,
+    ]
+
+    runner = MagicMock()
+    runner.results = [{"filename": "fish_0.png", "length": 100.0, "mask": "computed"}]
+    w._active_runner = runner
+
+    w._handle_runner_finished(success=False, state="cancelled", message=None,
+                              controller=runner, token=1)
+
+    # self._results keeps all three: the completed one plus the two untouched stubs.
+    assert w._results == [runner.results[0], stub_1, stub_2]
+    # Only the completed result was handed to the MRML-apply step.
+    w._try_apply_results_to_volume_nodes.assert_called_once_with(runner.results)
+    w._on_results_ready.assert_called_once()
+    w._try_update_mrml_table.assert_called_once_with(w._results)
+
+
 def test_handle_runner_finished_cancel_with_empty_results_is_noop(widget_module):
     """Cancelled before any image completed — nothing to apply, no error shown.
 
