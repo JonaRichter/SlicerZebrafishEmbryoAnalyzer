@@ -955,30 +955,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 self._run_progress.setFormat("")
 
             def _on_runner_finished(success, state, message, controller):
-                logging.debug("ZebrafishEmbryoAnalyzer: _on_runner_finished state=%s success=%s token=%s run_token=%s", state, success, token, self._run_token)
-                if self._disposed or controller is not self._active_runner:
-                    return
-                self._active_runner = None
-                self._refresh_settings_actions()
-                if self._run_token != token:
-                    self._run_stack.setCurrentIndex(0)
-                    return
-                if not success:
-                    self._run_stack.setCurrentIndex(0)
-                    if state not in ("cancelled", "disposed"):
-                        ui_message = self._categorize_inference_error(message, controller)
-                        slicer.util.errorDisplay(ui_message)
-                    return
-                self._results = controller.results
-                self._run_stack.setCurrentIndex(0)
-                logging.debug("ZebrafishEmbryoAnalyzer: results ready, count=%d", len(self._results))
-                try:
-                    self._try_apply_results_to_volume_nodes(self._results)
-                    self._on_results_ready()
-                    self._try_update_mrml_table(self._results)
-                except Exception:
-                    logging.exception("ZebrafishEmbryoAnalyzer: exception in _on_results_ready")
-                    raise
+                self._handle_runner_finished(success, state, message, controller, token)
 
             from ZebrafishEmbryoAnalyzerLib.inference_runner import start_inference
             self._active_runner = start_inference(
@@ -1390,16 +1367,22 @@ class ZebrafishEmbryoAnalyzerMainWidget:
 
     def _cancel_workers(self):
         """Cancel active asynchronous operations and invalidate transient state."""
-        self._run_token = getattr(self, "_run_token", 0) + 1  # invalidate any pending deferred continuation
         if getattr(self, "_active_downloader", None) is not None:
             self._active_downloader.cancel(silent=True)
             self._active_downloader = None
         if getattr(self, "_active_runner", None) is not None:
+            # cancel() synchronously fires on_finished -> _handle_runner_finished,
+            # which applies any partial results (issue #59) and clears
+            # _active_runner/_run_stack itself. Must run before the _run_token
+            # bump below — bumping first makes _handle_runner_finished's
+            # token-mismatch guard silently discard those partial results
+            # (issue #59 follow-up: cancelled runs left volume nodes with no
+            # segmentation even though images had visibly completed).
             self._active_runner.cancel()
             self._active_runner = None
+        self._run_token = getattr(self, "_run_token", 0) + 1  # invalidate any pending deferred continuation
         if hasattr(self, "_run_stack"):
             self._run_stack.setCurrentIndex(0)
-        self._results = []
         self._detail.invalidate_cache()
         self._refresh_settings_actions()
 
@@ -1785,6 +1768,68 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         if errors:
             msg = "\n".join(f"• {r['filename']}: {r['error']}" for r in errors)
             slicer.util.warningDisplay(f"Errors in {len(errors)} image(s):\n\n{msg}")
+
+    def _handle_runner_finished(self, success, state, message, controller, token):
+        """Apply inference results — runs identically for a successful run and
+        for a cancel that had at least one image completed before click.
+
+        Issue #59: prior to this, a cancel mid-batch would unconditionally wipe
+        ``controller.results`` and the widget would return early, dropping
+        segmentation/attributes for every image the worker had already
+        finished. We now keep the partial results and apply them here on
+        ``state == "cancelled"`` — including materializing their MRML
+        volume nodes (issue #39's ``_try_apply_results_to_volume_nodes``),
+        so a cancelled run's completed images end up fully formed in the
+        scene just like a successful run's. Images the worker never reached
+        stay in ``self._results`` too (gallery/table keep showing them,
+        raw/unsegmented, per issue #59's acceptance criteria) but are
+        excluded from the apply step, since running it on their
+        ``mask``-less stub would create an empty segmentation node.
+        """
+        logging.debug(
+            "ZebrafishEmbryoAnalyzer: _on_runner_finished state=%s success=%s token=%s run_token=%s",
+            state, success, token, self._run_token,
+        )
+        if self._disposed or controller is not self._active_runner:
+            return
+        self._active_runner = None
+        self._refresh_settings_actions()
+        if self._run_token != token:
+            self._run_stack.setCurrentIndex(0)
+            return
+        if state == "disposed":
+            return
+        if not success and state != "cancelled":
+            self._run_stack.setCurrentIndex(0)
+            ui_message = self._categorize_inference_error(message, controller)
+            slicer.util.errorDisplay(ui_message)
+            return
+        if state == "cancelled" and not controller.results:
+            # Cancelled before any image finished — nothing to apply.
+            self._run_stack.setCurrentIndex(0)
+            return
+        if state == "cancelled":
+            # Issue #59 follow-up: only apply/materialize the images the
+            # worker actually finished — the rest keep whatever they were
+            # before this run (raw stub, or a previous run's results) so
+            # calling apply_analysis_to_volume_node on them never creates a
+            # segmentation from a missing mask. But self._results itself
+            # still gets every image so the gallery/table keep showing the
+            # unprocessed ones too, just without segmentation/metrics.
+            completed = controller.results
+            to_apply = completed
+            self._results = completed + self._results[len(completed):]
+        else:
+            to_apply = self._results = controller.results
+        self._run_stack.setCurrentIndex(0)
+        logging.debug("ZebrafishEmbryoAnalyzer: results ready, count=%d", len(self._results))
+        try:
+            self._try_apply_results_to_volume_nodes(to_apply)
+            self._on_results_ready()
+            self._try_update_mrml_table(self._results)
+        except Exception:
+            logging.exception("ZebrafishEmbryoAnalyzer: exception in _on_results_ready")
+            raise
 
     def _resolve_export_start_dir(self):
         settings = qt.QSettings()
