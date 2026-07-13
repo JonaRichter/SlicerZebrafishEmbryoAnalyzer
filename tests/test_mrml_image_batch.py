@@ -654,6 +654,7 @@ def test_set_queue_calls_replace_image_volume_nodes_before_loading(widget_module
     w._tabs = MagicMock()
     w._um_per_px = MagicMock()
     w._deps_ok = True
+    w._load_result_label = MagicMock()  # Issue #62
 
     w._set_queue([])
 

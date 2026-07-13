@@ -260,6 +260,12 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._load_replace_hint.setStyleSheet("color: #888; font-size: 11px;")
         self._load_replace_hint.setWordWrap(True)
         in_layout.addWidget(self._load_replace_hint)
+        # Issue #62: persistent (not transient-status-bar) feedback on the
+        # outcome of the last load — stays visible until the next load,
+        # unlike slicer.util.showStatusMessage (8s global status bar flash).
+        self._load_result_label = qt.QLabel("")
+        self._load_result_label.setWordWrap(True)
+        in_layout.addWidget(self._load_result_label)
         in_layout.addWidget(qt.QLabel("Queue:"))
         self._queue_list = qt.QListWidget()
         self._queue_list.setMaximumHeight(120)
@@ -483,10 +489,6 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             for f in os.listdir(folder)
             if os.path.splitext(f)[1].lower() in exts and not f.startswith(".")
         ])
-        if not paths:
-            self._scale_status.setText(
-                "No supported images found in the selected folder."
-            )
         self._set_queue(paths)
 
     def _on_load_files(self):
@@ -526,14 +528,30 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         # repeat the cv2.imread call (issue #38 acceptance: "no image is read
         # from disk twice").
         paths, failed, decoded = self._filter_readable_paths(paths)
+        total_attempted = len(paths) + len(failed)
         if failed:
+            msg = (
+                f"Loaded {len(paths)} of {total_attempted} image(s) — "
+                f"{len(failed)} unreadable and skipped: "
+                f"{self._format_readability_message(len(failed), failed)}"
+            )
+            style = "color: #FFC107; font-size: 11px;"  # amber — partial success
             try:
                 slicer.util.showStatusMessage(
-                    self._format_readability_message(len(failed), failed),
-                    8000,
+                    self._format_readability_message(len(failed), failed), 8000,
                 )
             except Exception:
                 pass
+        elif paths:
+            msg = f"Loaded {len(paths)} image(s)."
+            style = "color: #4CAF50; font-size: 11px;"  # green — full success
+        else:
+            # total_attempted == 0: folder/selection contained no
+            # supported-extension files at all — must not fail silently.
+            msg = "No supported images found in the selected folder."
+            style = "color: #F44336; font-size: 11px;"  # red — nothing loaded
+        self._load_result_label.setText(msg)
+        self._load_result_label.setStyleSheet(style)
 
         import os
         self._image_paths = paths
