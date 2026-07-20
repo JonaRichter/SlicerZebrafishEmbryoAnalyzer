@@ -355,7 +355,28 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
             # distinguish "edit in place" (still in scene) from "deleted"
             # (no longer in scene) — only the former counts as an external
             # edit that needs the recompute prompt.
-            def _on_seg_modified(_caller=None, _event=None, _vol=vol, _seg_id=seg_id, _scene=scene):
+            #
+            # Issue #56 follow-up (scene-reload MTime filter): Slicer
+            # itself fires ModifiedEvent on a freshly-imported seg node
+            # whenever its display pipeline or representation conversion
+            # touches it (e.g. lazy labelmap→closed-surface conversion
+            # triggered by ``slicer.util.arrayFromSegment`` during the
+            # rebuild path, or display-node re-creation when the module
+            # first becomes active). Without a filter, every reload marks
+            # every row "Segmentation modified — recompute needed" and
+            # ``prompt_recompute_stale_images`` then fires one popup per
+            # fish. The user did not edit anything — the seg node is the
+            # same one they saved. Capture the seg node's MTime at
+            # observer install time and only mark stale when the event's
+            # post-MTime is strictly greater than the install-time MTime,
+            # i.e. something actually mutated the seg node. Real Segment
+            # Editor strokes bump MTime; spurious pipeline events do not.
+            try:
+                seg_mtime_at_install = seg_node.GetMTime() if hasattr(seg_node, "GetMTime") else None
+            except Exception:
+                seg_mtime_at_install = None
+
+            def _on_seg_modified(_caller=None, _event=None, _vol=vol, _seg_id=seg_id, _scene=scene, _baseline_mtime=seg_mtime_at_install):
                 try:
                     current = _scene.GetNodeByID(_seg_id)
                 except Exception:
@@ -376,6 +397,21 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
                     except Exception:
                         pass
                     return
+                # MTime filter: skip events whose post-MTime did not
+                # advance past the install-time baseline. Slicer's own
+                # display / representation pipeline fires ModifiedEvent
+                # without bumping the seg node's content MTime during
+                # scene reload; a real Segment Editor brush stroke does.
+                # Best-effort: a seg node that does not expose GetMTime
+                # (or raises) falls back to the original mark-stale path
+                # so we never silently disable staleness detection.
+                if _baseline_mtime is not None:
+                    try:
+                        post_mtime = current.GetMTime() if hasattr(current, "GetMTime") else None
+                    except Exception:
+                        post_mtime = None
+                    if post_mtime is not None and post_mtime <= _baseline_mtime:
+                        return
                 mark_volume_node_stale(_vol)
 
             tag = None
@@ -403,8 +439,70 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
             except Exception:
                 # Reload must never crash the module — log and continue.
                 logging.exception("ZebrafishEmbryoAnalyzer: scene-reload rebuild failed")
+        # Issue #56 follow-up: clear any stale flag / error side-effect
+        # that Slicer's own scene-deserialization pipeline may have set on
+        # the tracked volumes during import. The freshly-loaded seg
+        # nodes have the same content the user saved — nothing has
+        # actually been edited since the save, so a stale=true here is
+        # purely an artifact of Slicer firing ModifiedEvent on the seg
+        # node for display / representation-conversion reasons that have
+        # nothing to do with the user. Clearing here means
+        # ``volume_node_to_result_dict_with_validation`` does not surface
+        # a spurious "Segmentation modified — recompute needed" error
+        # row on reload, and ``prompt_recompute_stale_images`` does not
+        # queue a popup storm. Real Segment Editor edits after the
+        # reload still bump MTime and re-mark stale — the observer
+        # installed below picks them up.
+        try:
+            self._clear_stale_flags_on_tracked_volumes()
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: stale-flag scrub after scene import failed"
+            )
         # Re-arm segmentation observers on the freshly imported scene.
         self.setup_segmentation_staleness_observers()
+
+    def _clear_stale_flags_on_tracked_volumes(self):
+        """Best-effort: drop the stale=true flag and the matching
+        ``Segmentation modified — recompute needed`` error string on
+        every tracked volume node.
+
+        Used at scene-import time so a freshly-loaded scene does not
+        carry over a stale flag the user never actually triggered. Only
+        the stale-specific error string is cleared — other error rows
+        (e.g. "Could not read image.") and any user-set ``exclude``
+        attribute are preserved verbatim. Real Segment Editor edits
+        after the reload still re-set the flag via the MTime-filtered
+        observer installed immediately after.
+        """
+        try:
+            import slicer
+            from ZebrafishEmbryoAnalyzerLib.mrml import (
+                list_tracked_volume_nodes,
+                clear_volume_node_stale,
+                STALE_ERROR_MESSAGE,
+                ATTR_PREFIX,
+            )
+        except Exception:
+            return
+        param_node = self.getParameterNode()
+        if param_node is None:
+            return
+        scene = getattr(slicer, "mrmlScene", None)
+        if scene is None:
+            return
+        stale_error_attr = ATTR_PREFIX + "error"
+        for vol in list_tracked_volume_nodes(param_node, scene):
+            try:
+                clear_volume_node_stale(vol)
+            except Exception:
+                pass
+            try:
+                if hasattr(vol, "GetAttribute") and hasattr(vol, "RemoveAttribute"):
+                    if vol.GetAttribute(stale_error_attr) == STALE_ERROR_MESSAGE:
+                        vol.RemoveAttribute(stale_error_attr)
+            except Exception:
+                pass
 
 class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
     """Orchestrates analysis requests on behalf of the widget.

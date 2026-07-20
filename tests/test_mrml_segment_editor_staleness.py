@@ -146,12 +146,21 @@ class _FakeSegmentationNode:
     def __init__(self):
         self._modified = False
         self.observers = []
+        # MTime counter bumped on every Modified() so the observer can
+        # distinguish "real edit" (MTime increases) from "spurious
+        # pipeline event" (MTime unchanged). Mirrors VTK semantics
+        # closely enough for the MTime-filter logic under test.
+        self._mtime = 1000
 
     def AddObserver(self, event, fn):
         self.observers.append((event, fn))
         return len(self.observers)
 
+    def GetMTime(self):
+        return self._mtime
+
     def Modified(self):
+        self._mtime += 1
         for _e, fn in self.observers:
             fn()
 
@@ -262,6 +271,34 @@ def _install_logic_methods():
     return ZebrafishEmbryoAnalyzerWidget
 
 
+def _ensure_scene_with_getnode(seg_node):
+    """Set ``slicer.mrmlScene.GetNodeByID`` to a MagicMock that returns
+    ``seg_node``. Tolerant of a SimpleNamespace stub left over by
+    another test file (just installs the attribute when possible).
+
+    Returns the (possibly newly-installed) mrmlScene so callers can
+    introspect it.
+    """
+    import slicer
+    scene = getattr(slicer, "mrmlScene", None)
+    if scene is not None and hasattr(scene, "GetNodeByID"):
+        try:
+            scene.GetNodeByID = MagicMock(return_value=seg_node)
+            return scene
+        except (AttributeError, TypeError):
+            pass
+    # Either there was no mrmlScene at all or it was a read-only stub;
+    # install a fresh MagicMock scene directly via setattr (works on
+    # SimpleNamespace too — pytest's ``monkeypatch.setattr`` does not).
+    fake_scene = MagicMock(name="mrmlScene")
+    fake_scene.GetNodeByID = MagicMock(return_value=seg_node)
+    try:
+        setattr(slicer, "mrmlScene", fake_scene)
+    except (AttributeError, TypeError):
+        pass
+    return fake_scene
+
+
 def test_setup_observers_calls_add_observer_for_each_tracked_segment():
     import slicer
     from unittest.mock import patch
@@ -272,7 +309,10 @@ def test_setup_observers_calls_add_observer_for_each_tracked_segment():
     volume = _make_attr_node("embryo.tif", seg_id=seg_id)
     self_ = _FakeSelf(param, [volume], {seg_id: seg_node})
     # Make slicer.mrmlScene.GetNodeByID resolve our fake seg node.
-    slicer.mrmlScene.GetNodeByID = MagicMock(return_value=seg_node)
+    # Issue #56 follow-up: use the tolerant helper so the test also
+    # passes when sys.modules["slicer"] was replaced with a
+    # SimpleNamespace stub by an earlier test file.
+    _ensure_scene_with_getnode(seg_node)
     with patch(
         "ZebrafishEmbryoAnalyzerLib.mrml.list_tracked_volume_nodes",
         return_value=[volume],
@@ -292,6 +332,10 @@ def test_setup_observers_is_idempotent():
     seg_id = "seg_1"
     volume = _make_attr_node("embryo.tif", seg_id=seg_id)
     self_ = _FakeSelf(param, [volume], {seg_id: seg_node})
+    # Issue #56 follow-up: ensure mrmlScene is installed before the
+    # second call into setup_segmentation_staleness_observers (the
+    # production impl calls GetNodeByID to verify the seg reference).
+    _ensure_scene_with_getnode(seg_node)
     with patch(
         "ZebrafishEmbryoAnalyzerLib.mrml.list_tracked_volume_nodes",
         return_value=[volume],
@@ -335,7 +379,6 @@ def test_observer_callback_marks_associated_volume_stale():
     """End-to-end: the observer we register fires ``Modified`` on the seg
     node and the volume's stale attribute flips on.
     """
-    import slicer
     from unittest.mock import patch
     Cls = _install_logic_methods()
     from ZebrafishEmbryoAnalyzerLib.mrml import is_volume_node_stale
@@ -344,7 +387,9 @@ def test_observer_callback_marks_associated_volume_stale():
     seg_id = "seg_1"
     volume = _make_attr_node("embryo.tif", seg_id=seg_id)
     self_ = _FakeSelf(param, [volume], {seg_id: seg_node})
-    slicer.mrmlScene.GetNodeByID = MagicMock(return_value=seg_node)
+    # Issue #56 follow-up: tolerant helper for SimpleNamespace stub left
+    # over by other test files.
+    _ensure_scene_with_getnode(seg_node)
     with patch(
         "ZebrafishEmbryoAnalyzerLib.mrml.list_tracked_volume_nodes",
         return_value=[volume],
@@ -354,6 +399,169 @@ def test_observer_callback_marks_associated_volume_stale():
     # user paints a stroke.
     seg_node.Modified()
     assert is_volume_node_stale(volume) is True
+
+
+def test_observer_callback_skips_spurious_event_without_mtime_bump():
+    """Issue #56 follow-up: Slicer's scene-reload pipeline fires
+    ModifiedEvent on a freshly-imported seg node for display /
+    representation-conversion reasons that do not bump the seg node's
+    MTime. The observer must NOT mark the volume stale for those
+    events, otherwise ``prompt_recompute_stale_images`` queues a
+    popup storm after every Save→Load Scene round-trip.
+
+    The fake's ``Modified()`` always bumps MTime, so to simulate a
+    spurious event we drive the observer callbacks directly without
+    going through ``Modified()``.
+    """
+    from unittest.mock import patch
+    Cls = _install_logic_methods()
+    from ZebrafishEmbryoAnalyzerLib.mrml import is_volume_node_stale
+    param = MagicMock(name="parameterNode")
+    seg_node = _FakeSegmentationNode()
+    seg_id = "seg_1"
+    volume = _make_attr_node("embryo.tif", seg_id=seg_id)
+    self_ = _FakeSelf(param, [volume], {seg_id: seg_node})
+    _ensure_scene_with_getnode(seg_node)
+    with patch(
+        "ZebrafishEmbryoAnalyzerLib.mrml.list_tracked_volume_nodes",
+        return_value=[volume],
+    ):
+        Cls.setup_segmentation_staleness_observers(self_)
+    # Spurious pipeline event: seg node's MTime did NOT change, only
+    # ModifiedEvent was broadcast. Directly fire the registered callback
+    # to emulate this — bypasses Modified() so MTime stays at baseline.
+    assert self_.added, "observer should have been registered"
+    _seg, _event, fn = self_.added[0]
+    fn()
+    assert is_volume_node_stale(volume) is False, (
+        "spurious pipeline event (no MTime bump) must not mark volume stale"
+    )
+
+
+def test_observer_callback_marks_stale_after_real_mtime_bump():
+    """Companion to the spurious-event test: a real Segment Editor
+    brush stroke bumps seg MTime. ``Modified()`` on the fake seg node
+    mimics this — observer must mark the volume stale.
+    """
+    from unittest.mock import patch
+    Cls = _install_logic_methods()
+    from ZebrafishEmbryoAnalyzerLib.mrml import is_volume_node_stale
+    param = MagicMock(name="parameterNode")
+    seg_node = _FakeSegmentationNode()
+    seg_id = "seg_1"
+    volume = _make_attr_node("embryo.tif", seg_id=seg_id)
+    self_ = _FakeSelf(param, [volume], {seg_id: seg_node})
+    _ensure_scene_with_getnode(seg_node)
+    with patch(
+        "ZebrafishEmbryoAnalyzerLib.mrml.list_tracked_volume_nodes",
+        return_value=[volume],
+    ):
+        Cls.setup_segmentation_staleness_observers(self_)
+    # Real edit: Modified() bumps MTime, then fires observers.
+    seg_node.Modified()
+    assert is_volume_node_stale(volume) is True
+
+
+def test_observer_callback_falls_back_to_mark_stale_when_mtime_unavailable():
+    """If the seg node does not expose ``GetMTime`` (or raises) the
+    MTime filter must not silently disable staleness detection — fall
+    back to the original mark-stale path so a real Segment Editor
+    edit is still surfaced.
+    """
+    from unittest.mock import patch
+    Cls = _install_logic_methods()
+    from ZebrafishEmbryoAnalyzerLib.mrml import is_volume_node_stale
+
+    class _NoMTimeSeg:
+        def __init__(self):
+            self.observers = []
+
+        def AddObserver(self, event, fn):
+            self.observers.append((event, fn))
+            return len(self.observers)
+
+        def Modified(self):
+            for _e, fn in self.observers:
+                fn()
+
+    param = MagicMock(name="parameterNode")
+    seg_node = _NoMTimeSeg()
+    seg_id = "seg_1"
+    volume = _make_attr_node("embryo.tif", seg_id=seg_id)
+    self_ = _FakeSelf(param, [volume], {seg_id: seg_node})
+    _ensure_scene_with_getnode(seg_node)
+    with patch(
+        "ZebrafishEmbryoAnalyzerLib.mrml.list_tracked_volume_nodes",
+        return_value=[volume],
+    ):
+        Cls.setup_segmentation_staleness_observers(self_)
+    seg_node.Modified()
+    assert is_volume_node_stale(volume) is True
+
+
+def test_clear_stale_flags_on_tracked_volumes_strips_stale_and_stale_error():
+    """Issue #56 follow-up: scene-reload must scrub ``stale=true`` and
+    the matching ``Segmentation modified — recompute needed`` error
+    string off every tracked volume, but must preserve a non-stale
+    error row (e.g. "Could not read image.") and any user-set
+    ``exclude`` attribute.
+    """
+    from unittest.mock import patch
+    Cls = _install_logic_methods()
+    from ZebrafishEmbryoAnalyzerLib.mrml import (
+        ATTR_EXCLUDE, ATTR_STALE, mark_volume_node_stale,
+    )
+
+    param = MagicMock(name="parameterNode")
+
+    # Row 1: spurious-stale from scene-reload pipeline → must be cleared.
+    stale_volume = _make_attr_node("stale.tif", seg_id="seg_stale")
+    mark_volume_node_stale(stale_volume)
+
+    # Row 2: real "Could not read image." error → preserved verbatim.
+    error_volume = _make_attr_node(
+        "error.tif", seg_id="seg_error",
+        **{"ZebrafishAnalysis.error": "Could not read image."},
+    )
+
+    # Row 3: user-excluded row → exclude attribute preserved.
+    excluded_volume = _make_attr_node(
+        "excluded.tif", seg_id="seg_excluded",
+        **{ATTR_EXCLUDE: "true"},
+    )
+
+    self_ = _FakeSelf(
+        param,
+        [stale_volume, error_volume, excluded_volume],
+        {"seg_stale": MagicMock(), "seg_error": MagicMock(),
+         "seg_excluded": MagicMock()},
+    )
+    # mrmlScene only needs to be non-None for the scrub helper.
+    _ensure_scene_with_getnode(MagicMock())
+    with patch(
+        "ZebrafishEmbryoAnalyzerLib.mrml.list_tracked_volume_nodes",
+        return_value=[stale_volume, error_volume, excluded_volume],
+    ):
+        Cls._clear_stale_flags_on_tracked_volumes(self_)
+
+    # Stale row scrubbed: stale attr gone, error attr gone.
+    assert stale_volume.GetAttribute(ATTR_STALE) is None
+    assert stale_volume.GetAttribute("ZebrafishAnalysis.error") is None
+    # Real error row preserved verbatim.
+    assert error_volume.GetAttribute("ZebrafishAnalysis.error") == "Could not read image."
+    # User-set exclude preserved verbatim.
+    assert excluded_volume.GetAttribute(ATTR_EXCLUDE) == "true"
+
+
+def test_clear_stale_flags_is_noop_when_no_tracked_volumes():
+    """Sanity check: the scrub helper tolerates an empty scene and a
+    missing parameter node — both are no-ops.
+    """
+    Cls = _install_logic_methods()
+    self_ = _FakeSelf(None, [], {})
+    # No tracked nodes → just returns.
+    Cls._clear_stale_flags_on_tracked_volumes(self_)
+    assert self_.removed_tags == []  # did not touch observers
 
 
 # --------------------------------------------------------------------------- #
