@@ -97,7 +97,7 @@ def test_run_worker_analysis_exception_exits_1(tmp_path):
     def noop_preload(params):
         pass
 
-    def raise_analysis(paths, params, cb):
+    def raise_analysis(paths, params, cb, per_image_callback=None):
         raise RuntimeError("segmentation failed")
 
     from ZebrafishEmbryoAnalyzerLib.inference_worker import run_worker
@@ -141,8 +141,11 @@ def test_original_not_in_result(tmp_path):
     def noop_preload(params):
         pass
 
-    def fake_analyse(paths, params, cb):
+    def fake_analyse(paths, params, cb, per_image_callback=None):
         cb(1, 1)
+        if per_image_callback is not None:
+            for r in fake_result:
+                per_image_callback(r.get("image_path"), r)
         return fake_result
 
     from ZebrafishEmbryoAnalyzerLib.inference_worker import run_worker
@@ -184,8 +187,11 @@ def test_run_worker_writes_result_json_on_success(tmp_path):
     def noop_preload(params):
         pass
 
-    def fake_analyse(paths, params, cb):
+    def fake_analyse(paths, params, cb, per_image_callback=None):
         cb(1, 1)
+        if per_image_callback is not None:
+            for r in fake_result:
+                per_image_callback(r.get("image_path"), r)
         return fake_result
 
     from ZebrafishEmbryoAnalyzerLib.inference_worker import run_worker
@@ -213,19 +219,21 @@ def test_run_worker_writes_progress_to_stdout(tmp_path, capsys):
     def noop_preload(params):
         pass
 
-    def fake_analyse(paths, params, cb):
-        for i in range(1, len(paths) + 1):
-            cb(i, len(paths))
-        return [
-            {
+    def fake_analyse(paths, params, cb, per_image_callback=None):
+        results = []
+        for i, p in enumerate(paths, start=1):
+            r = {
                 "filename": "fish.png", "image_path": p,
                 "original": None, "mask": None, "grown": None,
                 "eye_mask": None, "path_points": None, "straight_line_points": None,
                 "length": None, "curvature": None, "ratio": None,
                 "eye_area": None, "eye_diameter": None, "spacing": None, "error": None,
             }
-            for p in paths
-        ]
+            results.append(r)
+            if per_image_callback is not None:
+                per_image_callback(p, r)
+            cb(i, len(paths))
+        return results
 
     from ZebrafishEmbryoAnalyzerLib.inference_worker import run_worker
     with patch("ZebrafishEmbryoAnalyzerLib.logic.preload_models", noop_preload), \
@@ -236,3 +244,113 @@ def test_run_worker_writes_progress_to_stdout(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "PROGRESS 1/2" in captured.out
     assert "PROGRESS 2/2" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# Issue #59: incremental per-image result.json write
+# ---------------------------------------------------------------------------
+
+def test_run_worker_writes_result_json_incrementally_after_each_image(tmp_path, monkeypatch):
+    """After each per_image_callback, result.json contains exactly that many results.
+
+    Simulates an interrupted batch: per_image_callback fires for images 0..K-1,
+    then analyse_images returns/never completes for the rest. The runner
+    (ZebrafishEmbryoAnalyzerLib.inference_runner.cancel) reads this file to
+    recover completed images — so it must reflect reality after every callback,
+    not just at full-batch completion.
+    """
+    img_paths = [_make_png(tmp_path, name=f"fish_{i}.png") for i in range(4)]
+    req_path = _write_request(tmp_path, image_paths=img_paths)
+    result_json = tmp_path / "result.json"
+
+    pending_images = list(img_paths)
+    fired_callbacks = []
+
+    def noop_preload(params):
+        pass
+
+    def fake_analyse(paths, params, cb, per_image_callback=None):
+        # Feed images one by one to per_image_callback, then return early to
+        # simulate an interrupted batch — without per_image_callback firing
+        # for every input image the worker would block forever on analyse_images.
+        results = []
+        for i, p in enumerate(paths):
+            r = {
+                "filename": f"fish_{i}.png",
+                "image_path": p,
+                "original": None, "mask": None, "grown": None,
+                "eye_mask": None, "path_points": None, "straight_line_points": None,
+                "length": 100.0 + i,
+                "curvature": i,
+                "ratio": 0.9 + i * 0.01,
+                "eye_area": None, "eye_diameter": None,
+                "spacing": [22.99, 22.99],
+                "error": None,
+            }
+            if per_image_callback is not None:
+                per_image_callback(p, r)
+                fired_callbacks.append(p)
+            results.append(r)
+            # Stop after 2 images to simulate a partial / cancelled batch
+            if i == 1:
+                return results
+        return results
+
+    from ZebrafishEmbryoAnalyzerLib.inference_worker import run_worker
+    with patch("ZebrafishEmbryoAnalyzerLib.logic.preload_models", noop_preload), \
+         patch("ZebrafishEmbryoAnalyzerLib.logic.analyse_images", fake_analyse):
+        code = run_worker(str(req_path))
+
+    # Worker should exit 0 (the worker process itself succeeded; cancellation
+    # happens from the runner side and is a separate concern).
+    assert code == 0
+    assert len(fired_callbacks) == 2
+
+    # Final file must reflect exactly the two results that completed.
+    assert result_json.exists()
+    data = json.loads(result_json.read_text())
+    assert data["status"] == "ok"
+    assert len(data["results"]) == 2
+    assert data["results"][0]["length_um"] == pytest.approx(100.0)
+    assert data["results"][1]["length_um"] == pytest.approx(101.0)
+
+
+def test_run_worker_result_json_present_after_first_image(tmp_path):
+    """Verify that a single completed image produces a valid result.json file
+    readable from disk — the runner's _read_partial_results depends on this
+    file existing after any image finishes, not only at batch completion.
+    """
+    img_path = _make_png(tmp_path, name="fish_0.png")
+    req_path = _write_request(tmp_path, image_paths=[img_path])
+    result_json = tmp_path / "result.json"
+
+    captured = {}
+
+    def noop_preload(params):
+        pass
+
+    def fake_analyse(paths, params, cb, per_image_callback=None):
+        # Capture the file content inside the per_image_callback to prove the
+        # atomic write happened *before* analyse_images returns.
+        r = {
+            "filename": "fish_0.png", "image_path": paths[0],
+            "original": None, "mask": None, "grown": None,
+            "eye_mask": None, "path_points": None, "straight_line_points": None,
+            "length": 42.5, "curvature": 0, "ratio": 0.5,
+            "eye_area": None, "eye_diameter": None,
+            "spacing": [22.99, 22.99], "error": None,
+        }
+        per_image_callback(paths[0], r)
+        captured["during_callback"] = result_json.exists() and json.loads(result_json.read_text())
+        return [r]
+
+    from ZebrafishEmbryoAnalyzerLib.inference_worker import run_worker
+    with patch("ZebrafishEmbryoAnalyzerLib.logic.preload_models", noop_preload), \
+         patch("ZebrafishEmbryoAnalyzerLib.logic.analyse_images", fake_analyse):
+        code = run_worker(req_path)
+
+    assert code == 0
+    assert "during_callback" in captured
+    assert captured["during_callback"]["status"] == "ok"
+    assert len(captured["during_callback"]["results"]) == 1
+    assert captured["during_callback"]["results"][0]["length_um"] == pytest.approx(42.5)

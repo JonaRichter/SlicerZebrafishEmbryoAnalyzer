@@ -71,6 +71,10 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._run_token = 0
         self._deps_ok = True
         self._install_declined = False  # set True when user cancels the dependency dialog; reset on dispose
+        # Issue #61: temp files written by _materialize_missing_image_paths to
+        # back in-memory-only images (e.g. after a scene reload). Cleared and
+        # deleted on every _on_runner_finished path (success/cancel/error).
+        self._run_temp_files = []  # internal state; cleaned up below.
 
         self._saved_layout_id = None
         self._saved_central_visible = None
@@ -256,6 +260,12 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._load_replace_hint.setStyleSheet("color: #888; font-size: 11px;")
         self._load_replace_hint.setWordWrap(True)
         in_layout.addWidget(self._load_replace_hint)
+        # Issue #62: persistent (not transient-status-bar) feedback on the
+        # outcome of the last load — stays visible until the next load,
+        # unlike slicer.util.showStatusMessage (8s global status bar flash).
+        self._load_result_label = qt.QLabel("")
+        self._load_result_label.setWordWrap(True)
+        in_layout.addWidget(self._load_result_label)
         in_layout.addWidget(qt.QLabel("Queue:"))
         self._queue_list = qt.QListWidget()
         self._queue_list.setMaximumHeight(120)
@@ -479,10 +489,6 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             for f in os.listdir(folder)
             if os.path.splitext(f)[1].lower() in exts and not f.startswith(".")
         ])
-        if not paths:
-            self._scale_status.setText(
-                "No supported images found in the selected folder."
-            )
         self._set_queue(paths)
 
     def _on_load_files(self):
@@ -522,14 +528,30 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         # repeat the cv2.imread call (issue #38 acceptance: "no image is read
         # from disk twice").
         paths, failed, decoded = self._filter_readable_paths(paths)
+        total_attempted = len(paths) + len(failed)
         if failed:
+            msg = (
+                f"Loaded {len(paths)} of {total_attempted} image(s) — "
+                f"{len(failed)} unreadable and skipped: "
+                f"{self._format_readability_message(len(failed), failed)}"
+            )
+            style = "color: #FFC107; font-size: 11px;"  # amber — partial success
             try:
                 slicer.util.showStatusMessage(
-                    self._format_readability_message(len(failed), failed),
-                    8000,
+                    self._format_readability_message(len(failed), failed), 8000,
                 )
             except Exception:
                 pass
+        elif paths:
+            msg = f"Loaded {len(paths)} image(s)."
+            style = "color: #4CAF50; font-size: 11px;"  # green — full success
+        else:
+            # total_attempted == 0: folder/selection contained no
+            # supported-extension files at all — must not fail silently.
+            msg = "No supported images found in the selected folder."
+            style = "color: #F44336; font-size: 11px;"  # red — nothing loaded
+        self._load_result_label.setText(msg)
+        self._load_result_label.setStyleSheet(style)
 
         import os
         self._image_paths = paths
@@ -933,6 +955,67 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             logging.exception("ZebrafishEmbryoAnalyzer: failed to start model download")
             slicer.util.errorDisplay(f"Could not start model download:\n{exc}")
 
+    def _materialize_missing_image_paths(self, image_paths, originals):
+        """Write any in-memory-only image (no real file on disk — e.g. after a
+        scene reload, per #41/#57/#61) to a temp file and substitute that path.
+
+        Needed because analyse_images() ultimately does shutil.copy2(image_path, ...)
+        to hand the file to the out-of-process inference worker — a bare filename
+        with no backing file on disk fails there. Temp files are written once per
+        Run Analysis click and cleaned up in _on_runner_finished's existing
+        teardown path: any temp paths produced here are appended to
+        ``self._run_temp_files`` and deleted (regardless of the run's success /
+        failure / cancellation) before the handler returns.
+        """
+        import os
+        import tempfile
+        import cv2
+        result = []
+        for i, path in enumerate(image_paths):
+            if path and os.path.exists(path):
+                result.append(path)
+                continue
+            original = originals[i] if i < len(originals) else None
+            if original is None:
+                # Nothing to materialize from — let downstream fail as before so
+                # the per-image error field surfaces the actual cause.
+                result.append(path)
+                continue
+            fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="zebrafish_reload_")
+            os.close(fd)
+            try:
+                bgr = cv2.cvtColor(original, cv2.COLOR_RGB2BGR)
+                cv2.imwrite(tmp_path, bgr)
+                result.append(tmp_path)
+                self._run_temp_files.append(tmp_path)
+            except Exception:
+                logging.exception(
+                    "ZebrafishEmbryoAnalyzer: failed to materialize in-memory image for %s", path
+                )
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+                result.append(path)  # fall through to the original (still-broken) path
+        return result
+
+    def _clear_run_temp_files(self):
+        """Delete every temp file produced by _materialize_missing_image_paths.
+
+        Called on every branch of _on_runner_finished (success / failure /
+        cancellation / token mismatch / disposed) so the temp dir doesn't
+        accumulate after Run Analysis clicks.
+        """
+        import os
+        if not self._run_temp_files:
+            return
+        for tmp_path in self._run_temp_files:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        self._run_temp_files = []
+
     def _start_inference_process(self, model_id, params, token):
         """Launch analysis as a QProcess worker subprocess."""
         if self._active_runner is not None:
@@ -941,6 +1024,12 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         try:
             originals = [r.get("original") for r in self._results]
             image_paths = list(self._image_paths)
+            image_paths = self._materialize_missing_image_paths(image_paths, originals)
+            # Snapshot of exactly what was sent to the worker, positionally
+            # aligned with self._image_paths — _handle_runner_finished uses
+            # this to restore queue order and original filenames from the
+            # worker's echoed (possibly materialized-temp-file) image_path.
+            self._run_sent_paths = list(image_paths)
 
             self._run_status_label.setText("Loading models…")
             self._run_progress.setRange(0, 0)   # native Qt marquee: fixed chunk moves left→right
@@ -955,30 +1044,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 self._run_progress.setFormat("")
 
             def _on_runner_finished(success, state, message, controller):
-                logging.debug("ZebrafishEmbryoAnalyzer: _on_runner_finished state=%s success=%s token=%s run_token=%s", state, success, token, self._run_token)
-                if self._disposed or controller is not self._active_runner:
-                    return
-                self._active_runner = None
-                self._refresh_settings_actions()
-                if self._run_token != token:
-                    self._run_stack.setCurrentIndex(0)
-                    return
-                if not success:
-                    self._run_stack.setCurrentIndex(0)
-                    if state not in ("cancelled", "disposed"):
-                        ui_message = self._categorize_inference_error(message, controller)
-                        slicer.util.errorDisplay(ui_message)
-                    return
-                self._results = controller.results
-                self._run_stack.setCurrentIndex(0)
-                logging.debug("ZebrafishEmbryoAnalyzer: results ready, count=%d", len(self._results))
-                try:
-                    self._try_apply_results_to_volume_nodes(self._results)
-                    self._on_results_ready()
-                    self._try_update_mrml_table(self._results)
-                except Exception:
-                    logging.exception("ZebrafishEmbryoAnalyzer: exception in _on_results_ready")
-                    raise
+                self._handle_runner_finished(success, state, message, controller, token)
 
             from ZebrafishEmbryoAnalyzerLib.inference_runner import start_inference
             self._active_runner = start_inference(
@@ -1390,16 +1456,22 @@ class ZebrafishEmbryoAnalyzerMainWidget:
 
     def _cancel_workers(self):
         """Cancel active asynchronous operations and invalidate transient state."""
-        self._run_token = getattr(self, "_run_token", 0) + 1  # invalidate any pending deferred continuation
         if getattr(self, "_active_downloader", None) is not None:
             self._active_downloader.cancel(silent=True)
             self._active_downloader = None
         if getattr(self, "_active_runner", None) is not None:
+            # cancel() synchronously fires on_finished -> _handle_runner_finished,
+            # which applies any partial results (issue #59) and clears
+            # _active_runner/_run_stack itself. Must run before the _run_token
+            # bump below — bumping first makes _handle_runner_finished's
+            # token-mismatch guard silently discard those partial results
+            # (issue #59 follow-up: cancelled runs left volume nodes with no
+            # segmentation even though images had visibly completed).
             self._active_runner.cancel()
             self._active_runner = None
+        self._run_token = getattr(self, "_run_token", 0) + 1  # invalidate any pending deferred continuation
         if hasattr(self, "_run_stack"):
             self._run_stack.setCurrentIndex(0)
-        self._results = []
         self._detail.invalidate_cache()
         self._refresh_settings_actions()
 
@@ -1785,6 +1857,123 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         if errors:
             msg = "\n".join(f"• {r['filename']}: {r['error']}" for r in errors)
             slicer.util.warningDisplay(f"Errors in {len(errors)} image(s):\n\n{msg}")
+
+    def _reorder_and_rename_results(self, results, fill_missing_from=None):
+        """Restore original queue order and original filenames after a run.
+
+        ``analyse_images`` (logic.py) iterates ``sorted(image_paths)``
+        internally, so ``results`` comes back sorted by whatever path string
+        was actually sent to the worker — not the user's original queue
+        order (issue found while testing #61's reload path). Each result's
+        own ``filename`` also reflects that sent path's basename, which for
+        a materialized in-memory image (``_materialize_missing_image_paths``)
+        is a random temp filename, not the real image name — that garbled
+        name would otherwise leak into the gallery caption, the results
+        table, and ``apply_results_to_tracked_volume_nodes``'s name-based
+        MRML node lookup (silently failing to match the real volume node).
+
+        Matches each result back to its position via ``self._run_sent_paths``
+        (captured in ``_start_inference_process``, positionally aligned with
+        ``self._image_paths``) and restores the true filename from there.
+
+        ``fill_missing_from``, when given, fills any position with no
+        result (e.g. images the worker never reached before a cancel) from
+        that list's entry at the same position — used to keep every queued
+        image in ``self._results`` after a cancel (issue #59 follow-up).
+        Positions with neither a result nor a fill entry are dropped.
+        """
+        import os
+        sent_paths = getattr(self, "_run_sent_paths", None) or []
+        if not sent_paths:
+            # Not wired up (e.g. a test harness driving _handle_runner_finished
+            # directly) — pass through unchanged rather than silently
+            # dropping every result.
+            return list(results or [])
+        n = len(sent_paths)
+        slots = [None] * n
+        for r in results or []:
+            image_path = r.get("image_path")
+            try:
+                idx = sent_paths.index(image_path) if image_path is not None else None
+            except ValueError:
+                idx = None
+            if idx is None:
+                continue
+            if idx < len(self._image_paths):
+                r["filename"] = os.path.basename(self._image_paths[idx])
+            slots[idx] = r
+        if fill_missing_from is not None:
+            for i in range(n):
+                if slots[i] is None and i < len(fill_missing_from):
+                    slots[i] = fill_missing_from[i]
+        return [s for s in slots if s is not None]
+
+    def _handle_runner_finished(self, success, state, message, controller, token):
+        """Apply inference results — runs identically for a successful run and
+        for a cancel that had at least one image completed before click.
+
+        Issue #59: prior to this, a cancel mid-batch would unconditionally wipe
+        ``controller.results`` and the widget would return early, dropping
+        segmentation/attributes for every image the worker had already
+        finished. We now keep the partial results and apply them here on
+        ``state == "cancelled"`` — including materializing their MRML
+        volume nodes (issue #39's ``_try_apply_results_to_volume_nodes``),
+        so a cancelled run's completed images end up fully formed in the
+        scene just like a successful run's. Images the worker never reached
+        stay in ``self._results`` too (gallery/table keep showing them,
+        raw/unsegmented, per issue #59's acceptance criteria) but are
+        excluded from the apply step, since running it on their
+        ``mask``-less stub would create an empty segmentation node.
+        """
+        logging.debug(
+            "ZebrafishEmbryoAnalyzer: _on_runner_finished state=%s success=%s token=%s run_token=%s",
+            state, success, token, self._run_token,
+        )
+        if self._disposed or controller is not self._active_runner:
+            return
+        self._active_runner = None
+        # Issue #61: any temp files we wrote for in-memory images must be
+        # cleaned up on every exit path, regardless of which branch below runs.
+        self._clear_run_temp_files()
+        self._refresh_settings_actions()
+        if self._run_token != token:
+            self._run_stack.setCurrentIndex(0)
+            return
+        if state == "disposed":
+            return
+        if not success and state != "cancelled":
+            self._run_stack.setCurrentIndex(0)
+            ui_message = self._categorize_inference_error(message, controller)
+            slicer.util.errorDisplay(ui_message)
+            return
+        if state == "cancelled" and not controller.results:
+            # Cancelled before any image finished — nothing to apply.
+            self._run_stack.setCurrentIndex(0)
+            return
+        if state == "cancelled":
+            # Issue #59 follow-up: only apply/materialize the images the
+            # worker actually finished — the rest keep whatever they were
+            # before this run (raw stub, or a previous run's results) so
+            # calling apply_analysis_to_volume_node on them never creates a
+            # segmentation from a missing mask. But self._results itself
+            # still gets every image so the gallery/table keep showing the
+            # unprocessed ones too, just without segmentation/metrics.
+            completed = self._reorder_and_rename_results(controller.results)
+            to_apply = completed
+            self._results = self._reorder_and_rename_results(
+                controller.results, fill_missing_from=self._results
+            )
+        else:
+            to_apply = self._results = self._reorder_and_rename_results(controller.results)
+        self._run_stack.setCurrentIndex(0)
+        logging.debug("ZebrafishEmbryoAnalyzer: results ready, count=%d", len(self._results))
+        try:
+            self._try_apply_results_to_volume_nodes(to_apply)
+            self._on_results_ready()
+            self._try_update_mrml_table(self._results)
+        except Exception:
+            logging.exception("ZebrafishEmbryoAnalyzer: exception in _on_results_ready")
+            raise
 
     def _resolve_export_start_dir(self):
         settings = qt.QSettings()

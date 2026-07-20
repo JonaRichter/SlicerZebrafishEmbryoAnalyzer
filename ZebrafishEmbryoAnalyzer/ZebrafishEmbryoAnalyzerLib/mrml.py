@@ -560,6 +560,15 @@ def list_tracked_volume_nodes(param_node, scene):
     node the user deleted from the Data module between load and run) are
     silently skipped — they will surface as a missing row in the table
     rather than crash the build.
+
+    Result is then sorted by each node's ``ZebrafishAnalysis.loadOrder``
+    attribute (set at eager-creation time, see :func:`create_image_volume_node`)
+    rather than trusting the NodeReference array's own enumeration order —
+    a Save Scene -> Load Scene round-trip was observed to come back with a
+    different gallery/table ordering even though every node and reference
+    was still present (found while testing #61). Nodes without the
+    attribute (e.g. older scenes, test fakes) keep their relative
+    reference-order position, sorted after any attributed nodes.
     """
     if param_node is None or scene is None:
         return []
@@ -580,6 +589,15 @@ def list_tracked_volume_nodes(param_node, scene):
         except Exception:
             continue
         out.append(node)
+
+    def _load_order_key(node):
+        try:
+            raw = node.GetAttribute("ZebrafishAnalysis.loadOrder")
+            return (0, int(raw)) if raw is not None else (1, 0)
+        except Exception:
+            return (1, 0)
+
+    out.sort(key=_load_order_key)
     return out
 
 
@@ -895,6 +913,18 @@ def create_image_volume_node(image_rgb, um_per_px, name_hint, param_node, scene)
             pass
         raise
 
+    # Stamp the batch position as a plain node attribute — unlike
+    # NodeReference array order, attribute strings are known-reliable
+    # through this codebase's scene save/reload path (the ZebrafishAnalysis.*
+    # metric/staleness attributes already round-trip correctly), so
+    # list_tracked_volume_nodes can restore folder-load order after a
+    # Save Scene -> Load Scene round-trip even if the reference list itself
+    # comes back reordered.
+    try:
+        load_order = param_node.GetNumberOfNodeReferences(ROLE_ZEBRAFISH_IMAGES)
+        node.SetAttribute("ZebrafishAnalysis.loadOrder", str(load_order))
+    except Exception:
+        pass
     param_node.AddNodeReferenceID(ROLE_ZEBRAFISH_IMAGES, node.GetID())
     return node
 
@@ -1259,7 +1289,9 @@ def _create_markups_line_for_volume(result, volume_node, scene):
             display.SetVisibility3D(True)
         except Exception:
             pass
+        _style_thin_line_markup(display)
     _add_line_endpoints(line, sl_pts, result, volume_node)
+    _lock_markups_node(line)
     _set_node_reference(volume_node, ROLE_ZEBRAFISH_MARKUPS_LINE, line)
     _reparent_in_subject_hierarchy(scene, line, volume_node)
     return line
@@ -1294,14 +1326,52 @@ def _vec3(x, y, z=0.0):
     return _Vec3((float(x), float(y), float(z)))
 
 
+def _mask_spacing_mm(result):
+    """Return ``(row_spacing_mm, col_spacing_mm)`` for mask-pixel-index coordinates.
+
+    ``result["spacing"]`` is ``(row_um_per_maskpx, col_um_per_maskpx)``, written
+    by ``logic.py``'s ``analyse_images`` — micrometres per *mask*-pixel (already
+    scaled for the mask-vs-original-image resolution ratio). Converts to
+    millimetres (Slicer RAS units) for use as a per-axis multiplier on raw
+    mask-pixel indices. Falls back to ``(1.0, 1.0)`` only if ``spacing`` is
+    missing or malformed (defensive — should not happen for a real result).
+    """
+    spacing = result.get("spacing") if result else None
+    if not spacing or len(spacing) != 2:
+        return (1.0, 1.0)
+    try:
+        return (float(spacing[0]) / 1000.0, float(spacing[1]) / 1000.0)
+    except (TypeError, ValueError):
+        return (1.0, 1.0)
+
+
+def _mask_dims(result):
+    """Return ``(mask_h, mask_w)`` from ``result["mask"]``'s shape, or ``None``.
+
+    Used to mirror the 180-degree rotation (``flipud`` + ``fliplr``) that
+    ``update_image_node`` applies to the volume's pixel data (issue #58
+    follow-up): mask pixel (row, col) is displayed at volume voxel
+    (mask_h-1-row, mask_w-1-col), not (row, col) unchanged. Returns ``None``
+    when ``mask`` is missing/malformed so callers can fall back to the
+    historical unflipped formula (degenerate/test inputs only — real
+    results always carry ``mask``).
+    """
+    mask = result.get("mask") if result else None
+    if mask is None or not hasattr(mask, "shape") or len(mask.shape) < 2:
+        return None
+    return int(mask.shape[0]), int(mask.shape[1])
+
+
 def _add_line_endpoints(line, sl_pts, result, volume_node):
     """Add Head and Tail control points to ``line`` from ``sl_pts``.
 
     ``sl_pts`` is the straight-line endpoints tuple produced by
     ``tube_length_border2border`` — shape ``((row0, col0), (row1, col1))``
-    in mask coordinates. The points are written verbatim; the same flipud /
-    fliplr transform that ``update_image_node`` applies to the volume node's
-    pixel data is replicated here so the markups land on the visible fish.
+    in mask coordinates. Points are scaled by ``_mask_spacing_mm(result)``
+    before being placed in RAS space so they land inside the volume node's
+    actual physical extent (issue #58). The same flipud / fliplr transform
+    that ``update_image_node`` applies to the volume node's pixel data is
+    replicated here so the markups land on the visible fish.
 
     In Slicer production, ``line.AddControlPoint`` accepts either a
     ``vtkVector3d`` or any object supporting ``[0]``/``[1]``/``[2]``. We pass
@@ -1319,11 +1389,24 @@ def _add_line_endpoints(line, sl_pts, result, volume_node):
         p0, p1 = sl_pts
     except Exception:
         return
-    # Mask coords are (row, col). RAS needs (R, A, S) = (col, -row, 0) given
-    # the flip applied to the image (see update_image_node).
+    # Mask coords are (row, col). update_image_node writes the volume's
+    # pixel data through flipud(fliplr(...)) — a 180-degree rotation — so
+    # mask pixel (row, col) is displayed at voxel (mask_h-1-row, mask_w-1-col),
+    # not (row, col) unchanged. Mirror that rotation here (issue #58 follow-up)
+    # so the control points land on the visible fish instead of off to the
+    # side / outside the volume. row_mm/col_mm convert mask-pixel distances to mm.
     try:
-        pos_head = _vec3(p0[1], -p0[0], 0.0)
-        pos_tail = _vec3(p1[1], -p1[0], 0.0)
+        row_mm, col_mm = _mask_spacing_mm(result)
+        dims = _mask_dims(result)
+        if dims is not None:
+            mask_h, mask_w = dims
+            pos_head = _vec3((mask_w - 1 - p0[1]) * col_mm, (mask_h - 1 - p0[0]) * row_mm, 0.0)
+            pos_tail = _vec3((mask_w - 1 - p1[1]) * col_mm, (mask_h - 1 - p1[0]) * row_mm, 0.0)
+        else:
+            # Degenerate input (no mask, e.g. missing spacing) — keep the
+            # historical unflipped formula rather than guessing dimensions.
+            pos_head = _vec3(p0[1] * col_mm, -p0[0] * row_mm, 0.0)
+            pos_tail = _vec3(p1[1] * col_mm, -p1[0] * row_mm, 0.0)
     except Exception:
         return
     try:
@@ -1354,6 +1437,72 @@ def _add_line_endpoints(line, sl_pts, result, volume_node):
         # AddControlPoint may fail when slicer / vtk is unavailable (subprocess).
         # The markups node itself is still attached and visible in the Data
         # module; the control points can be re-applied on reload by sub-issue #5.
+        pass
+
+
+def _style_thin_line_markup(display):
+    """Reduce a MarkupsLine/Curve display node to a thin, non-editable line.
+
+    ``vtkMRMLMarkupsDisplayNode`` defaults (glyph scale ~3% of viewport,
+    default control-point balls, floating name+length label) are tuned for
+    anatomical-scale volumes; on a ~5 mm zebrafish embryo they render as a
+    thick tube with an oversized label dwarfing the segmentation (issue #58
+    follow-up).
+
+    Control-point glyphs are shrunk to near-zero (``GlyphScale``) rather than
+    hidden outright — there is no separate "points off, line on" toggle on
+    this display node. ``LineThickness`` is a *fraction of GlyphScale*, so
+    shrinking GlyphScale to make points invisible also starves the line
+    (first attempt at issue #58 follow-up: line became nearly invisible
+    too). Switching ``CurveLineSizeMode`` to Absolute decouples the tube
+    diameter from GlyphScale entirely — ``LineDiameter`` is then a fixed mm
+    value independent of point size. Each call wrapped individually since
+    the exact API surface varies across Slicer versions.
+    """
+    try:
+        display.SetGlyphScale(0.01)
+    except Exception:
+        pass
+    try:
+        display.SetCurveLineSizeMode(getattr(display, "SizeModeAbsolute", 1))
+    except Exception:
+        pass
+    try:
+        display.SetLineDiameter(0.012)
+    except Exception:
+        pass
+    try:
+        # Without this, the segmentation's 3D surface occludes the thin
+        # line/curve whenever it's behind it from the current camera angle.
+        display.SetOccludedVisibility(True)
+    except Exception:
+        pass
+    try:
+        display.SetOccludedOpacity(1.0)
+    except Exception:
+        pass
+    try:
+        display.SetPropertiesLabelVisibility(False)
+    except Exception:
+        pass
+    try:
+        display.SetPointLabelsVisibility(False)
+    except Exception:
+        pass
+
+
+def _lock_markups_node(node):
+    """Lock a MarkupsLine/Curve node so its control points can't be dragged.
+
+    ``vtkMRMLMarkupsNode.SetLocked(True)`` disables interactive point
+    manipulation in slice/3D views while leaving visibility, color and
+    other display-node properties editable as usual. These markups mirror
+    computed analysis results, not manual annotations, so accidental
+    dragging should not silently desync them from ``result``.
+    """
+    try:
+        node.SetLocked(True)
+    except Exception:
         pass
 
 
@@ -1402,22 +1551,36 @@ def _create_markups_curve_for_volume(result, volume_node, scene):
             display.SetVisibility3D(True)
         except Exception:
             pass
-    _add_curve_points(curve, path_pts)
+        _style_thin_line_markup(display)
+    _add_curve_points(curve, path_pts, result)
+    _lock_markups_node(curve)
     _set_node_reference(volume_node, ROLE_ZEBRAFISH_MARKUPS_CURVE, curve)
     _reparent_in_subject_hierarchy(scene, curve, volume_node)
     return curve
 
 
-def _add_curve_points(curve, path_pts):
+def _add_curve_points(curve, path_pts, result):
     """Add all ``path_pts`` to ``curve`` as anonymous control points.
 
     Each point is converted from mask (row, col) to RAS (R, A, S) using the
-    same flip applied to the image. ``_Vec3`` is used as the position type
-    so the helper works under both real Slicer and plain pytest (see
-    :func:`_add_line_endpoints` for the cancel-safety rationale).
+    same flip applied to the image, and scaled by ``_mask_spacing_mm(result)``
+    so the curve lands inside the volume node's actual physical extent
+    (issue #58). ``_Vec3`` is used as the position type so the helper works
+    under both real Slicer and plain pytest (see :func:`_add_line_endpoints`
+    for the cancel-safety rationale).
     """
     try:
-        positions = [_vec3(p[1], -p[0], 0.0) for p in path_pts]
+        row_mm, col_mm = _mask_spacing_mm(result)
+        dims = _mask_dims(result)
+        if dims is not None:
+            mask_h, mask_w = dims
+            positions = [
+                _vec3((mask_w - 1 - p[1]) * col_mm, (mask_h - 1 - p[0]) * row_mm, 0.0)
+                for p in path_pts
+            ]
+        else:
+            # Degenerate input (no mask) — keep the historical unflipped formula.
+            positions = [_vec3(p[1] * col_mm, -p[0] * row_mm, 0.0) for p in path_pts]
     except Exception:
         return
     try:
