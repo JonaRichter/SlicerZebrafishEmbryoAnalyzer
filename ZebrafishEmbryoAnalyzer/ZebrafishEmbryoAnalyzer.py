@@ -136,6 +136,23 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
             # switch in a long session).
             self._main.try_rebuild_from_scene_if_empty()
             self._main.prompt_install_if_missing()
+            # Issue #56 Mode B follow-up: lightweight revalidation of
+            # ``self._results`` against the live MRML scene. The Data
+            # module is ground truth — when the user deletes a
+            # segmentation node there while the Zebrafish module was
+            # in the background, the row's dangling-reference status
+            # only becomes visible to the widget when we re-validate
+            # each row on entry. Without this refresh the gallery
+            # still shows the row as if its segmentation were
+            # attached, even though the seg node is gone. Cheap (no
+            # pixel-array reload, no thumbnail rebuild) so safe to run
+            # on every tab switch.
+            try:
+                self._main.refresh_results_against_scene()
+            except Exception:
+                logging.exception(
+                    "ZebrafishEmbryoAnalyzer: refresh_results_against_scene failed in enter()"
+                )
             # Issue #56 follow-up: re-arm the per-image segmentation
             # ModifiedEvent observers on every module entry. Without this,
             # observers installed the first time the module was opened get
@@ -711,6 +728,27 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
             return scene.GetNodeByID(seg_id) is not None
         except Exception:
             return False
+
+    def validate_tracked_row_exclusion(self, volume_node):
+        """Issue #56 Mode B follow-up: return ``(error_message, should_exclude)``
+        for one volume node by delegating to :func:`mrml.validate_volume_node`.
+
+        Lets the widget's ``refresh_results_against_scene`` re-validate
+        each row without importing ``ZebrafishEmbryoAnalyzerLib.mrml``
+        directly (widget.py is forbidden to do that — see
+        ``test_widget_calls_update_results_table_not_mrml_directly``).
+
+        Returns ``("", False)`` for any failure (no error, no exclude)
+        so callers can apply the result without their own try/except.
+        """
+        if volume_node is None:
+            return ("", False)
+        try:
+            from ZebrafishEmbryoAnalyzerLib.mrml import validate_volume_node
+            err_field, _msg = validate_volume_node(volume_node)
+            return (err_field or "", bool(err_field))
+        except Exception:
+            return ("", False)
 
     def setup_segmentation_staleness_observers(self):
         """Issue #56 follow-up: thin wrapper around the widget's

@@ -1627,6 +1627,109 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             )
 
     # ----------------------------------------------------------------- #
+    # Issue #56 Mode B follow-up: lightweight revalidation of the
+    # already-populated ``self._results`` against the live MRML scene.
+    # ----------------------------------------------------------------- #
+    def refresh_results_against_scene(self):
+        """Re-validate every populated row's per-image MRML state and
+        refresh the visible widgets — cheap enough to run on every
+        ``enter()``.
+
+        Unlike :meth:`rebuild_from_scene` (used only when the widget is
+        empty), this does NOT read pixel arrays or rebuild thumbnails:
+        ``self._results`` is already populated from the previous run, so
+        the only thing that can drift between module entries is the row's
+        ``error`` / ``exclude`` state (e.g. a segmentation node the user
+        just removed in the Data module → dangling ref → "Segmentation
+        node missing" auto-exclude).
+
+        Honours "Data module is ground truth": rows whose segmentation
+        node was removed surface as auto-excluded immediately, so the
+        gallery, results table, queue list, and detail view all show the
+        deletion without needing a re-run.
+        """
+        if not getattr(self, "_results", None):
+            return
+        if not hasattr(self, "_logic") or self._logic is None:
+            return
+        if not hasattr(self._logic, "validate_tracked_row_exclusion"):
+            return
+
+        changed = False
+        for i, row in enumerate(self._results):
+            vol = row.get("_volume_node") if isinstance(row, dict) else None
+            if vol is None or not hasattr(vol, "GetID"):
+                continue
+            try:
+                new_error, should_exclude = self._logic.validate_tracked_row_exclusion(vol)
+            except Exception:
+                continue
+            new_error = new_error or ""
+            prev_error = row.get("error") or ""
+            prev_exclude = bool(row.get("exclude"))
+            new_exclude = bool(should_exclude) or prev_exclude
+            if new_error != prev_error or new_exclude != prev_exclude:
+                row["error"] = new_error
+                row["exclude"] = new_exclude
+                changed = True
+
+        if not changed:
+            return
+
+        # Re-derive excluded set from the updated rows so the gallery's
+        # eye-icons, queue list strikethrough, and results tab match.
+        try:
+            self._excluded = {
+                r["filename"]
+                for r in self._results
+                if r.get("exclude") or r.get("error")
+            }
+        except Exception:
+            pass
+
+        # Refresh every visible widget whose state depends on
+        # ``self._results`` / ``self._excluded``. Same surface as
+        # :meth:`rebuild_from_scene` but WITHOUT the thumbnail rebuild
+        # (``update_thumb_prebuilt`` is skipped so the per-row cv2.resize
+        # cost does not hit every tab switch).
+        try:
+            self._gallery.populate(self._results)
+        except Exception:
+            pass
+        try:
+            self._results_tab.populate(self._results, self._excluded)
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: results-tab refresh on enter() failed"
+            )
+        try:
+            self._logic.update_results_table_from_tracked_nodes()
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: table refresh on enter() failed"
+            )
+        try:
+            self._queue_list.clear()
+            for r in self._results:
+                self._queue_list.addItem(r.get("filename") or "")
+        except Exception:
+            pass
+        try:
+            if (
+                0 <= getattr(self, "_current_detail_idx", -1) < len(self._results)
+            ):
+                self._detail.invalidate_cache()
+                self._detail.show_result(self._current_detail_idx, self._results)
+                sync_excl = bool(
+                    self._results[self._current_detail_idx].get("filename")
+                    in self._excluded
+                )
+                self._detail.sync_exclude(sync_excl)
+                self._refresh_detail_recompute_button()
+        except Exception:
+            pass
+
+    # ----------------------------------------------------------------- #
     # Issue #42: prompt + recompute for stale segment-editor edits.
     # ----------------------------------------------------------------- #
     def prompt_recompute_stale_images(self):

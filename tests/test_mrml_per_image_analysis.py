@@ -1825,3 +1825,113 @@ def test_widget_enter_calls_setup_segmentation_staleness_observers():
         "Widget.enter() must call setup_segmentation_staleness_observers "
         "so observers are live on every module re-entry"
     )
+
+
+def test_widget_enter_calls_refresh_results_against_scene():
+    """Issue #56 Mode B follow-up: ``Widget.enter()`` must call
+    ``refresh_results_against_scene`` so deleted segs surface as
+    auto-excluded rows without requiring a re-run. Without this, the
+    gallery/table keeps showing the image as having a segmentation
+    even when the seg node has been removed from the scene.
+    """
+    import re
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "ZebrafishEmbryoAnalyzer", "ZebrafishEmbryoAnalyzer.py",
+    )
+    with open(src_path, "r") as f:
+        src = f.read()
+    enter_block = re.search(
+        r"def enter\(self\):.*?(?=\n    def )", src, flags=re.DOTALL,
+    )
+    assert enter_block is not None
+    assert "refresh_results_against_scene" in enter_block.group(0), (
+        "Widget.enter() must call self._main.refresh_results_against_scene() "
+        "so the gallery/table picks up deleted segs on every tab switch"
+    )
+
+
+def test_widget_refresh_results_against_scene_auto_excludes_dangling_seg():
+    """Issue #56 Mode B follow-up: ``Widget.refresh_results_against_scene``
+    must mark every existing row whose segmentation node is dangling as
+    auto-excluded, so the gallery/queue list/results table all reflect
+    the deletion immediately on module re-entry.
+
+    Tests the contract that the method depends on — :func:`validate_volume_node`
+    flags dangling refs as recoverable errors, and
+    :func:`volume_node_to_result_dict_with_validation` propagates that
+    into ``row["error"]`` + ``row["exclude"] = True`` — which is exactly
+    what the new ``refresh_results_against_scene`` walks.
+    """
+    # Synthetic volume node with a dangling seg reference:
+    # - was analyzed (ATTR_EXCLUDE is set)
+    # - has a non-empty seg role id that does NOT resolve in the scene
+    import sys
+    import types
+    from unittest.mock import MagicMock
+    # Stub slicer.mrmlScene.GetNodeByID to return None for any id, so
+    # the dangling ref surfaces as "Segmentation node missing".
+    slicer_stub = types.ModuleType("slicer")
+    fake_scene = MagicMock()
+    fake_scene.GetNodeByID.return_value = None
+    slicer_stub.mrmlScene = fake_scene
+    monkey = sys.modules
+    prev_slicer = monkey.get("slicer")
+    monkey["slicer"] = slicer_stub
+    try:
+        from ZebrafishEmbryoAnalyzerLib.mrml import (
+            volume_node_to_result_dict_with_validation,
+        )
+        vol = _FakeVolumeNode(name="dangle.png")
+        vol.SetAttribute("ZebrafishAnalysis.exclude", "false")
+        # Attach a role that points to a non-existent seg id.
+        vol.SetNodeReferenceID(
+            "ZebrafishEmbryoAnalysis.referenceImageSegmentationNode",
+            "vtkMRMLSegmentationNode_dangling",
+        )
+        row = volume_node_to_result_dict_with_validation(vol)
+    finally:
+        if prev_slicer is not None:
+            monkey["slicer"] = prev_slicer
+        else:
+            monkey.pop("slicer", None)
+
+    assert row.get("error") == "Segmentation node missing", row
+    assert row.get("exclude") is True, row
+
+
+def test_validate_volume_node_returns_error_for_dangling_seg():
+    """Companion to ``test_widget_refresh_results_against_scene_auto_excludes_dangling_seg``.
+
+    Pins down the bare validator contract so the Mode B fix layer
+    (refresh_results_against_scene) has a stable lower-bound to depend on.
+    Without this contract, dangling refs would silently be treated as
+    healthy and the Zebra gallery would keep claiming an image has a
+    segmentation after the user removed it in the Data module.
+    """
+    import sys
+    import types
+    from unittest.mock import MagicMock
+    slicer_stub = types.ModuleType("slicer")
+    fake_scene = MagicMock()
+    fake_scene.GetNodeByID.return_value = None
+    slicer_stub.mrmlScene = fake_scene
+    monkey = sys.modules
+    prev_slicer = monkey.get("slicer")
+    monkey["slicer"] = slicer_stub
+    try:
+        from ZebrafishEmbryoAnalyzerLib.mrml import validate_volume_node
+        vol = _FakeVolumeNode(name="dangle.png")
+        vol.SetAttribute("ZebrafishAnalysis.exclude", "false")
+        vol.SetNodeReferenceID(
+            "ZebrafishEmbryoAnalysis.referenceImageSegmentationNode",
+            "vtkMRMLSegmentationNode_dangling",
+        )
+        err = validate_volume_node(vol)
+    finally:
+        if prev_slicer is not None:
+            monkey["slicer"] = prev_slicer
+        else:
+            monkey.pop("slicer", None)
+    assert err == ("Segmentation node missing", ""), err
