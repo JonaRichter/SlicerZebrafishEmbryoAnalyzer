@@ -2330,3 +2330,443 @@ def test_logic_scrub_excluded_row_overlays_handles_exclude_without_error():
     logic.scrub_excluded_row_overlays([row])
     for _key in ("mask", "eye_mask", "path_points", "straight_line_points"):
         assert _key not in row, _key
+
+
+# ---------------------------------------------------------------------------
+# Issue #56 follow-up: scene-reload overlay reconstruction
+# ---------------------------------------------------------------------------
+#
+# ``volume_node_to_result_dict`` only restores scalar metric attributes —
+# the segmentation-overlay inputs (mask, eye_mask, path_points,
+# straight_line_points) come from the seg/markup nodes linked via the
+# ``ROLE_ZEBRAFISH_SEGMENTATION`` / ``ROLE_ZEBRAFISH_MARKUPS_CURVE`` /
+# ``ROLE_ZEBRAFISH_MARKUPS_LINE`` references. ``rebuild_results_from_scene``
+# now calls ``_populate_row_overlays_from_scene`` to pull them back so the
+# gallery renders the analyzed overlay after a saved-scene reload instead
+# of a bare original.
+#
+# These tests stub ``slicer.util.arrayFromSegment`` and the markups
+# read-back API on lightweight fakes — no real Slicer runtime required.
+
+
+def _stub_slicer_array_from_segment(seg_node, segment_id, labelmap):
+    """Helper: monkeypatch ``slicer.util.arrayFromSegment`` to return
+    ``labelmap`` for a single ``(seg_node, segment_id)`` pair.
+
+    Returns ``(slicer_util, prev_attr)`` so the caller can restore the
+    previous attribute in a ``finally`` block. Also installs a
+    ``slicer.util`` namespace if the test runner left ``slicer`` as a bare
+    stub without ``util``.
+    """
+    slicer, util, _prev_util = _ensure_slicer_module()
+    prev_attr = getattr(util, "arrayFromSegment", None)
+
+    def _fake(sn, sid):
+        if sn is seg_node and sid == segment_id:
+            return labelmap
+        return None
+
+    util.arrayFromSegment = _fake
+    return util, prev_attr
+
+
+class _FakeSegWithLabelmap(_FakeSegmentationNode):
+    """Segmentation fake that holds a binary labelmap per segment id."""
+
+    def __init__(self, name="SegWithMask"):
+        super().__init__(name=name)
+        self._labelmaps = {}   # segment_id -> ndarray
+
+    def SetSegmentLabelmap(self, segment_id, labelmap):
+        self._labelmaps[segment_id] = labelmap
+
+
+class _FakeMarkupsNodeWithRead(_FakeMarkupsCurveNode):
+    """Markups fake that exposes the read-back API the helpers use."""
+
+    def GetNumberOfControlPoints(self):
+        return len(self._control_points)
+
+    def GetNthControlPointPosition(self, i, out):
+        try:
+            x, y, z = self._control_points[i]["position"]
+        except (IndexError, KeyError, TypeError):
+            return
+        out[0], out[1], out[2] = float(x), float(y), float(z)
+
+
+class _FakeMarkupsLineWithRead(_FakeMarkupsLineNode):
+    def GetNumberOfControlPoints(self):
+        return len(self._control_points)
+
+    def GetNthControlPointPosition(self, i, out):
+        try:
+            x, y, z = self._control_points[i]["position"]
+        except (IndexError, KeyError, TypeError):
+            return
+        out[0], out[1], out[2] = float(x), float(y), float(z)
+
+
+def _ensure_slicer_module():
+    """Lazy-install a minimal ``slicer`` module so the lazy import in
+    ``_extract_segment_mask`` succeeds outside the Slicer runtime.
+
+    Several tests in this file stub ``slicer`` as a bare ``SimpleNamespace``
+    / ``MagicMock`` — those stubs do not carry a ``util`` attribute. This
+    helper installs a ``slicer`` module (and a ``slicer.util`` namespace)
+    on the ``sys.modules`` entry if either is missing, so per-test
+    monkey-patching of ``slicer.util.arrayFromSegment`` just works.
+
+    Returns ``(slicer, slicer_util, prev_util)`` so the caller can
+    restore both in a ``finally`` block. The caller is responsible for
+    restoring the ``slicer`` entry to its previous state when this helper
+    installs a fresh one.
+    """
+    prev_slicer = sys.modules.get("slicer")
+    if prev_slicer is None:
+        slicer = types.SimpleNamespace()
+        sys.modules["slicer"] = slicer
+    else:
+        slicer = prev_slicer
+    util = getattr(slicer, "util", None)
+    prev_util = None
+    if util is None:
+        util = types.SimpleNamespace()
+        prev_util = getattr(slicer, "util", None)
+        slicer.util = util
+    return slicer, util, prev_util
+
+
+def test_extract_segment_mask_returns_uint8_for_body_segment():
+    from ZebrafishEmbryoAnalyzerLib.mrml import _extract_segment_mask
+
+    seg = _FakeSegWithLabelmap()
+    seg.GetSegmentation().AddEmptySegment("Body", "Body", [0.0, 1.0, 0.0])
+    labelmap = np.array(
+        [
+            [0, 0, 1, 1, 0],
+            [0, 1, 1, 1, 1],
+            [0, 0, 1, 1, 0],
+        ],
+        dtype=np.uint8,
+    )
+    seg.SetSegmentLabelmap("Body", labelmap)
+
+    util, saved = _stub_slicer_array_from_segment(seg, "Body", labelmap)
+    try:
+        mask = _extract_segment_mask(seg, "Body")
+    finally:
+        if saved is not None:
+            util.arrayFromSegment = saved
+        else:
+            try:
+                del util.arrayFromSegment
+            except AttributeError:
+                pass
+
+    assert mask is not None
+    assert mask.shape == labelmap.shape
+    assert mask.dtype == np.uint8
+    assert set(np.unique(mask).tolist()).issubset({0, 1})
+    assert int(mask.sum()) == int((labelmap > 0).sum())
+
+
+def test_extract_segment_mask_returns_none_for_missing_segment():
+    from ZebrafishEmbryoAnalyzerLib.mrml import _extract_segment_mask
+
+    seg = _FakeSegWithLabelmap()
+    # No "Eye" segment added.
+    _slicer, util, _ = _ensure_slicer_module()
+    saved = getattr(util, "arrayFromSegment", None)
+    try:
+        util.arrayFromSegment = lambda *a, **kw: None
+        assert _extract_segment_mask(seg, "Eye") is None
+        assert _extract_segment_mask(None, "Body") is None
+        assert _extract_segment_mask(seg, "") is None
+    finally:
+        if saved is not None:
+            util.arrayFromSegment = saved
+        else:
+            try:
+                del util.arrayFromSegment
+            except AttributeError:
+                pass
+
+
+def test_extract_markups_curve_points_roundtrips_with_add_curve_points():
+    """Issue #56 follow-up: markups written by ``_add_curve_points`` (write
+    path) and read back by ``_extract_markups_curve_points`` (read path)
+    must agree to within rounding for a representative path.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import (
+        _add_curve_points,
+        _extract_markups_curve_points,
+        _vec3,
+    )
+
+    volume_node = _FakeVolumeNode(name="img")
+    # Geometry matching a 800x600 original at 22.99 µm/px, 256x256 mask.
+    volume_node.GetSpacing = lambda: (22.99 / 1000.0, 22.99 / 1000.0, 1.0)
+    volume_node.GetDimensions = lambda: (800, 600, 1)
+
+    # Source path_points in mask (row, col) coords.
+    src = np.array(
+        [
+            [10.0, 20.0],
+            [64.0, 128.0],
+            [128.0, 200.0],
+            [192.0, 350.0],
+            [240.0, 500.0],
+        ],
+        dtype=float,
+    )
+    result = {
+        "mask": np.zeros((256, 256), dtype=np.uint8),
+        "spacing": (22.99 * 600 / 256.0, 22.99 * 800 / 256.0),
+    }
+    curve = _FakeMarkupsNodeWithRead(name="curve")
+    _add_curve_points(curve, src, result)
+
+    pts = _extract_markups_curve_points(curve, volume_node)
+    assert pts is not None
+    assert pts.shape == src.shape
+    np.testing.assert_allclose(pts, src, atol=1e-6)
+
+
+def test_extract_markups_curve_points_returns_none_below_two_points():
+    from ZebrafishEmbryoAnalyzerLib.mrml import _extract_markups_curve_points
+
+    volume_node = _FakeVolumeNode(name="img")
+    volume_node.GetSpacing = lambda: (0.02299, 0.02299, 1.0)
+    volume_node.GetDimensions = lambda: (800, 600, 1)
+    curve = _FakeMarkupsNodeWithRead(name="curve")  # no control points
+
+    assert _extract_markups_curve_points(curve, volume_node) is None
+    assert _extract_markups_curve_points(None, volume_node) is None
+    assert _extract_markups_curve_points(curve, None) is None
+
+
+def test_extract_markups_line_endpoints_roundtrips():
+    from ZebrafishEmbryoAnalyzerLib.mrml import (
+        _add_line_endpoints,
+        _extract_markups_line_endpoints,
+    )
+
+    volume_node = _FakeVolumeNode(name="img")
+    volume_node.GetSpacing = lambda: (22.99 / 1000.0, 22.99 / 1000.0, 1.0)
+    volume_node.GetDimensions = lambda: (800, 600, 1)
+
+    src = ((10.0, 20.0), (240.0, 500.0))
+    result = {
+        "mask": np.zeros((256, 256), dtype=np.uint8),
+        "spacing": (22.99 * 600 / 256.0, 22.99 * 800 / 256.0),
+    }
+    line = _FakeMarkupsLineWithRead(name="line")
+    _add_line_endpoints(line, src, result, volume_node)
+
+    out = _extract_markups_line_endpoints(line, volume_node)
+    assert out is not None
+    (r0, c0), (r1, c1) = out
+    assert abs(r0 - src[0][0]) < 1e-6
+    assert abs(c0 - src[0][1]) < 1e-6
+    assert abs(r1 - src[1][0]) < 1e-6
+    assert abs(c1 - src[1][1]) < 1e-6
+
+
+def test_populate_row_overlays_from_scene_pulls_all_four_keys():
+    """Integration: a row whose volume node references Body + Eye segs and
+    curve + line markups ends up with mask / eye_mask / path_points /
+    straight_line_points populated on the row dict, with the original
+    metrics untouched.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import (
+        _add_curve_points,
+        _add_line_endpoints,
+        _populate_row_overlays_from_scene,
+    )
+
+    volume_node = _FakeVolumeNode(name="embryo")
+    volume_node.GetSpacing = lambda: (22.99 / 1000.0, 22.99 / 1000.0, 1.0)
+    volume_node.GetDimensions = lambda: (800, 600, 1)
+
+    # Seg node with Body + Eye labelmaps.
+    seg = _FakeSegWithLabelmap(name="embryo-seg")
+    seg.GetSegmentation().AddEmptySegment("Body", "Body", [0.0, 1.0, 0.0])
+    seg.GetSegmentation().AddEmptySegment("Eye", "Eye", [1.0, 0.0, 0.0])
+    body_arr = np.zeros((256, 256), dtype=np.uint8)
+    body_arr[100:200, 80:240] = 1
+    eye_arr = np.zeros((256, 256), dtype=np.uint8)
+    eye_arr[110:130, 120:140] = 1
+    seg.SetSegmentLabelmap("Body", body_arr)
+    seg.SetSegmentLabelmap("Eye", eye_arr)
+
+    # Curve + line with control points.
+    curve = _FakeMarkupsNodeWithRead(name="embryo-curve")
+    line = _FakeMarkupsLineWithRead(name="embryo-line")
+    result_for_write = {
+        "mask": body_arr,
+        "spacing": (22.99 * 600 / 256.0, 22.99 * 800 / 256.0),
+    }
+    src_path = np.array(
+        [[10.0, 20.0], [128.0, 128.0], [240.0, 250.0]], dtype=float
+    )
+    _add_curve_points(curve, src_path, result_for_write)
+    src_sl = ((10.0, 20.0), (240.0, 250.0))
+    _add_line_endpoints(line, src_sl, result_for_write, volume_node)
+
+    # Wire the references on the volume node.
+    volume_node.SetNodeReferenceID("ZebrafishSegmentation", seg.GetID())
+    volume_node.SetNodeReferenceID("ZebrafishMarkupsCurve", curve.GetID())
+    volume_node.SetNodeReferenceID("ZebrafishMarkupsLine", line.GetID())
+
+    scene = _FakeScene()
+    scene._nodes[seg.GetID()] = seg
+    scene._nodes[curve.GetID()] = curve
+    scene._nodes[line.GetID()] = line
+
+    row = {
+        "filename":  "embryo.png",
+        "length":    1200.0,
+        "curvature": 2,
+        "ratio":     1.05,
+        "exclude":   False,
+        "error":     "",
+    }
+
+    _slicer, util, _ = _ensure_slicer_module()
+    saved = getattr(util, "arrayFromSegment", None)
+    try:
+        def _fake(sn, sid):
+            return {"Body": body_arr, "Eye": eye_arr}.get(sid)
+        util.arrayFromSegment = _fake
+
+        _populate_row_overlays_from_scene(row, volume_node, scene)
+    finally:
+        if saved is not None:
+            util.arrayFromSegment = saved
+        else:
+            try:
+                del util.arrayFromSegment
+            except AttributeError:
+                pass
+
+    assert "mask" in row and row["mask"].sum() == body_arr.sum()
+    assert "eye_mask" in row and row["eye_mask"].sum() == eye_arr.sum()
+    assert "path_points" in row and row["path_points"].shape == (3, 2)
+    np.testing.assert_allclose(row["path_points"], src_path, atol=1e-6)
+    assert "straight_line_points" in row
+    (r0, c0), (r1, c1) = row["straight_line_points"]
+    assert abs(r0 - src_sl[0][0]) < 1e-6
+    assert abs(c0 - src_sl[0][1]) < 1e-6
+    assert abs(r1 - src_sl[1][0]) < 1e-6
+    assert abs(c1 - src_sl[1][1]) < 1e-6
+    # Existing metrics untouched.
+    assert row["length"] == 1200.0
+    assert row["curvature"] == 2
+    assert row["ratio"] == 1.05
+
+
+def test_populate_row_overlays_skips_row_with_error():
+    """Rows already flagged ``error`` must not have overlay inputs pulled:
+    ``make_full_overlay`` short-circuits to bare original anyway, and the
+    defensive guard means the row would not benefit from re-derivation.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import _populate_row_overlays_from_scene
+
+    volume_node = _FakeVolumeNode(name="img")
+    seg = _FakeSegWithLabelmap(name="seg")
+    seg.GetSegmentation().AddEmptySegment("Body", "Body", [0.0, 1.0, 0.0])
+    seg.SetSegmentLabelmap("Body", np.zeros((256, 256), dtype=np.uint8))
+    volume_node.SetNodeReferenceID("ZebrafishSegmentation", seg.GetID())
+    scene = _FakeScene()
+    scene._nodes[seg.GetID()] = seg
+
+    row = {"filename": "x.png", "error": "Segmentation node missing"}
+
+    _slicer, util, _ = _ensure_slicer_module()
+    saved = getattr(util, "arrayFromSegment", None)
+    called = {"n": 0}
+    try:
+        def _fake(*a, **kw):
+            called["n"] += 1
+            return None
+        util.arrayFromSegment = _fake
+
+        _populate_row_overlays_from_scene(row, volume_node, scene)
+    finally:
+        if saved is not None:
+            util.arrayFromSegment = saved
+        else:
+            try:
+                del util.arrayFromSegment
+            except AttributeError:
+                pass
+
+    assert "mask" not in row
+    assert "eye_mask" not in row
+    assert "path_points" not in row
+    assert "straight_line_points" not in row
+    assert called["n"] == 0  # never even queried
+
+
+def test_populate_row_overlays_leaves_partial_scene_state_partial():
+    """If the user removed the Eye segment but kept Body, ``eye_mask``
+    stays unset on the row (overlay just silently skips that layer) and
+    the other three keys still populate.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import (
+        _add_curve_points,
+        _add_line_endpoints,
+        _populate_row_overlays_from_scene,
+    )
+
+    volume_node = _FakeVolumeNode(name="img")
+    volume_node.GetSpacing = lambda: (22.99 / 1000.0, 22.99 / 100.0, 1.0)
+    volume_node.GetDimensions = lambda: (800, 600, 1)
+
+    seg = _FakeSegWithLabelmap(name="seg")
+    seg.GetSegmentation().AddEmptySegment("Body", "Body", [0.0, 1.0, 0.0])
+    body_arr = np.zeros((256, 256), dtype=np.uint8)
+    body_arr[100:200, 80:240] = 1
+    seg.SetSegmentLabelmap("Body", body_arr)
+
+    curve = _FakeMarkupsNodeWithRead(name="curve")
+    line = _FakeMarkupsLineWithRead(name="line")
+    result_for_write = {
+        "mask": body_arr,
+        "spacing": (22.99 * 600 / 256.0, 22.99 * 800 / 256.0),
+    }
+    src_path = np.array([[10.0, 20.0], [128.0, 128.0]], dtype=float)
+    _add_curve_points(curve, src_path, result_for_write)
+    _add_line_endpoints(line, ((10.0, 20.0), (240.0, 250.0)), result_for_write, volume_node)
+
+    volume_node.SetNodeReferenceID("ZebrafishSegmentation", seg.GetID())
+    volume_node.SetNodeReferenceID("ZebrafishMarkupsCurve", curve.GetID())
+    volume_node.SetNodeReferenceID("ZebrafishMarkupsLine", line.GetID())
+    scene = _FakeScene()
+    scene._nodes[seg.GetID()] = seg
+    scene._nodes[curve.GetID()] = curve
+    scene._nodes[line.GetID()] = line
+
+    row = {"filename": "x.png", "exclude": False, "error": ""}
+
+    _slicer, util, _ = _ensure_slicer_module()
+    saved = getattr(util, "arrayFromSegment", None)
+    try:
+        util.arrayFromSegment = lambda sn, sid: (
+            body_arr if sid == "Body" else None
+        )
+        _populate_row_overlays_from_scene(row, volume_node, scene)
+    finally:
+        if saved is not None:
+            util.arrayFromSegment = saved
+        else:
+            try:
+                del util.arrayFromSegment
+            except AttributeError:
+                pass
+
+    assert "mask" in row
+    assert "eye_mask" not in row  # Eye segment missing → no key
+    assert "path_points" in row
+    assert "straight_line_points" in row

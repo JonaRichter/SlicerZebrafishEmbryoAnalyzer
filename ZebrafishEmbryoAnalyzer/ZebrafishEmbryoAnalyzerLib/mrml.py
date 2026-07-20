@@ -1898,3 +1898,262 @@ def apply_analysis_to_volume_node(result, volume_node, scene, um_per_px):
         )
 
     return seg_node
+
+
+# ---------------------------------------------------------------------------
+# Issue #56 follow-up: scene-reload overlay reconstruction
+# ---------------------------------------------------------------------------
+#
+# ``volume_node_to_result_dict`` only restores the scalar metric attributes
+# (length, curvature, ratio, eye_area, eye_diameter). After a Save Scene
+# -> Load Scene round-trip, the segmentation and markups nodes ARE in the
+# scene (so the Data module still shows the segmentation, and the user can
+# show/hide it via Slicer's default slice views), but the Zebra module's
+# ``result`` dicts lack the ``mask`` / ``eye_mask`` / ``path_points`` /
+# ``straight_line_points`` keys that ``overlay.make_full_overlay`` draws.
+# The gallery therefore shows bare originals after a scene reload even
+# though every analysis artefact is sitting right there in the scene.
+#
+# The helpers below re-derive those four row keys from the existing scene
+# nodes referenced via ``ROLE_ZEBRAFISH_SEGMENTATION``,
+# ``ROLE_ZEBRAFISH_MARKUPS_CURVE``, and ``ROLE_ZEBRAFISH_MARKUPS_LINE``.
+# Each helper is best-effort and never raises so a partially-restored
+# scene (e.g. the user removed the Eye segment in the Data module) still
+# loads cleanly — the missing key just means that overlay layer is
+# silently omitted.
+
+
+def _extract_segment_mask(seg_node, segment_name):
+    """Return the binary labelmap of ``segment_name`` on ``seg_node`` as a
+    2-D uint8 ndarray (values 0 / 1), or ``None`` when the segment is
+    missing or extraction fails.
+
+    Lazy-imports ``slicer`` so the function is unit-testable without the
+    Slicer runtime; tests stub ``slicer.util.arrayFromSegment`` via
+    ``sys.modules`` before importing :mod:`ZebrafishEmbryoAnalyzerLib.mrml`.
+
+    The returned array keeps the segmentation's stored geometry — the
+    overlay code resizes to the original image dimensions internally, so
+    any (H, W) is acceptable as long as it carries the body's footprint.
+    """
+    if seg_node is None or not segment_name:
+        return None
+    try:
+        import numpy as np  # local — module never imports numpy at top
+        import slicer  # lazy: tests never import slicer
+    except Exception:
+        return None
+    try:
+        seg = seg_node.GetSegmentation()
+    except Exception:
+        return None
+    if seg is None:
+        return None
+    try:
+        seg_id = seg.GetSegmentIdBySegmentName(segment_name)
+    except Exception:
+        seg_id = ""
+    if not seg_id:
+        return None
+    try:
+        arr = slicer.util.arrayFromSegment(seg_node, seg_id)
+    except Exception:
+        return None
+    if arr is None or getattr(arr, "size", 0) == 0:
+        return None
+    try:
+        # ``arrayFromSegment`` returns (K, H, W) for labelmap volumes;
+        # collapse to a single 2-D mask.
+        while arr.ndim > 2:
+            arr = arr[0]
+        return (arr > 0).astype(np.uint8)
+    except Exception:
+        return None
+
+
+def _markups_to_mask_coords(volume_node):
+    """Return ``(col_mm, row_mm)`` for converting RAS positions to mask coords.
+
+    The analysis pipeline writes control points into RAS as
+    ``(mask_w - 1 - col) * col_mm`` etc. (see :func:`_add_curve_points` and
+    :func:`_add_line_endpoints`). To invert on reload we need ``col_mm`` /
+    ``row_mm`` expressed in mask-pixel units — i.e. the physical extent of
+    the volume mapped onto the 256-pixel mask grid, not the volume's own
+    per-pixel spacing.
+
+    Returns ``(col_mm, row_mm)`` or ``None`` when ``volume_node`` does not
+    expose the required geometry. Never raises.
+    """
+    if volume_node is None:
+        return None
+    try:
+        spacing = volume_node.GetSpacing()
+        dims = volume_node.GetDimensions()
+    except Exception:
+        return None
+    if spacing is None or dims is None:
+        return None
+    try:
+        col_mm = (float(dims[0]) / 256.0) * float(spacing[0])
+        row_mm = (float(dims[1]) / 256.0) * float(spacing[1])
+    except Exception:
+        return None
+    if row_mm <= 0 or col_mm <= 0:
+        return None
+    return col_mm, row_mm
+
+
+def _extract_markups_curve_points(curve_node, volume_node):
+    """Return ``path_points`` (shape ``(N, 2)``) read back from ``curve_node``.
+
+    Mirrors the conversion :func:`_add_curve_points` performs in reverse:
+    each RAS control point ``(R, A, S)`` becomes
+    ``(mask_h - 1 - A / row_mm, mask_w - 1 - R / col_mm)``. Returns
+    ``None`` when the curve has fewer than two points or extraction
+    fails. Never raises.
+    """
+    if curve_node is None or volume_node is None:
+        return None
+    try:
+        import numpy as np
+    except Exception:
+        return None
+    coords = _markups_to_mask_coords(volume_node)
+    if coords is None:
+        return None
+    col_mm, row_mm = coords
+    try:
+        n = int(curve_node.GetNumberOfControlPoints())
+    except Exception:
+        return None
+    if n < 2:
+        return None
+    try:
+        out = np.zeros((n, 2), dtype=float)
+        pos = [0.0, 0.0, 0.0]
+        for i in range(n):
+            pos[0] = pos[1] = pos[2] = 0.0
+            try:
+                curve_node.GetNthControlPointPosition(i, pos)
+            except Exception:
+                return None
+            out[i, 0] = 256.0 - 1.0 - pos[1] / row_mm
+            out[i, 1] = 256.0 - 1.0 - pos[0] / col_mm
+    except Exception:
+        return None
+    return out
+
+
+def _extract_markups_line_endpoints(line_node, volume_node):
+    """Return ``straight_line_points`` ``((r0, c0), (r1, c1))`` from ``line_node``.
+
+    Mirrors :func:`_add_line_endpoints`. Returns ``None`` when the line has
+    fewer than two control points or extraction fails. Never raises.
+    """
+    if line_node is None or volume_node is None:
+        return None
+    coords = _markups_to_mask_coords(volume_node)
+    if coords is None:
+        return None
+    col_mm, row_mm = coords
+    try:
+        n = int(line_node.GetNumberOfControlPoints())
+    except Exception:
+        return None
+    if n < 2:
+        return None
+    try:
+        pos0 = [0.0, 0.0, 0.0]
+        pos1 = [0.0, 0.0, 0.0]
+        try:
+            line_node.GetNthControlPointPosition(0, pos0)
+            line_node.GetNthControlPointPosition(1, pos1)
+        except Exception:
+            return None
+        r0 = 256.0 - 1.0 - pos0[1] / row_mm
+        c0 = 256.0 - 1.0 - pos0[0] / col_mm
+        r1 = 256.0 - 1.0 - pos1[1] / row_mm
+        c1 = 256.0 - 1.0 - pos1[0] / col_mm
+    except Exception:
+        return None
+    return ((r0, c0), (r1, c1))
+
+
+def _populate_row_overlays_from_scene(row, volume_node, scene):
+    """In-place: pull overlay inputs from scene nodes into ``row``.
+
+    Walks the ``ROLE_ZEBRAFISH_SEGMENTATION`` /
+    ``ROLE_ZEBRAFISH_MARKUPS_CURVE`` / ``ROLE_ZEBRAFISH_MARKUPS_LINE``
+    references on ``volume_node`` and writes ``mask`` / ``eye_mask`` /
+    ``path_points`` / ``straight_line_points`` keys onto ``row`` so
+    :func:`overlay.make_full_overlay` can render the analyzed overlay
+    after a saved-scene reload.
+
+    Skips work when ``row`` already carries an ``error`` (the row will be
+    auto-excluded and rendered as bare original anyway, by the defensive
+    guard in :func:`overlay.make_full_overlay`). Best-effort: every helper
+    silently returns ``None`` on failure, so a partially-restored scene
+    just leaves the corresponding row key unset instead of crashing the
+    widget.
+    """
+    if row is None or volume_node is None or scene is None:
+        return
+    if row.get("error"):
+        return
+
+    # Body + eye masks from the segmentation node.
+    seg_id = ""
+    try:
+        if hasattr(volume_node, "GetNodeReferenceID"):
+            seg_id = volume_node.GetNodeReferenceID(ROLE_ZEBRAFISH_SEGMENTATION) or ""
+    except Exception:
+        seg_id = ""
+    if seg_id:
+        seg_node = None
+        try:
+            seg_node = scene.GetNodeByID(seg_id)
+        except Exception:
+            seg_node = None
+        if seg_node is not None:
+            mask = _extract_segment_mask(seg_node, "Body")
+            if mask is not None:
+                row["mask"] = mask
+            eye_mask = _extract_segment_mask(seg_node, "Eye")
+            if eye_mask is not None:
+                row["eye_mask"] = eye_mask
+
+    # Centerline from the MarkupsCurveNode (if path was computed).
+    curve_id = ""
+    try:
+        if hasattr(volume_node, "GetNodeReferenceID"):
+            curve_id = volume_node.GetNodeReferenceID(ROLE_ZEBRAFISH_MARKUPS_CURVE) or ""
+    except Exception:
+        curve_id = ""
+    if curve_id:
+        curve_node = None
+        try:
+            curve_node = scene.GetNodeByID(curve_id)
+        except Exception:
+            curve_node = None
+        if curve_node is not None:
+            pts = _extract_markups_curve_points(curve_node, volume_node)
+            if pts is not None:
+                row["path_points"] = pts
+
+    # Endpoints from the MarkupsLineNode (if length was computed).
+    line_id = ""
+    try:
+        if hasattr(volume_node, "GetNodeReferenceID"):
+            line_id = volume_node.GetNodeReferenceID(ROLE_ZEBRAFISH_MARKUPS_LINE) or ""
+    except Exception:
+        line_id = ""
+    if line_id:
+        line_node = None
+        try:
+            line_node = scene.GetNodeByID(line_id)
+        except Exception:
+            line_node = None
+        if line_node is not None:
+            sl = _extract_markups_line_endpoints(line_node, volume_node)
+            if sl is not None:
+                row["straight_line_points"] = sl

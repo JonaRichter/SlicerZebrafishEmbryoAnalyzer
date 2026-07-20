@@ -616,6 +616,7 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
                 list_tracked_volume_nodes,
                 volume_node_to_result_dict_with_validation,
                 volume_node_to_pixels,
+                _populate_row_overlays_from_scene,
             )
         except Exception:
             return []
@@ -631,6 +632,18 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
             px = volume_node_to_pixels(node)
             if px is not None:
                 row["original"] = px
+            # Issue #56 follow-up: pull the segmentation/markups overlay
+            # inputs from the linked scene nodes so the gallery shows the
+            # analyzed overlay, not a bare original, after a saved-scene
+            # reload. Without this the rows exist (the Data module still
+            # has the segmentation) but ``make_full_overlay`` has nothing
+            # to draw and every thumbnail is bare.
+            try:
+                _populate_row_overlays_from_scene(row, node, scene)
+            except Exception:
+                logging.exception(
+                    "ZebrafishEmbryoAnalyzer: row overlay reconstruction failed"
+                )
             # stashed so #42's segMTime comparison doesn't need to walk
             # the MRML scene again — keeps the per-row state self-contained.
             row["_volume_node"] = node
