@@ -465,17 +465,28 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
         self.setup_segmentation_staleness_observers()
 
     def _clear_stale_flags_on_tracked_volumes(self):
-        """Best-effort: drop the stale=true flag and the matching
-        ``Segmentation modified — recompute needed`` error string on
-        every tracked volume node.
+        """Best-effort: undo the whole stale-marking on every tracked
+        volume node that carries the ``Segmentation modified — recompute
+        needed`` signature.
 
-        Used at scene-import time so a freshly-loaded scene does not
-        carry over a stale flag the user never actually triggered. Only
-        the stale-specific error string is cleared — other error rows
-        (e.g. "Could not read image.") and any user-set ``exclude``
-        attribute are preserved verbatim. Real Segment Editor edits
-        after the reload still re-set the flag via the MTime-filtered
-        observer installed immediately after.
+        ``mrml.mark_volume_node_stale`` sets three attributes together —
+        ``stale=true``, ``exclude=true`` and ``error=STALE_ERROR_MESSAGE``
+        — and Slicer serialises all three into the scene. On reload the
+        saved segmentation *is* the current state (Data module is ground
+        truth), so a row that was flagged stale in the previous session
+        must come back clean: not stale, not error, and — crucially — not
+        excluded, otherwise ``overlay.make_full_overlay`` returns the bare
+        image and the reconstructed body/eye masks never reach the gallery
+        or detail view.
+
+        Only rows carrying the exact stale-error signature are touched, so
+        an unrelated error row (e.g. "Could not read image.") and a
+        genuine user exclusion (which never carries the stale error) are
+        preserved verbatim. ``exclude`` is reset to ``"false"`` rather than
+        removed so ``validate_volume_node``'s "was analysed" check (keyed
+        on the attribute's presence) still holds. Real Segment Editor edits
+        after the reload re-set all three via the MTime-filtered observer
+        installed immediately after.
         """
         try:
             import slicer
@@ -484,6 +495,7 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
                 clear_volume_node_stale,
                 STALE_ERROR_MESSAGE,
                 ATTR_PREFIX,
+                ATTR_EXCLUDE,
             )
         except Exception:
             return
@@ -495,14 +507,29 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
             return
         stale_error_attr = ATTR_PREFIX + "error"
         for vol in list_tracked_volume_nodes(param_node, scene):
+            # Was this row marked stale by our observer? Check before we
+            # clear anything, so we can undo the coupled exclude/error too.
+            try:
+                stale_induced = (
+                    hasattr(vol, "GetAttribute")
+                    and vol.GetAttribute(stale_error_attr) == STALE_ERROR_MESSAGE
+                )
+            except Exception:
+                stale_induced = False
             try:
                 clear_volume_node_stale(vol)
             except Exception:
                 pass
+            if not stale_induced:
+                continue
             try:
-                if hasattr(vol, "GetAttribute") and hasattr(vol, "RemoveAttribute"):
-                    if vol.GetAttribute(stale_error_attr) == STALE_ERROR_MESSAGE:
-                        vol.RemoveAttribute(stale_error_attr)
+                if hasattr(vol, "RemoveAttribute"):
+                    vol.RemoveAttribute(stale_error_attr)
+            except Exception:
+                pass
+            try:
+                if hasattr(vol, "SetAttribute"):
+                    vol.SetAttribute(ATTR_EXCLUDE, "false")
             except Exception:
                 pass
 

@@ -500,11 +500,14 @@ def test_observer_callback_falls_back_to_mark_stale_when_mtime_unavailable():
 
 
 def test_clear_stale_flags_on_tracked_volumes_strips_stale_and_stale_error():
-    """Issue #56 follow-up: scene-reload must scrub ``stale=true`` and
-    the matching ``Segmentation modified — recompute needed`` error
-    string off every tracked volume, but must preserve a non-stale
-    error row (e.g. "Could not read image.") and any user-set
-    ``exclude`` attribute.
+    """Issue #56 follow-up: scene-reload must undo the whole stale
+    marking (``stale=true``, ``exclude=true`` and the matching
+    ``Segmentation modified — recompute needed`` error string) off every
+    tracked volume that carries the stale-error signature, but must
+    preserve a non-stale error row (e.g. "Could not read image.") and a
+    genuine user-set ``exclude`` attribute (which never carries the stale
+    error). Resetting the stale-induced exclude is what lets the
+    reconstructed masks reach the overlay instead of being hidden.
     """
     from unittest.mock import patch
     Cls = _install_logic_methods()
@@ -544,12 +547,15 @@ def test_clear_stale_flags_on_tracked_volumes_strips_stale_and_stale_error():
     ):
         Cls._clear_stale_flags_on_tracked_volumes(self_)
 
-    # Stale row scrubbed: stale attr gone, error attr gone.
+    # Stale row scrubbed: stale attr gone, error attr gone, and the
+    # stale-induced exclude reset to "false" so the overlay is not
+    # suppressed after reload.
     assert stale_volume.GetAttribute(ATTR_STALE) is None
     assert stale_volume.GetAttribute("ZebrafishAnalysis.error") is None
+    assert stale_volume.GetAttribute(ATTR_EXCLUDE) == "false"
     # Real error row preserved verbatim.
     assert error_volume.GetAttribute("ZebrafishAnalysis.error") == "Could not read image."
-    # User-set exclude preserved verbatim.
+    # Genuine user-set exclude (no stale error) preserved verbatim.
     assert excluded_volume.GetAttribute(ATTR_EXCLUDE) == "true"
 
 
