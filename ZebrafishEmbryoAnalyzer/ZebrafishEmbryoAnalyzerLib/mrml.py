@@ -372,6 +372,14 @@ def validate_volume_node(node):
     Issue #41 acceptance: a row with a broken segmentation reference must
     auto-exclude via the existing error-row mechanism rather than crash
     the module.
+
+    Issue #56 follow-up: a *dangling* reference — the role is set but the
+    referenced id no longer resolves in the scene (the user deleted the
+    segmentation in the Data module) — is now also surfaced as a
+    recoverable error instead of silently being treated as healthy. This
+    matches the "Data module is ground truth" rule: a row whose seg was
+    removed must auto-exclude so a future analysis re-run sees the volume
+    as needing a fresh segmentation, not as already-attached.
     """
     if node is None:
         return ("Missing volume node", "")
@@ -400,6 +408,25 @@ def validate_volume_node(node):
         # Not an error per se — could be a half-finished image where
         # analysis set metrics but seg-node attachment failed. Surface as a
         # specific recoverable error so the user can decide.
+        return ("Segmentation node missing", "")
+
+    # Issue #56 follow-up: resolve the id against the live scene. If the
+    # user deleted the segmentation node in the Data module, the role on
+    # the volume node still holds the now-dangling id — a naive check
+    # accepts that as healthy and the next analysis silently re-attaches
+    # the freshly-created seg, resurrecting the node. Resolve against
+    # ``slicer.mrmlScene`` (best-effort; the test fakes carry the role but
+    # no real scene, so a scene-resolution failure is treated as a
+    # warning, not an auto-exclude).
+    seg_live = None
+    try:
+        import slicer  # lazy: tests never import slicer
+        scene = getattr(slicer, "mrmlScene", None)
+        if scene is not None:
+            seg_live = scene.GetNodeByID(seg_id)
+    except Exception:
+        seg_live = None
+    if scene is not None and seg_live is None:
         return ("Segmentation node missing", "")
     return ("", "")
 
@@ -778,7 +805,7 @@ def resample_mask_to_original(mask_2d, h_orig, w_orig):
     return cv2.resize(binary, (w_orig, h_orig), interpolation=cv2.INTER_NEAREST)
 
 
-def update_segmentation_node(result, um_per_px, node, image_node=None):
+def update_segmentation_node(result, um_per_px, node, image_node=None, preserve_user_segments=False):
     """Write body and eye masks from a result dict into an existing vtkMRMLSegmentationNode.
 
     result["original"]: uint8 ndarray shape (H_orig, W_orig, 3).
@@ -787,6 +814,13 @@ def update_segmentation_node(result, um_per_px, node, image_node=None):
     um_per_px: physical scale of the original image in micrometres per pixel.
     image_node: optional vtkMRMLVectorVolumeNode — used to set reference geometry
         so Slicer can position the segmentation in slice views.
+    preserve_user_segments: when True, only refresh Body/Eye segments that
+        already exist on ``node``. Do not call ``RemoveAllSegments()`` and do
+        not add Body/Eye if the user removed them in the Segment Editor.
+        Default ``False`` (legacy behaviour: full rebuild) so callers that
+        always pass a fresh node are unaffected. The per-image batch path
+        (``_create_segmentation_for_volume``) flips this to ``True`` for
+        re-runs to respect the Data-module-is-ground-truth rule.
 
     VTK step order:
       1. Lazy-import vtk, numpy, slicer, vtkSegmentationCore inside function.
@@ -797,9 +831,12 @@ def update_segmentation_node(result, um_per_px, node, image_node=None):
          - flipud + fliplr + ascontiguousarray to match VTK coordinate convention.
       6. Set master representation to binary labelmap.
       7. Wrap full modification in StartModify/EndModify to suppress intermediate events.
-      8. node.GetSegmentation().RemoveAllSegments()
-      9. Add "Body" segment (green) — always.
-      10. Add "Eye" segment (red) — only when eye_mask is not None and eye_mask.any().
+      8. When preserve_user_segments=False: node.GetSegmentation().RemoveAllSegments()
+         (legacy full-rebuild behaviour).
+      9. Add or refresh "Body" segment (green) — always when present in result;
+         preserved mode only adds it when it already existed.
+      10. Add or refresh "Eye" segment (red) — only when eye_mask is not None
+         and eye_mask.any(); preserved mode only adds it when it already existed.
       11. Populate each segment via SetBinaryLabelmapToSegment.
       12. Set reference image geometry from image_node if provided.
     """
@@ -848,16 +885,38 @@ def update_segmentation_node(result, um_per_px, node, image_node=None):
     was_modifying = node.StartModify()
     try:
         seg = node.GetSegmentation()
-        seg.RemoveAllSegments()
 
-        if body_2d is not None:
-            body_id = seg.AddEmptySegment("Body", "Body", [0.0, 1.0, 0.0])
+        # Data module is ground truth for the contents of a segmentation node:
+        # if the user removed "Body" or "Eye" inside the Segment Editor, do
+        # not silently add it back on the next analysis run. In legacy
+        # (preserve_user_segments=False) mode — used when callers know they
+        # hold a fresh node — wipe the slate first to match the prior
+        # full-rebuild behaviour.
+        existing_segments = set()
+        try:
+            for s in seg.GetSegments():
+                existing_segments.add(s)
+        except Exception:
+            existing_segments = set()
+
+        if not preserve_user_segments:
+            seg.RemoveAllSegments()
+            existing_segments = set()
+
+        if body_2d is not None and (not preserve_user_segments or "Body" in existing_segments):
+            if preserve_user_segments and "Body" in existing_segments:
+                body_id = "Body"
+            else:
+                body_id = seg.AddEmptySegment("Body", "Body", [0.0, 1.0, 0.0])
             slicer.vtkSlicerSegmentationsModuleLogic.SetBinaryLabelmapToSegment(
                 _make_oriented_image(body_2d), node, body_id
             )
 
-        if eye_2d is not None:
-            eye_id = seg.AddEmptySegment("Eye", "Eye", [1.0, 0.0, 0.0])
+        if eye_2d is not None and (not preserve_user_segments or "Eye" in existing_segments):
+            if preserve_user_segments and "Eye" in existing_segments:
+                eye_id = "Eye"
+            else:
+                eye_id = seg.AddEmptySegment("Eye", "Eye", [1.0, 0.0, 0.0])
             slicer.vtkSlicerSegmentationsModuleLogic.SetBinaryLabelmapToSegment(
                 _make_oriented_image(eye_2d), node, eye_id
             )
@@ -1165,26 +1224,33 @@ def _seg_mtime(seg_node) -> str:
 def _set_node_reference(volume_node, role, child_node):
     """Attach ``child_node`` to ``volume_node`` under ``role`` (no-op if either is None).
 
-    Used by both the segmentation and markups attach helpers. Honours the
-    additive vs. single-reference distinction by calling ``AddNodeReferenceID``
-    when available (matches the #38 batch pattern) and falling back to
-    ``SetNodeReferenceID`` otherwise — in both cases, downstream readers use
-    ``GetNodeReference(role)`` which resolves the *first* ID.
+    Used by the segmentation, markups-line, and markups-curve attach helpers.
+    Each per-image helper writes to a *different* role string, so duplicate
+    roles only ever arise when the same helper is called twice (e.g. a
+    re-run reusing the same per-image segmentation — see
+    :func:`_create_segmentation_for_volume`). For per-image roles we want a
+    single, replaceable reference: ``SetNodeReferenceID`` collapses
+    re-attachment to the same child id, and when the child id has changed
+    (e.g. the user deleted the seg and the helper created a new one) it
+    replaces the dangling reference cleanly. ``AddNodeReferenceID`` would
+    accumulate duplicate ids across runs, eventually orphaning one entry.
+    Falls back to ``AddNodeReferenceID`` only when ``SetNodeReferenceID``
+    is unavailable on this MRML node type — purely defensive.
     """
     if volume_node is None or child_node is None:
         return
     nid = child_node.GetID() if hasattr(child_node, "GetID") else None
     if nid is None:
         return
-    if hasattr(volume_node, "AddNodeReferenceID"):
-        try:
-            volume_node.AddNodeReferenceID(role, nid)
-            return
-        except Exception:
-            pass
     if hasattr(volume_node, "SetNodeReferenceID"):
         try:
             volume_node.SetNodeReferenceID(role, nid)
+            return
+        except Exception:
+            pass
+    if hasattr(volume_node, "AddNodeReferenceID"):
+        try:
+            volume_node.AddNodeReferenceID(role, nid)
         except Exception:
             pass
 
@@ -1213,13 +1279,52 @@ def _reparent_in_subject_hierarchy(scene, child_node, parent_node):
         pass
 
 
+def _get_existing_seg_for_volume(volume_node, scene):
+    """Return the segmentation node already attached to ``volume_node``, if any.
+
+    The Data module is ground truth: a node the user deletes in the Data
+    module must not be silently recreated by a later analysis run. This
+    helper resolves the per-image ``ROLE_ZEBRAFISH_SEGMENTATION`` reference
+    against ``scene`` and returns the live ``vtkMRMLSegmentationNode`` when
+    it still exists, otherwise ``None``. Callers (e.g.
+    :func:`_create_segmentation_for_volume`) decide whether to reuse the
+    existing node or create a new one.
+
+    Returns ``None`` on any failure — the volume node being torn down, the
+    reference role missing, or the referenced id not resolving. Never
+    raises; callers always fall back to "create new".
+    """
+    if volume_node is None or scene is None:
+        return None
+    seg_id = None
+    try:
+        if hasattr(volume_node, "GetNodeReferenceID"):
+            seg_id = volume_node.GetNodeReferenceID(ROLE_ZEBRAFISH_SEGMENTATION)
+    except Exception:
+        seg_id = None
+    if not seg_id:
+        return None
+    try:
+        return scene.GetNodeByID(seg_id)
+    except Exception:
+        return None
+
+
 def _create_segmentation_for_volume(result, volume_node, scene, um_per_px):
     """Create one segmentation node for ``volume_node`` and attach via ``ROLE_ZEBRAFISH_SEGMENTATION``.
 
-    Reuses :func:`update_segmentation_node` so body + eye segments and
-    reference geometry stay consistent with the existing single-image path.
-    Returns the new node, or ``None`` when the result carries no image
-    (decoding failure / error row) — callers must tolerate ``None``.
+    Reuses an existing segmentation node attached to ``volume_node`` when one
+    is still in the scene — see :func:`_get_existing_seg_for_volume`. The
+    Data module is ground truth: deleting a segmentation in the Data module
+    drops the reference, so the next call sees no existing node and creates
+    a fresh one. Re-running analysis on the same volume also reuses the
+    existing node, refreshing the segments it still has while leaving any
+    user-added segments untouched (see ``preserve_user_segments`` on
+    :func:`update_segmentation_node`).
+
+    Returns the (reused or newly-created) segmentation node, or ``None``
+    when the result carries no image (decoding failure / error row) — callers
+    must tolerate ``None``.
     """
     if volume_node is None or scene is None:
         return None
@@ -1227,24 +1332,39 @@ def _create_segmentation_for_volume(result, volume_node, scene, um_per_px):
     if original is None:
         return None
     import slicer  # lazy: tests never import slicer
-    seg_node = scene.AddNewNodeByClass("vtkMRMLSegmentationNode")
-    seg_node.CreateDefaultDisplayNodes()
-    seg_node.SetName(_seg_display_name(result, volume_node))
-    update_segmentation_node(result, um_per_px, seg_node, image_node=volume_node)
+    seg_node = _get_existing_seg_for_volume(volume_node, scene)
+    created_here = False
+    if seg_node is None:
+        seg_node = scene.AddNewNodeByClass("vtkMRMLSegmentationNode")
+        seg_node.CreateDefaultDisplayNodes()
+        seg_node.SetName(_seg_display_name(result, volume_node))
+        created_here = True
+    # Preserve any segments the user added (or kept) inside the existing
+    # node — only the Body/Eye segments from this analysis result are
+    # overwritten. A freshly-created node has no prior segments so the
+    # preserve path is identical to a full rebuild.
+    update_segmentation_node(
+        result,
+        um_per_px,
+        seg_node,
+        image_node=volume_node,
+        preserve_user_segments=not created_here,
+    )
     _set_node_reference(volume_node, ROLE_ZEBRAFISH_SEGMENTATION, seg_node)
-    _reparent_in_subject_hierarchy(scene, seg_node, volume_node)
-    # Every per-image segmentation is created hidden — without this, a
-    # multi-image batch shows every segmentation stacked on top of each
-    # other in the slice view regardless of which volume is the current
-    # background (Slicer doesn't tie segmentation visibility to the
-    # background volume by default). Users toggle visibility per-node in
-    # the Data module's eye icon as needed.
-    display = seg_node.GetDisplayNode() if hasattr(seg_node, "GetDisplayNode") else None
-    if display is not None:
-        try:
-            display.SetVisibility(False)
-        except Exception:
-            pass
+    if created_here:
+        _reparent_in_subject_hierarchy(scene, seg_node, volume_node)
+        # Every per-image segmentation is created hidden — without this, a
+        # multi-image batch shows every segmentation stacked on top of each
+        # other in the slice view regardless of which volume is the current
+        # background (Slicer doesn't tie segmentation visibility to the
+        # background volume by default). Users toggle visibility per-node
+        # in the Data module's eye icon as needed.
+        display = seg_node.GetDisplayNode() if hasattr(seg_node, "GetDisplayNode") else None
+        if display is not None:
+            try:
+                display.SetVisibility(False)
+            except Exception:
+                pass
     return seg_node
 
 
@@ -1274,7 +1394,12 @@ def _create_markups_line_for_volume(result, volume_node, scene):
     endpoints as the persisted manual-correction target and matches
     ``overlay._STRAIGHT_CLR`` so the real MRML view matches the Detail tab.
 
-    Returns the new node, or ``None`` when skipped.
+    Reuses an existing line node already attached to ``volume_node`` when
+    one is in the scene (see :func:`_get_existing_markup_for_volume`) — a
+    re-run refreshes the two endpoints in place instead of stacking a
+    duplicate node on top.
+
+    Returns the new (or reused) node, or ``None`` when skipped.
     """
     if volume_node is None or scene is None:
         return None
@@ -1284,9 +1409,13 @@ def _create_markups_line_for_volume(result, volume_node, scene):
     if sl_pts is None:
         return None
     import slicer  # lazy: tests never import slicer
-    line = scene.AddNewNodeByClass("vtkMRMLMarkupsLineNode")
-    line.CreateDefaultDisplayNodes()
-    line.SetName(_markups_display_name(result, volume_node, "Line"))
+    line = _get_existing_markup_for_volume(volume_node, scene, ROLE_ZEBRAFISH_MARKUPS_LINE)
+    created_here = False
+    if line is None:
+        line = scene.AddNewNodeByClass("vtkMRMLMarkupsLineNode")
+        line.CreateDefaultDisplayNodes()
+        line.SetName(_markups_display_name(result, volume_node, "Line"))
+        created_here = True
     display = line.GetDisplayNode() if hasattr(line, "GetDisplayNode") else None
     if display is not None:
         try:
@@ -1308,10 +1437,20 @@ def _create_markups_line_for_volume(result, volume_node, scene):
         except Exception:
             pass
         _style_thin_line_markup(display)
+    # On reuse, drop any leftover endpoints from a previous run before
+    # adding the new ones — otherwise AddControlPoint appends and the
+    # line slowly accumulates duplicate Head/Tail points across re-runs.
+    if not created_here:
+        try:
+            if hasattr(line, "RemoveAllControlPoints"):
+                line.RemoveAllControlPoints()
+        except Exception:
+            pass
     _add_line_endpoints(line, sl_pts, result, volume_node)
     _lock_markups_node(line)
     _set_node_reference(volume_node, ROLE_ZEBRAFISH_MARKUPS_LINE, line)
-    _reparent_in_subject_hierarchy(scene, line, volume_node)
+    if created_here:
+        _reparent_in_subject_hierarchy(scene, line, volume_node)
     return line
 
 
@@ -1326,6 +1465,32 @@ def _markups_display_name(result, volume_node, suffix):
     if not base:
         base = (result or {}).get("filename") or "ZebrafishEmbryoAnalyzer"
     return f"{base} {suffix}"
+
+
+def _get_existing_markup_for_volume(volume_node, scene, role):
+    """Return the live markups node referenced under ``role``, or ``None``.
+
+    Mirrors :func:`_get_existing_seg_for_volume` for markups roles
+    (``ROLE_ZEBRAFISH_MARKUPS_LINE`` / ``ROLE_ZEBRAFISH_MARKUPS_CURVE``).
+    Used by ``_create_markups_line_for_volume`` / ``_create_markups_curve_for_volume``
+    so a re-analysis reuses the existing line/curve node instead of
+    stacking a duplicate on top — also needed because :func:`_set_node_reference`
+    now collapses the role to a single id.
+    """
+    if volume_node is None or scene is None:
+        return None
+    nid = None
+    try:
+        if hasattr(volume_node, "GetNodeReferenceID"):
+            nid = volume_node.GetNodeReferenceID(role)
+    except Exception:
+        nid = None
+    if not nid:
+        return None
+    try:
+        return scene.GetNodeByID(nid)
+    except Exception:
+        return None
 
 
 class _Vec3(tuple):
@@ -1532,7 +1697,13 @@ def _create_markups_curve_for_volume(result, volume_node, scene):
     Color matches ``overlay._PATH_COLOR`` (cyan). Returned node is attached
     via ``ROLE_ZEBRAFISH_MARKUPS_CURVE``.
 
-    Returns the new node, or ``None`` when skipped.
+    Reuses an existing curve node already attached to ``volume_node`` when
+    one is in the scene (see :func:`_get_existing_markup_for_volume`) — a
+    re-run refreshes the centerline in place. The previous curve's control
+    points are dropped first so re-analysis doesn't pile duplicate
+    segments on top.
+
+    Returns the new (or reused) node, or ``None`` when skipped.
     """
     if volume_node is None or scene is None:
         return None
@@ -1546,9 +1717,13 @@ def _create_markups_curve_for_volume(result, volume_node, scene):
     if n_pts < 2:
         return None
     import slicer  # lazy: tests never import slicer
-    curve = scene.AddNewNodeByClass("vtkMRMLMarkupsCurveNode")
-    curve.CreateDefaultDisplayNodes()
-    curve.SetName(_markups_display_name(result, volume_node, "Curve"))
+    curve = _get_existing_markup_for_volume(volume_node, scene, ROLE_ZEBRAFISH_MARKUPS_CURVE)
+    created_here = False
+    if curve is None:
+        curve = scene.AddNewNodeByClass("vtkMRMLMarkupsCurveNode")
+        curve.CreateDefaultDisplayNodes()
+        curve.SetName(_markups_display_name(result, volume_node, "Curve"))
+        created_here = True
     display = curve.GetDisplayNode() if hasattr(curve, "GetDisplayNode") else None
     if display is not None:
         try:
@@ -1570,10 +1745,17 @@ def _create_markups_curve_for_volume(result, volume_node, scene):
         except Exception:
             pass
         _style_thin_line_markup(display)
+    if not created_here:
+        try:
+            if hasattr(curve, "RemoveAllControlPoints"):
+                curve.RemoveAllControlPoints()
+        except Exception:
+            pass
     _add_curve_points(curve, path_pts, result)
     _lock_markups_node(curve)
     _set_node_reference(volume_node, ROLE_ZEBRAFISH_MARKUPS_CURVE, curve)
-    _reparent_in_subject_hierarchy(scene, curve, volume_node)
+    if created_here:
+        _reparent_in_subject_hierarchy(scene, curve, volume_node)
     return curve
 
 

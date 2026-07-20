@@ -82,6 +82,14 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
         _evict_reload_modules()
 
         self.logic = ZebrafishEmbryoAnalyzerLogic()
+        # Issue #56 follow-up: the widget owns ``VTKObservationMixin`` and
+        # therefore the segmentation ModifiedEvent observers, but widget
+        # code (and ``_on_results_ready``) calls
+        # ``self._logic.setup_segmentation_staleness_observers()`` so the
+        # logic can be the single facade. Wire the widget as a back-pointer
+        # so ``Logic.setup_segmentation_staleness_observers`` can delegate
+        # to the real implementation.
+        self.logic._widget_ref = self
 
         from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
         self._main = ZebrafishEmbryoAnalyzerMainWidget(self.layout, logic=self.logic)
@@ -128,6 +136,19 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
             # switch in a long session).
             self._main.try_rebuild_from_scene_if_empty()
             self._main.prompt_install_if_missing()
+            # Issue #56 follow-up: re-arm the per-image segmentation
+            # ModifiedEvent observers on every module entry. Without this,
+            # observers installed the first time the module was opened get
+            # torn down by Slicer on tab switch, and the user's later
+            # Segment Editor edits silently no-op on the staleness path —
+            # which means a manual edit never triggers the recompute prompt
+            # and the user has no way to learn their edit needs a re-run.
+            try:
+                self.setup_segmentation_staleness_observers()
+            except Exception:
+                logging.exception(
+                    "ZebrafishEmbryoAnalyzer: setup_segmentation_staleness_observers failed in enter()"
+                )
             # Issue #42: ask the user to recompute metrics for every
             # tracked image whose segmentation was edited in the Segment
             # Editor since we last saw it. The policy is "ask once per
@@ -690,6 +711,34 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
             return scene.GetNodeByID(seg_id) is not None
         except Exception:
             return False
+
+    def setup_segmentation_staleness_observers(self):
+        """Issue #56 follow-up: thin wrapper around the widget's
+        ``setup_segmentation_staleness_observers`` method.
+
+        ``_on_results_ready`` (and friends) calls
+        ``self._logic.setup_segmentation_staleness_observers()`` because
+        the widget should not import scene-observation internals. The
+        actual observer-installation code lives on the
+        ``ZebrafishEmbryoAnalyzerWidget`` instance — its parent owns
+        ``addObserver``/``removeObserver`` via ``VTKObservationMixin``.
+        The widget hands itself to the logic via ``_widget_ref`` in
+        ``Widget.setup`` so this wrapper can delegate cleanly.
+
+        Best-effort: returns silently on any error (no widget ref yet,
+        widget's own try/except swallowed something, scene not ready)
+        so callers do not need to wrap their own try/except.
+        """
+        widget = getattr(self, "_widget_ref", None)
+        if widget is None:
+            return
+        install = getattr(widget, "setup_segmentation_staleness_observers", None)
+        if install is None:
+            return
+        try:
+            install()
+        except Exception:
+            pass
 
     def recompute_metrics_for_volume_node(self, volume_node):
         """Issue #42: rerun the segmentation→measurement pipeline for one
