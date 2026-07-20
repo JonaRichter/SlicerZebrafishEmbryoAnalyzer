@@ -51,7 +51,7 @@ class ZebrafishEmbryoAnalyzer(ScriptedLoadableModule):
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
         self.parent.title = "Zebrafish Embryo Analyzer"
-        self.parent.categories = ["Quantification"]
+        self.parent.categories = ["Analysis"]
         self.parent.dependencies = []
         self.parent.contributors = ["Jona Richter", "Mark Daniel Arndt"]
         self.parent.helpText = (
