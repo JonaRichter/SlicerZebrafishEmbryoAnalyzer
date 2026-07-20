@@ -945,5 +945,280 @@ def test_reset_clears_stale_state_and_resets_badge(stubs):
     )
 
 
+# ---------------------------------------------------------------------------
+# Issue #68 — Actions grouping + relocated Recompute metrics button
+# ---------------------------------------------------------------------------
+#
+# #68 wraps the manual-adjust row, manual status, exclude checkbox, and the
+# relocated "Recompute metrics" button under an "Actions" section heading
+# inside the sidebar (the button used to live on the QTabBar; #68 moves
+# it here). set_stale() drives the button's visibility, and
+# set_recompute_callback() wires its click handler.
+
+
+def test_actions_heading_lives_in_sidebar(stubs):
+    """#68: the sidebar must host an 'Actions' heading label so the three
+    sidebar regions (Status / Metrics / Actions / Nav) read as separate
+    sections rather than an undifferentiated stack."""
+    dt, tab = _make_tab(stubs)
+    assert tab._actions_heading is not None, (
+        "DetailTab must create an _actions_heading widget"
+    )
+    text = _latest_settext(tab._actions_heading)
+    assert text == "Actions", (
+        f"Actions heading must read 'Actions', got {text!r}"
+    )
+
+    # And the heading must be inside the sidebar's QVBoxLayout, above
+    # the manual-row widget (the first action group widget).
+    candidates = list(_QVBoxLayout.all())
+
+    def _holds_widget(layout, widget):
+        for c in layout._calls.addWidget.call_args_list:
+            if c.args and c.args[0] is widget:
+                return True
+        return False
+
+    sidebar_layout = None
+    for layout in candidates:
+        if (_holds_widget(layout, tab._actions_heading)
+                and _holds_widget(layout, tab._manual_row_widget)
+                and _holds_widget(layout, tab._chk_exclude)):
+            sidebar_layout = layout
+            break
+    assert sidebar_layout is not None, (
+        "Sidebar layout must hold the Actions heading + manual row + exclude"
+    )
+
+    add_widgets = [
+        c.args[0] for c in sidebar_layout._calls.addWidget.call_args_list
+    ]
+    heading_idx = add_widgets.index(tab._actions_heading)
+    manual_idx = add_widgets.index(tab._manual_row_widget)
+    assert heading_idx < manual_idx, (
+        f"Actions heading must appear above the manual row in the sidebar "
+        f"(heading={heading_idx}, manual={manual_idx})"
+    )
+
+
+def test_recompute_button_lives_in_sidebar_under_actions(stubs):
+    """#68: the Relocated Recompute button must live inside the sidebar's
+    QVBoxLayout, immediately after the exclude checkbox (the last item
+    in the actions group), and definitely NOT on a QTabBar."""
+    dt, tab = _make_tab(stubs)
+    candidates = list(_QVBoxLayout.all())
+
+    def _holds_widget(layout, widget):
+        for c in layout._calls.addWidget.call_args_list:
+            if c.args and c.args[0] is widget:
+                return True
+        return False
+
+    sidebar_layout = None
+    for layout in candidates:
+        if _holds_widget(layout, tab._btn_recompute):
+            sidebar_layout = layout
+            break
+    assert sidebar_layout is not None, (
+        "Recompute button must be added to a QVBoxLayout (the sidebar layout)"
+    )
+    add_widgets = [
+        c.args[0] for c in sidebar_layout._calls.addWidget.call_args_list
+    ]
+    assert tab._btn_recompute in add_widgets, (
+        "Recompute button must be a direct child of the sidebar's QVBoxLayout"
+    )
+    # The button should sit after the exclude checkbox (last action-group item).
+    exclude_idx = add_widgets.index(tab._chk_exclude)
+    btn_idx = add_widgets.index(tab._btn_recompute)
+    assert btn_idx > exclude_idx, (
+        f"Recompute button must appear after Exclude checkbox in the "
+        f"sidebar (exclude={exclude_idx}, btn={btn_idx})"
+    )
+
+
+def test_recompute_button_hidden_by_default(stubs):
+    """#68: the button must start hidden — it's only revealed when a row
+    is stale AND a recompute callback has been registered."""
+    dt, tab = _make_tab(stubs)
+    visible_calls = tab._btn_recompute._calls.setVisible.call_args_list
+    assert visible_calls, "Recompute button visibility must be set in __init__"
+    last_visible = visible_calls[-1].args[0]
+    assert last_visible is False, (
+        f"Recompute button must start hidden, got setVisible({last_visible!r})"
+    )
+    enabled_calls = tab._btn_recompute._calls.setEnabled.call_args_list
+    assert enabled_calls, "Recompute button enabled state must be set in __init__"
+    assert enabled_calls[-1].args[0] is False, (
+        "Recompute button must start disabled"
+    )
+
+
+def test_set_stale_does_not_show_recompute_without_callback(stubs):
+    """#68: a stale row alone must NOT reveal the Recompute button —
+    the callback has to be registered first (by widget.py) so the click
+    actually does something. This prevents a bare DetailTab in unit
+    tests from showing a clickable no-op."""
+    dt, tab = _make_tab(stubs)
+    tab.show_result(0, [{"filename": "x.tif", "length": 100.0,
+                          "mask": MagicMock(), "error": None,
+                          "manual_corrected": False}])
+    tab.set_stale(True)
+    visible_calls = tab._btn_recompute._calls.setVisible.call_args_list
+    last_visible = visible_calls[-1].args[0]
+    assert last_visible is False, (
+        f"Stale alone must NOT reveal the Recompute button (no callback "
+        f"registered), got setVisible({last_visible!r})"
+    )
+
+
+def test_set_stale_with_callback_reveals_recompute_button(stubs):
+    """#68 acceptance: stale row + registered callback → button visible
+    AND enabled, so the user can click it to recompute metrics."""
+    dt, tab = _make_tab(stubs)
+    tab.show_result(0, [{"filename": "x.tif", "length": 100.0,
+                          "mask": MagicMock(), "error": None,
+                          "manual_corrected": False}])
+    tab.set_recompute_callback(lambda: None)
+    tab.set_stale(True)
+    visible_calls = tab._btn_recompute._calls.setVisible.call_args_list
+    enabled_calls = tab._btn_recompute._calls.setEnabled.call_args_list
+    assert visible_calls[-1].args[0] is True, (
+        "Recompute button must be visible when stale + callback registered"
+    )
+    assert enabled_calls[-1].args[0] is True, (
+        "Recompute button must be enabled when stale + callback registered"
+    )
+
+
+def test_set_stale_false_hides_recompute_button(stubs):
+    """#68: once a row is no longer stale (e.g. recompute just ran), the
+    button must hide again so the user can't accidentally re-trigger it."""
+    dt, tab = _make_tab(stubs)
+    tab.set_recompute_callback(lambda: None)
+    tab.show_result(0, [{"filename": "x.tif", "length": 100.0,
+                          "mask": MagicMock(), "error": None,
+                          "manual_corrected": False}])
+    tab.set_stale(True)
+    assert tab._btn_recompute._calls.setVisible.call_args_list[-1].args[0] is True
+    tab.set_stale(False)
+    assert tab._btn_recompute._calls.setVisible.call_args_list[-1].args[0] is False, (
+        "Recompute button must hide when the row is no longer stale"
+    )
+    assert tab._btn_recompute._calls.setEnabled.call_args_list[-1].args[0] is False
+
+
+def test_set_recompute_callback_refreshes_button_when_already_stale(stubs):
+    """#68: registering a callback while a stale row is already shown
+    must immediately reveal the button — not wait for the next
+    set_stale() call from widget.py."""
+    dt, tab = _make_tab(stubs)
+    tab.show_result(0, [{"filename": "x.tif", "length": 100.0,
+                          "mask": MagicMock(), "error": None,
+                          "manual_corrected": False}])
+    tab.set_stale(True)  # stale set BEFORE callback
+    # Button still hidden — no callback yet.
+    assert tab._btn_recompute._calls.setVisible.call_args_list[-1].args[0] is False
+    # Register callback now.
+    tab.set_recompute_callback(lambda: None)
+    assert tab._btn_recompute._calls.setVisible.call_args_list[-1].args[0] is True, (
+        "set_recompute_callback must immediately reveal the button when "
+        "the current row is stale"
+    )
+
+
+def test_set_recompute_callback_none_hides_button(stubs):
+    """#68: passing None as the callback (e.g. widget.py's try/except
+    failed path) must hide the button so it can't be clicked."""
+    dt, tab = _make_tab(stubs)
+    tab.set_recompute_callback(lambda: None)
+    tab.show_result(0, [{"filename": "x.tif", "length": 100.0,
+                          "mask": MagicMock(), "error": None,
+                          "manual_corrected": False}])
+    tab.set_stale(True)
+    assert tab._btn_recompute._calls.setVisible.call_args_list[-1].args[0] is True
+    # Clear the callback (simulates widget.py teardown).
+    tab.set_recompute_callback(None)
+    assert tab._btn_recompute._calls.setVisible.call_args_list[-1].args[0] is False, (
+        "set_recompute_callback(None) must hide the button"
+    )
+
+
+def test_recompute_button_click_invokes_callback(stubs):
+    """#68: clicking the Recompute button must call the registered
+    callback (so widget.py's _on_recompute_current_detail runs)."""
+    dt, tab = _make_tab(stubs)
+    callback = MagicMock()
+    tab.set_recompute_callback(callback)
+    # Production wires this in __init__: self._btn_recompute.clicked.connect(
+    # self._on_recompute_clicked)
+    btn = tab._btn_recompute
+    # Find the connection that targets _on_recompute_clicked.
+    # The clicked signal on _QPushButton is a _Signal instance.
+    clicked = btn.clicked
+    # Get the last connection — that's the click handler.
+    connected = clicked._connections.connect.call_args_list[-1].args[0]
+    connected()
+    callback.assert_called_once()
+
+
+def test_recompute_button_click_without_callback_is_safe(stubs):
+    """#68 defence-in-depth: even if the user somehow clicks the button
+    before any callback is registered, the click must be a safe no-op
+    (not raise)."""
+    dt, tab = _make_tab(stubs)
+    # No set_recompute_callback call.
+    btn = tab._btn_recompute
+    connected = btn.clicked._connections.connect.call_args_list[-1].args[0]
+    # Must not raise.
+    connected()
+
+
+def test_recompute_button_callback_exception_is_caught(stubs):
+    """#68: if widget.py's callback raises, the click handler must not
+    propagate the exception (would kill the UI thread)."""
+    dt, tab = _make_tab(stubs)
+    def boom():
+        raise RuntimeError("simulated widget-side bug")
+    tab.set_recompute_callback(boom)
+    btn = tab._btn_recompute
+    connected = btn.clicked._connections.connect.call_args_list[-1].args[0]
+    # Must not raise.
+    connected()
+
+
+def test_reset_hides_recompute_button(stubs):
+    """#68: reset() must hide the Recompute button so a fresh dataset
+    doesn't inherit the previous row's stale button state."""
+    dt, tab = _make_tab(stubs)
+    tab.set_recompute_callback(lambda: None)
+    tab.show_result(0, [{"filename": "x.tif", "length": 100.0,
+                          "mask": MagicMock(), "error": None,
+                          "manual_corrected": False}])
+    tab.set_stale(True)
+    assert tab._btn_recompute._calls.setVisible.call_args_list[-1].args[0] is True
+    tab.reset()
+    assert tab._btn_recompute._calls.setVisible.call_args_list[-1].args[0] is False, (
+        "reset() must hide the Recompute button"
+    )
+    assert tab._btn_recompute._calls.setEnabled.call_args_list[-1].args[0] is False
+
+
+def test_recompute_button_click_handler_does_not_import_mrml(stubs):
+    """#68 architectural guard: DetailTab must never import MRML
+    (mrml.is_volume_node_stale lives on the widget's logic side).
+    Verify the production source has no ``from ZebrafishEmbryoAnalyzerLib
+    .mrml import`` at module level — the stale flag arrives via set_stale.
+    """
+    import re
+    source = DETAIL_PATH.read_text(encoding="utf-8")
+    bad = re.search(r"^\s*from\s+ZebrafishEmbryoAnalyzerLib\.mrml\b",
+                    source, flags=re.MULTILINE)
+    assert not bad, (
+        "DetailTab must not import from ZebrafishEmbryoAnalyzerLib.mrml — "
+        "stale state arrives via set_stale() instead"
+    )
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

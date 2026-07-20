@@ -85,6 +85,33 @@ class DetailTab(qt.QWidget):
         self._chk_exclude.setEnabled(False)
         self._chk_exclude.toggled.connect(self._on_exclude_toggled)
 
+        # Issue #68: "Recompute metrics" button relocated out of the tab
+        # bar (#42 used to place it on the QTabBar) and into the Actions
+        # group of the sidebar. Visibility + enabled state are driven by
+        # ``set_stale()`` — the button only lights up when the current
+        # row's segmentation has been edited since the last analysis.
+        # No callback is registered until ``widget.py`` calls
+        # ``set_recompute_callback`` during construction, so a bare
+        # DetailTab (used in unit tests) stays click-safe.
+        self._btn_recompute = qt.QPushButton("⟳ Recompute metrics")
+        self._btn_recompute.setToolTip(
+            "Segmentation was edited in the Segment Editor — "
+            "recompute metrics from the new segmentation."
+        )
+        self._btn_recompute.setVisible(False)
+        self._btn_recompute.setEnabled(False)
+        self._recompute_callback = None
+        self._btn_recompute.clicked.connect(self._on_recompute_clicked)
+
+        # Issue #68: small section heading above the actions block so the
+        # sidebar reads as three labelled regions (Status / Metrics /
+        # Actions / Nav) rather than an undifferentiated stack.
+        self._actions_heading = qt.QLabel("Actions")
+        self._actions_heading.setStyleSheet(
+            "font-size: 11px; font-weight: bold; color: #888;"
+            " padding-top: 4px;"
+        )
+
         # Default state — widget.py will overwrite via set_stale() right
         # after show_result() for each navigation. Tests that construct a
         # bare DetailTab() without MRML state stay covered by this default.
@@ -174,11 +201,17 @@ class DetailTab(qt.QWidget):
         sidebar_layout.addWidget(self._error_banner, 0)
         sidebar_layout.addLayout(self._measurements_grid, 0)
 
-        # Pre-Actions grouping: Manual Adjust row + status, Exclude checkbox.
-        # #68 wraps these under an "Actions" heading without changing widgets.
+        # Issue #68: Actions group — Manual Adjust/Revert row, manual status
+        # label, the Exclude checkbox, and the relocated Recompute metrics
+        # button all live under the "Actions" heading. Keeping these as
+        # individual widgets (not nested in a child QWidget) lets the
+        # existing ``_manual_row_widget`` / ``_chk_exclude`` tests in
+        # test_lifecycle.py continue to assert on the same handles.
+        sidebar_layout.addWidget(self._actions_heading, 0)
         sidebar_layout.addWidget(self._manual_row_widget, 0)
         sidebar_layout.addWidget(self._manual_status, 0)
         sidebar_layout.addWidget(self._chk_exclude, 0)
+        sidebar_layout.addWidget(self._btn_recompute, 0)
 
         sidebar_layout.addStretch(1)
         sidebar_layout.addLayout(self._nav_row_layout, 0)
@@ -318,6 +351,11 @@ class DetailTab(qt.QWidget):
             self._update_status_badge({"filename": "", "error": None})
         if hasattr(self, "_error_banner"):
             self._error_banner.setVisible(False)
+        # #68 — hide the relocated Recompute button too so a fresh dataset
+        # doesn't inherit a stale button state.
+        if hasattr(self, "_btn_recompute"):
+            self._btn_recompute.setVisible(False)
+            self._btn_recompute.setEnabled(False)
         self._nav_label.setText("")
         self._btn_prev.setEnabled(False)
         self._btn_next.setEnabled(False)
@@ -338,6 +376,49 @@ class DetailTab(qt.QWidget):
             self._on_exclude_change(self._current_filename, checked)
 
     # ------------------------------------------------------------------
+    # Issue #68: Recompute metrics callback registration + click handler
+    # ------------------------------------------------------------------
+
+    def set_recompute_callback(self, callback) -> None:
+        """Register the click handler for the Recompute metrics button.
+
+        ``widget.py`` is the only caller — it passes its
+        ``_on_recompute_current_detail`` method (or any callable with no
+        arguments) so this class stays MRML-agnostic. Storing ``None``
+        hides the button (used when widget.py's try/except around button
+        creation failed, so the button never becomes a clickable no-op).
+        After registration, refresh the button visibility in case a
+        row is currently shown and stale.
+        """
+        self._recompute_callback = callback
+        # Refresh the button's enabled/visible state under the new
+        # callback, in case a stale row is currently displayed.
+        if hasattr(self, "_btn_recompute"):
+            show = (
+                self._current_is_stale
+                and self._recompute_callback is not None
+            )
+            self._btn_recompute.setVisible(show)
+            self._btn_recompute.setEnabled(show)
+
+    def _on_recompute_clicked(self) -> None:
+        """Internal click handler — delegates to the registered callback.
+
+        No-op when no callback has been registered yet (e.g. the user
+        somehow managed to click the button before widget.py finished
+        wiring up). The button is already hidden by ``set_stale`` in
+        that case, so this is just defence-in-depth.
+        """
+        if self._recompute_callback is None:
+            return
+        try:
+            self._recompute_callback()
+        except Exception:
+            # Don't let a widget-side bug kill the UI thread — the caller
+            # already logs exceptions internally.
+            pass
+
+    # ------------------------------------------------------------------
     # Issue #67: stale setter + status badge + error banner
     # ------------------------------------------------------------------
 
@@ -351,15 +432,28 @@ class DetailTab(qt.QWidget):
         when ``show_result`` runs next, or on demand if a row is updated
         mid-lifetime.
 
-        Sub-issue #68 will extend this method to also drive the relocated
-        "Recompute metrics" button's visibility — until then, the badge
-        is the only consumer.
+        Issue #68 also drives the relocated "Recompute metrics" button's
+        visibility + enabled state — the button is only reachable when
+        the row is stale AND a recompute callback has been registered
+        (i.e. widget.py has wired up its click handler).
         """
         self._current_is_stale = bool(is_stale)
         # Refresh the badge immediately if a row is currently visible.
         if self._current_filename is not None and self._results:
             self._update_status_badge(self._results[self._current_idx])
             self._update_error_banner(self._results[self._current_idx])
+        # Toggle the Recompute button — visible only when both stale AND
+        # a callback is registered (a bare DetailTab in unit tests has no
+        # callback, so the button stays hidden even when set_stale(True)
+        # is called). setEnabled follows visibility so the user can't
+        # accidentally click a button that's been hidden.
+        if hasattr(self, "_btn_recompute"):
+            self._btn_recompute.setVisible(
+                self._current_is_stale and self._recompute_callback is not None
+            )
+            self._btn_recompute.setEnabled(
+                self._current_is_stale and self._recompute_callback is not None
+            )
 
     def _update_status_badge(self, result: dict) -> None:
         """Recompute the status badge text + colour from ``result``.

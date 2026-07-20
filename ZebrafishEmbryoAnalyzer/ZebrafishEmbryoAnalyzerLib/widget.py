@@ -416,33 +416,21 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         )
         self._detail._params_getter = self._get_correction_params
         self._tabs.addTab(self._detail, "Detail")
-        # Issue #42: "Recompute metrics" button shown on the detail tab
-        # only when the current image's segmentation is marked stale.
-        # Created lazily so unit tests can run without a full Qt setup.
-        self._recompute_btn = None
+        # Issue #68: the "Recompute metrics" button used to live on the
+        # tab bar (issue #42's first cut). It now lives inside the
+        # DetailTab's sidebar under the "Actions" heading, and is
+        # toggled by DetailTab.set_stale() based on the current row's
+        # MRML stale flag. We just install the click callback here.
         try:
-            self._recompute_btn = qt.QPushButton("Recompute metrics")
-            self._recompute_btn.setToolTip(
-                "Segmentation was edited in the Segment Editor — "
-                "recompute metrics from the new segmentation."
-            )
-            self._recompute_btn.setEnabled(False)
-            self._recompute_btn.setVisible(False)
-            self._recompute_btn.connect(
-                "clicked()", lambda: self._on_recompute_current_detail()
-            )
-            # Place it in the tab bar area so it is reachable when the
-            # user is viewing the Detail tab.
-            self._tabs.tabBar().setTabButton(
-                self._tabs.indexOf(self._detail),
-                self._tabs.tabBar().RightSide,
-                self._recompute_btn,
-            )
+            self._detail.set_recompute_callback(self._on_recompute_current_detail)
         except Exception:
             logging.exception(
-                "ZebrafishEmbryoAnalyzer: detail recompute button init failed"
+                "ZebrafishEmbryoAnalyzer: detail recompute callback init failed"
             )
-            self._recompute_btn = None
+        # Issue #68 backwards-compat: tests and other call sites still
+        # expect ``self._recompute_btn`` to exist. DetailTab owns the
+        # button now, so expose it as a property for any legacy readers.
+        self._recompute_btn = getattr(self._detail, "_btn_recompute", None)
 
         from ZebrafishEmbryoAnalyzerLib.results_tab import ResultsTab
         self._results_tab = ResultsTab(on_exclude_change=self._on_exclude_change)
@@ -1821,12 +1809,15 @@ class ZebrafishEmbryoAnalyzerMainWidget:
     def _refresh_detail_recompute_button(self):
         """Enable / disable the detail-view "Recompute metrics" button
         based on whether the currently shown row's segmentation is
-        marked stale. No-op when the button has not been created yet
-        (older builds / tests without the widget fully set up).
+        marked stale.
+
+        Issue #68: the button now lives in DetailTab's sidebar (under
+        the Actions heading) instead of on the tab bar. This method
+        delegates the UI update to ``self._detail.set_stale(is_stale)``
+        so the badge AND the recompute button stay in sync. Kept as a
+        single source of truth (``is_volume_node_stale`` from MRML) on
+        the widget side — DetailTab remains MRML-agnostic.
         """
-        btn = getattr(self, "_recompute_btn", None)
-        if btn is None:
-            return
         is_stale = False
         try:
             if 0 <= self._current_detail_idx < len(self._results):
@@ -1840,8 +1831,17 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         except Exception:
             is_stale = False
         try:
-            btn.setEnabled(is_stale)
-            btn.setVisible(is_stale)
+            detail = getattr(self, "_detail", None)
+            if detail is not None and hasattr(detail, "set_stale"):
+                detail.set_stale(is_stale)
+            else:
+                # Legacy fallback: poke the (now-removed) tab-bar button
+                # directly. Only reachable on older builds that haven't
+                # been recompiled against the DetailTab API yet.
+                btn = getattr(self, "_recompute_btn", None)
+                if btn is not None:
+                    btn.setEnabled(is_stale)
+                    btn.setVisible(is_stale)
         except Exception:
             pass
 
