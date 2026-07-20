@@ -311,8 +311,9 @@ def analyse_images(image_paths: list, params: dict,
             if orig_bgr is None:
                 r["error"] = "Could not read image."
                 results.append(r)
-                # Issue #39: still fire per_image_callback so the widget can
-                # record the error on the volume node's attribute set.
+                # Issue #59/#39: still fire per_image_callback so the caller
+                # (worker process writing result.json, or a future MRML
+                # streaming consumer) can record this image before skipping.
                 if per_image_callback is not None:
                     try:
                         per_image_callback(image_path, r)
@@ -390,10 +391,13 @@ def analyse_images(image_paths: list, params: dict,
             r["error"] = f"Unhandled error: {exc}\n{traceback.format_exc()}"
 
         results.append(r)
-        # Issue #39: stream per-image MRML state before progress fires so a
-        # Cancel mid-batch leaves fully-formed nodes + attributes for every
-        # completed image. Errors are recorded on the result dict rather
-        # than propagated, so a single bad callback never aborts the batch.
+        # Issue #59/#39: stream per-image state via per_image_callback so the
+        # caller can persist progress after every completed image, not only
+        # at batch end — the worker process uses this to write result.json
+        # atomically (issue #59); a future MRML-streaming consumer (issue
+        # #39) can reuse the same hook. Errors are recorded on the result
+        # dict rather than propagated, so a single bad callback never aborts
+        # the batch.
         if per_image_callback is not None:
             try:
                 per_image_callback(image_path, r)
@@ -403,7 +407,7 @@ def analyse_images(image_paths: list, params: dict,
                 )
                 if not r.get("error"):
                     r["error"] = (
-                        f"Per-image MRML write failed for "
+                        f"Per-image write failed for "
                         f"{os.path.basename(image_path)}: {exc}"
                     )
         if progress_callback:
