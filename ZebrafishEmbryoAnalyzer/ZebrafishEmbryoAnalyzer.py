@@ -755,67 +755,104 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
         except MRMLAdapterError:
             raise
 
-    def update_current_image_node(self, result, um_per_px):
-        """Create or update the MRML vector volume node for the current image.
+    def show_gallery_selection_in_slice_view(self, result):
+        """Mirror the selected gallery image into Slicer's slice views.
 
-        Returns None silently if result["original"] is None (stub or error row).
-        Raises MRMLAdapterError on MRML or VTK failure.
-        Must be called on the Slicer main thread only.
-        Does not use result["spacing"] — that is calibrated to 256x256 mask space.
+        Issue #56: replaces the singleton ``CurrentImage`` / ``CurrentSegmentation``
+        mechanism. Resolves ``result`` to its already-existing per-image
+        volume node (issue #38), sets it as the slice-view background, and
+        toggles its segmentation display visibility on — hiding any
+        previously-shown segmentation so the slice views do not accumulate
+        stacked overlays across gallery clicks.
+
+        Returns ``None`` (no exceptions propagate). Tolerates:
+
+        * a result without a volume node (decode-failure / error row),
+        * a result whose analysis hasn't run yet (volume exists but no
+          segmentation reference attached),
+        * slicer / mrml / display-node bindings that disagree across
+          Slicer versions — every step is guarded individually.
+
+        Parameters
+        ----------
+        result : dict | None
+            A result dict from ``self._results``. May carry
+            ``"_volume_node"`` (scene-reload path) or just ``"filename"``
+            (post-Run Analysis path — volume node looked up by display
+            name match).
         """
-        original = result.get("original") if result else None
-        if original is None:
-            return None
         try:
-            from ZebrafishEmbryoAnalyzerLib.errors import MRMLAdapterError
             import slicer
             from ZebrafishEmbryoAnalyzerLib.mrml import (
-                get_or_create_image_node,
-                update_image_node,
+                ROLE_ZEBRAFISH_SEGMENTATION,
+                find_tracked_volume_node_by_filename,
+                set_slice_viewer_background,
+                set_segmentation_visibility,
             )
-            param_node = self.getParameterNode()
-            if param_node is None:
-                return None
-            node = get_or_create_image_node(param_node, slicer.mrmlScene)
-            update_image_node(original, um_per_px, node)
-            return node
-        except MRMLAdapterError:
-            raise
-        except Exception as exc:
-            raise MRMLAdapterError(
-                f"Failed to update current image node: {exc}"
-            ) from exc
-
-    def update_current_segmentation_node(self, result, um_per_px):
-        """Create or update the MRML segmentation node for the current image's masks.
-
-        Returns None silently if result["original"] is None (stub or error row).
-        Raises MRMLAdapterError on MRML or VTK failure.
-        Must be called on the Slicer main thread only.
-        """
-        original = result.get("original") if result else None
-        if original is None:
+        except Exception:
             return None
-        try:
-            from ZebrafishEmbryoAnalyzerLib.errors import MRMLAdapterError
-            import slicer
-            from ZebrafishEmbryoAnalyzerLib.mrml import (
-                get_or_create_segmentation_node,
-                update_segmentation_node,
+
+        param_node = self.getParameterNode()
+        scene = getattr(slicer, "mrmlScene", None)
+        if param_node is None or scene is None or not result:
+            return None
+
+        volume_node = result.get("_volume_node")
+        if volume_node is None:
+            volume_node = find_tracked_volume_node_by_filename(
+                param_node, scene, (result or {}).get("filename")
             )
-            param_node = self.getParameterNode()
-            if param_node is None:
-                return None
-            image_node = param_node.GetNodeReference("CurrentImage")
-            node = get_or_create_segmentation_node(param_node, slicer.mrmlScene)
-            update_segmentation_node(result, um_per_px, node, image_node=image_node)
-            return node
-        except MRMLAdapterError:
-            raise
-        except Exception as exc:
-            raise MRMLAdapterError(
-                f"Failed to update current segmentation node: {exc}"
-            ) from exc
+        if volume_node is None:
+            return None
+
+        set_slice_viewer_background(volume_node)
+
+        seg_node = None
+        try:
+            seg_node = volume_node.GetNodeReference(ROLE_ZEBRAFISH_SEGMENTATION)
+        except Exception:
+            seg_node = None
+
+        # Re-read the "previously visible" id from a parameter-node
+        # attribute when present, so a fresh ``ZebrafishEmbryoAnalyzerLogic``
+        # instance on the same scene (e.g. after a Slicer restart) does
+        # not show two segmentations stacked on the first click.
+        prev_seg_id = None
+        try:
+            prev_seg_id = param_node.GetParameter(
+                "ZebrafishAnalysis.previousVisibleSegmentationId"
+            )
+        except Exception:
+            prev_seg_id = None
+        # Slicer returns "" for unset parameter strings — coerce everything
+        # falsy to None so the "hide previous" branch only runs when an id
+        # was actually recorded.
+        if not prev_seg_id:
+            prev_seg_id = None
+
+        new_seg_id = None
+        try:
+            new_seg_id = seg_node.GetID() if seg_node is not None else None
+        except Exception:
+            new_seg_id = None
+
+        if prev_seg_id and prev_seg_id != new_seg_id:
+            try:
+                prev_seg = scene.GetNodeByID(prev_seg_id)
+            except Exception:
+                prev_seg = None
+            set_segmentation_visibility(prev_seg, False)
+
+        if seg_node is not None:
+            set_segmentation_visibility(seg_node, True)
+
+        try:
+            param_node.SetParameter(
+                "ZebrafishAnalysis.previousVisibleSegmentationId", new_seg_id or ""
+            )
+        except Exception:
+            pass
+        return None
 
     def create_image_volume_nodes(self, batches):
         """Create one ``vtkMRMLVectorVolumeNode`` per readable image (issue #38).

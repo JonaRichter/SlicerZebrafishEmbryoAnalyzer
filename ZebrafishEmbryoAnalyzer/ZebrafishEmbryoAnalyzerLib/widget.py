@@ -1099,28 +1099,29 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 5000,
             )
 
-    def _try_update_mrml_image(self, result):
-        # NOTE: _on_detect_scale / show_raw_image does NOT call this method (E2b scope).
-        # The MRML node intentionally reflects the last gallery selection, not the
-        # scalebar debug overlay. Re-sync by clicking any gallery item.
-        try:
-            self._logic.update_current_image_node(result, self._um_per_px.value)
-        except MRMLAdapterError as exc:
-            logging.warning("ZebrafishEmbryoAnalyzer: MRML image node update failed: %s", exc)
-            slicer.util.showStatusMessage(
-                "Image node update failed. Check the application log.",
-                5000,
-            )
+    def _try_show_gallery_selection_in_slice_view(self, result):
+        """Issue #56: mirror the gallery selection into Slicer's slice views.
 
-    def _try_update_mrml_segmentation(self, result):
+        Delegates to :meth:`ZebrafishEmbryoAnalyzerLogic.show_gallery_selection_in_slice_view`,
+        which sets the selected image's per-image volume node as the
+        slice-view background and toggles its segmentation display visibility
+        on. The logic method never raises, so this wrapper only catches the
+        unlikely case where the logic layer itself is unavailable so it can
+        surface a status message instead of crashing the gallery click.
+        """
         try:
-            self._logic.update_current_segmentation_node(result, self._um_per_px.value)
-        except MRMLAdapterError as exc:
-            logging.warning("ZebrafishEmbryoAnalyzer: MRML segmentation node update failed: %s", exc)
-            slicer.util.showStatusMessage(
-                "Segmentation node update failed. Check the application log.",
-                5000,
+            self._logic.show_gallery_selection_in_slice_view(result)
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: slice-view mirror for gallery selection failed"
             )
+            try:
+                slicer.util.showStatusMessage(
+                    "Slice-view mirror failed. Check the application log.",
+                    5000,
+                )
+            except Exception:
+                pass
 
     def _get_correction_params(self):
         """Return current hitl/threshold settings for manual correction curvature recompute."""
@@ -1145,8 +1146,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             self._detail.sync_exclude(self._results[index]["filename"] in self._excluded)
         self._detail.setFocus()
         if index < len(self._results):
-            self._try_update_mrml_image(self._results[index])
-            self._try_update_mrml_segmentation(self._results[index])
+            self._try_show_gallery_selection_in_slice_view(self._results[index])
         self._refresh_detail_recompute_button()
 
     def _navigate_detail(self, delta: int):

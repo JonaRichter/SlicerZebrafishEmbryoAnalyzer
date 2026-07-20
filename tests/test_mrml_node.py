@@ -16,6 +16,7 @@ import sys
 import textwrap
 import types
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -199,77 +200,14 @@ def _make_fake_vtk():
 # ---------------------------------------------------------------------------
 # Fake MRML objects for image node tests
 # ---------------------------------------------------------------------------
-
-class _FakeVectorVolumeNode:
-    _counter = 0
-
-    def __init__(self):
-        _FakeVectorVolumeNode._counter += 1
-        self._id = f"vtkMRMLVectorVolumeNode{_FakeVectorVolumeNode._counter}"
-        self._name = ""
-        # Issue #56: track SetHideFromEditors calls so tests can assert
-        # the singleton CurrentImage node is hidden on creation.
-        self.hide_calls = []
-
-    def GetID(self):
-        return self._id
-
-    def SetName(self, name):
-        self._name = name
-
-    def GetName(self):
-        return self._name
-
-    def IsA(self, class_name):
-        return class_name == "vtkMRMLVectorVolumeNode"
-
-    def SetHideFromEditors(self, value):
-        self.hide_calls.append(value)
-
-
-class _FakeNonVectorVolumeNode:
-    """Simulates a wrong-type foreign node stored under the CurrentImage role."""
-
-    def __init__(self):
-        self._id = "vtkMRMLScalarVolumeNode1"
-
-    def GetID(self):
-        return self._id
-
-    def IsA(self, class_name):
-        return class_name == "vtkMRMLScalarVolumeNode"
-
-
-class _FakeImageScene:
-    def __init__(self):
-        self._nodes = []
-        self._add_count = 0
-        self._last_class_name = None
-
-    def AddNewNodeByClass(self, class_name, display_name=""):
-        self._add_count += 1
-        self._last_class_name = class_name
-        node = _FakeVectorVolumeNode()
-        node.SetName(display_name)
-        self._nodes.append(node)
-        return node
-
-
-class _FakeImageParamNode:
-    def __init__(self, existing_node=None):
-        self._existing = existing_node
-        self._stored_role = None
-        self._stored_id = None
-        self._set_ref_calls = 0
-
-    def GetNodeReference(self, role):
-        return self._existing
-
-    def SetNodeReferenceID(self, role, node_id):
-        self._stored_role = role
-        self._stored_id = node_id
-        self._set_ref_calls += 1
-
+#
+# Issue #56: the singleton ``CurrentImage`` / ``CurrentSegmentation`` helpers
+# were retired in favour of the per-image volume + segmentation nodes
+# (issues #38 / #39). The behavioural tests that needed direct
+# get_or_create_* coverage were replaced by behaviour tests against the new
+# ``set_slice_viewer_background`` / ``set_segmentation_visibility`` /
+# ``find_tracked_volume_node_by_filename`` helpers, which use ``MagicMock``
+# instead of bespoke fakes.
 
 # ---------------------------------------------------------------------------
 # Source-level static checks
@@ -744,21 +682,44 @@ def test_widget_source_does_not_contain_persistent_image_node_pointer():
     )
 
 
-def test_widget_source_calls_update_current_image_node():
-    """widget.py must call update_current_image_node."""
+def test_widget_source_calls_show_gallery_selection_in_slice_view():
+    """widget.py must call show_gallery_selection_in_slice_view for each gallery click.
+
+    Issue #56: gallery selection drives slice-view background + segmentation
+    visibility through this single logic-method call (replaces the old
+    singleton ``update_current_image_node`` / ``update_current_segmentation_node``
+    pair).
+    """
     src = open(_WIDGET_PY).read()
-    assert "update_current_image_node" in src, (
-        "widget.py must call self._logic.update_current_image_node()"
+    assert "show_gallery_selection_in_slice_view" in src, (
+        "widget.py must call self._logic.show_gallery_selection_in_slice_view()"
     )
+    # The old singleton-helper calls must be gone — otherwise the new
+    # path runs alongside the old one and the singleton node resurrects.
+    assert "update_current_image_node" not in src, (
+        "widget.py must not call the removed update_current_image_node"
+    )
+    assert "update_current_segmentation_node" not in src, (
+        "widget.py must not call the removed update_current_segmentation_node"
+    )
+    assert "_try_update_mrml_image" not in src
+    assert "_try_update_mrml_segmentation" not in src
 
 
 def test_mrml_module_exports_image_functions():
     """mrml.py must export all required E2b symbols."""
     from ZebrafishEmbryoAnalyzerLib import mrml
-    assert hasattr(mrml, "ROLE_CURRENT_IMAGE")
     assert hasattr(mrml, "image_geometry")
-    assert hasattr(mrml, "get_or_create_image_node")
     assert hasattr(mrml, "update_image_node")
+    assert hasattr(mrml, "create_image_volume_node")
+    # Issue #56: gallery-selection replaces the singleton mechanism, so the
+    # removed helpers must no longer exist.
+    assert not hasattr(mrml, "ROLE_CURRENT_IMAGE"), (
+        "ROLE_CURRENT_IMAGE was retired in issue #56"
+    )
+    assert not hasattr(mrml, "get_or_create_image_node"), (
+        "get_or_create_image_node was retired in issue #56"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -768,10 +729,15 @@ def test_mrml_module_exports_image_functions():
 def test_mrml_module_exports_segmentation_symbols():
     """mrml.py must export all required E2c symbols."""
     from ZebrafishEmbryoAnalyzerLib import mrml
-    assert hasattr(mrml, "ROLE_CURRENT_SEGMENTATION")
     assert hasattr(mrml, "resample_mask_to_original")
-    assert hasattr(mrml, "get_or_create_segmentation_node")
     assert hasattr(mrml, "update_segmentation_node")
+    # Issue #56: the singleton CurrentSegmentation mechanism is gone.
+    assert not hasattr(mrml, "ROLE_CURRENT_SEGMENTATION"), (
+        "ROLE_CURRENT_SEGMENTATION was retired in issue #56"
+    )
+    assert not hasattr(mrml, "get_or_create_segmentation_node"), (
+        "get_or_create_segmentation_node was retired in issue #56"
+    )
 
 
 def test_widget_source_does_not_contain_persistent_segmentation_node_pointer():
@@ -783,251 +749,126 @@ def test_widget_source_does_not_contain_persistent_segmentation_node_pointer():
     )
 
 
-def test_widget_source_calls_try_update_mrml_segmentation():
-    """widget.py must contain _try_update_mrml_segmentation."""
-    src = open(_WIDGET_PY).read()
-    assert "_try_update_mrml_segmentation" in src, (
-        "widget.py must define and call _try_update_mrml_segmentation()"
-    )
+# ---------------------------------------------------------------------------
+# Behavioral: set_slice_viewer_background (direct, with fake slicer)
+# ---------------------------------------------------------------------------
+
+def test_set_slice_viewer_background_calls_slicer_with_volume_node():
+    """set_slice_viewer_background forwards volume_node to slicer.util.setSliceViewerLayers."""
+    from ZebrafishEmbryoAnalyzerLib import mrml
+    from unittest.mock import MagicMock, patch
+
+    volume = object()
+    fake_slicer = MagicMock()
+    with patch.dict(
+        "sys.modules",
+        {"slicer": fake_slicer, "ZebrafishEmbryoAnalyzerLib.mrml": mrml},
+        clear=False,
+    ):
+        ok = mrml.set_slice_viewer_background(volume)
+
+    assert ok is True
+    fake_slicer.util.setSliceViewerLayers.assert_called_once_with(background=volume)
 
 
-def test_on_gallery_select_calls_segmentation_after_image():
-    """_on_gallery_select must call _try_update_mrml_segmentation after _try_update_mrml_image."""
-    src = open(_WIDGET_PY).read()
-    img_pos = src.find("_try_update_mrml_image(self._results[index])")
-    seg_pos = src.find("_try_update_mrml_segmentation(self._results[index])")
-    assert img_pos != -1, "_try_update_mrml_image call not found in _on_gallery_select"
-    assert seg_pos != -1, "_try_update_mrml_segmentation call not found in _on_gallery_select"
-    assert seg_pos > img_pos, (
-        "_try_update_mrml_segmentation must appear after _try_update_mrml_image"
-    )
+def test_set_slice_viewer_background_returns_false_when_slicer_missing():
+    """No-slicer environments (e.g. plain pytest) must no-op without raising."""
+    from ZebrafishEmbryoAnalyzerLib import mrml
+    from unittest.mock import patch
+
+    with patch.dict("sys.modules", {"slicer": None}, clear=False):
+        ok = mrml.set_slice_viewer_background(object())
+
+    assert ok is False
+
+
+def test_set_slice_viewer_background_swallows_slicer_errors():
+    """A slicer.util failure must not propagate to the caller."""
+    from ZebrafishEmbryoAnalyzerLib import mrml
+    from unittest.mock import MagicMock, patch
+
+    fake_slicer = MagicMock()
+    fake_slicer.util.setSliceViewerLayers.side_effect = RuntimeError("boom")
+    with patch.dict("sys.modules", {"slicer": fake_slicer}, clear=False):
+        ok = mrml.set_slice_viewer_background(object())
+
+    assert ok is False
+
+
+def test_set_segmentation_visibility_toggles_display_node():
+    """set_segmentation_visibility forwards to the segmentation display node."""
+    from ZebrafishEmbryoAnalyzerLib import mrml
+
+    display = MagicMock()
+    seg = MagicMock()
+    seg.GetDisplayNode.return_value = display
+
+    assert mrml.set_segmentation_visibility(seg, True) is True
+    display.SetVisibility.assert_called_once_with(True)
+
+    display2 = MagicMock()
+    seg2 = MagicMock()
+    seg2.GetDisplayNode.return_value = display2
+    assert mrml.set_segmentation_visibility(seg2, False) is True
+    display2.SetVisibility.assert_called_once_with(False)
+
+
+def test_set_segmentation_visibility_handles_missing_display_node():
+    """A segmentation without a display node must no-op cleanly."""
+    from ZebrafishEmbryoAnalyzerLib import mrml
+
+    seg = MagicMock()
+    seg.GetDisplayNode.return_value = None
+    assert mrml.set_segmentation_visibility(seg, True) is False
+    assert mrml.set_segmentation_visibility(None, True) is False
+
+
+def test_find_tracked_volume_node_by_filename_returns_matching_node():
+    """find_tracked_volume_node_by_filename returns the node whose name equals filename."""
+    from ZebrafishEmbryoAnalyzerLib import mrml
+    from unittest.mock import MagicMock
+
+    node_a = MagicMock(); node_a.GetName.return_value = "first.png"
+    node_b = MagicMock(); node_b.GetName.return_value = "second.png"
+    param = MagicMock()
+    scene = MagicMock()
+    with patch.object(
+        mrml, "list_tracked_volume_nodes", return_value=[node_a, node_b]
+    ):
+        found = mrml.find_tracked_volume_node_by_filename(param, scene, "second.png")
+    assert found is node_b
+
+
+def test_find_tracked_volume_node_by_filename_returns_none_on_miss():
+    """No match -> None; an empty filename -> None; missing scene -> None."""
+    from ZebrafishEmbryoAnalyzerLib import mrml
+    from unittest.mock import MagicMock, patch
+
+    other = MagicMock(); other.GetName.return_value = "other.png"
+    param = MagicMock()
+    scene = MagicMock()
+
+    with patch.object(mrml, "list_tracked_volume_nodes", return_value=[other]):
+        assert mrml.find_tracked_volume_node_by_filename(param, scene, "absent.png") is None
+        assert mrml.find_tracked_volume_node_by_filename(param, scene, "") is None
+        assert mrml.find_tracked_volume_node_by_filename(None, scene, "x.png") is None
+        assert mrml.find_tracked_volume_node_by_filename(param, None, "x.png") is None
 
 
 # ---------------------------------------------------------------------------
-# Behavioral: get_or_create_image_node (direct, using fake objects)
+# Behavioral: show_gallery_selection_in_slice_view (subprocess)
 # ---------------------------------------------------------------------------
 
-def test_get_or_create_image_node_creates_new_when_no_reference():
-    """get_or_create_image_node creates a new node when no reference exists."""
-    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_image_node, ROLE_CURRENT_IMAGE
-
-    param_node = _FakeImageParamNode(existing_node=None)
-    scene = _FakeImageScene()
-
-    node = get_or_create_image_node(param_node, scene)
-
-    assert node is not None
-    assert scene._add_count == 1, f"expected 1 new node, got {scene._add_count}"
-    assert param_node._set_ref_calls == 1, "SetNodeReferenceID not called"
-    assert param_node._stored_role == ROLE_CURRENT_IMAGE
-    assert param_node._stored_id == node.GetID()
-
-
-def test_get_or_create_image_node_creates_node_with_display_name():
-    """get_or_create_image_node names the new node 'ZebrafishEmbryoAnalyzer Current Image'."""
-    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_image_node
-
-    param_node = _FakeImageParamNode(existing_node=None)
-    scene = _FakeImageScene()
-
-    node = get_or_create_image_node(param_node, scene)
-
-    assert node.GetName() == "ZebrafishEmbryoAnalyzer Current Image"
-
-
-def test_get_or_create_image_node_reuses_existing_reference():
-    """get_or_create_image_node returns the same node on repeated calls."""
-    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_image_node
-
-    existing = _FakeVectorVolumeNode()
-    param_node = _FakeImageParamNode(existing_node=existing)
-    scene = _FakeImageScene()
-
-    result = get_or_create_image_node(param_node, scene)
-
-    assert result is existing, "existing node reference not reused"
-    assert scene._add_count == 0, "new node created despite existing reference"
-    assert param_node._set_ref_calls == 0, "SetNodeReferenceID called unexpectedly"
-
-
-def test_get_or_create_image_node_idempotent_calls_add_once():
-    """AddNewNodeByClass is called exactly once even across two separate invocations."""
-    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_image_node
-
-    param_node = _FakeImageParamNode(existing_node=None)
-    scene = _FakeImageScene()
-
-    node1 = get_or_create_image_node(param_node, scene)
-    # Simulate the param_node now holding the reference to the created node
-    param_node._existing = node1
-    node2 = get_or_create_image_node(param_node, scene)
-
-    assert node1 is node2, "second call must return the same node"
-    assert scene._add_count == 1, "AddNewNodeByClass must be called exactly once"
-
-
-def test_get_or_create_image_node_wrong_type_creates_new():
-    """A wrong-type foreign node is left in scene; a fresh vector volume node is created."""
-    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_image_node
-
-    wrong_node = _FakeNonVectorVolumeNode()
-    param_node = _FakeImageParamNode(existing_node=wrong_node)
-    scene = _FakeImageScene()
-
-    result = get_or_create_image_node(param_node, scene)
-
-    assert result is not wrong_node, "wrong-type foreign node must not be reused"
-    assert scene._add_count == 1, "expected exactly one new vector volume node"
-    assert param_node._stored_id != wrong_node.GetID(), (
-        "reference must point to the new node, not the wrong-type node"
-    )
-    assert result.IsA("vtkMRMLVectorVolumeNode"), "new node must be a vector volume node"
-
-
-# ---------------------------------------------------------------------------
-# Issue #56: hide legacy CurrentImage/CurrentSegmentation nodes from Data tree
-# ---------------------------------------------------------------------------
-
-def test_get_or_create_image_node_hides_new_node_from_data_tree():
-    """Issue #56: SetHideFromEditors(True) is called once on new node creation."""
-    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_image_node
-
-    param_node = _FakeImageParamNode(existing_node=None)
-    scene = _FakeImageScene()
-
-    node = get_or_create_image_node(param_node, scene)
-
-    assert node.hide_calls == [True], (
-        f"new node must be hidden exactly once with True, got {node.hide_calls!r}"
-    )
-
-
-def test_get_or_create_image_node_does_not_rehide_on_reuse():
-    """Reusing an existing reference must NOT call SetHideFromEditors again."""
-    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_image_node
-
-    existing = _FakeVectorVolumeNode()
-    param_node = _FakeImageParamNode(existing_node=existing)
-    scene = _FakeImageScene()
-
-    result = get_or_create_image_node(param_node, scene)
-
-    assert result is existing
-    assert existing.hide_calls == [], (
-        f"existing node must not be re-hidden; got {existing.hide_calls!r}"
-    )
-    assert scene._add_count == 0, "AddNewNodeByClass must not run on reuse"
-
-
-# ---------------------------------------------------------------------------
-# Issue #56: get_or_create_segmentation_node (new behavioural coverage)
-# ---------------------------------------------------------------------------
-
-class _FakeSegmentationNode:
-    _counter = 0
-
-    def __init__(self):
-        _FakeSegmentationNode._counter += 1
-        self._id = f"vtkMRMLSegmentationNode{_FakeSegmentationNode._counter}"
-        self._name = ""
-        self.hide_calls = []
-        self.display_calls = []
-
-    def GetID(self):
-        return self._id
-
-    def SetName(self, name):
-        self._name = name
-
-    def GetName(self):
-        return self._name
-
-    def IsA(self, class_name):
-        return class_name == "vtkMRMLSegmentationNode"
-
-    def CreateDefaultDisplayNodes(self):
-        self.display_calls.append(1)
-
-    def SetHideFromEditors(self, value):
-        self.hide_calls.append(value)
-
-
-class _FakeSegmentationScene:
-    def __init__(self):
-        self._nodes = []
-        self._add_count = 0
-
-    def AddNewNodeByClass(self, class_name, display_name=""):
-        self._add_count += 1
-        node = _FakeSegmentationNode()
-        node.SetName(display_name)
-        self._nodes.append(node)
-        return node
-
-
-class _FakeSegmentationParamNode:
-    def __init__(self, existing_node=None):
-        self._existing = existing_node
-        self._stored_role = None
-        self._stored_id = None
-        self._set_ref_calls = 0
-
-    def GetNodeReference(self, role):
-        return self._existing
-
-    def SetNodeReferenceID(self, role, node_id):
-        self._stored_role = role
-        self._stored_id = node_id
-        self._set_ref_calls += 1
-
-
-def test_get_or_create_segmentation_node_hides_new_node_from_data_tree():
-    """Issue #56: SetHideFromEditors(True) is called once on new segmentation node creation."""
-    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_segmentation_node
-
-    param_node = _FakeSegmentationParamNode(existing_node=None)
-    scene = _FakeSegmentationScene()
-
-    node = get_or_create_segmentation_node(param_node, scene)
-
-    assert node.hide_calls == [True], (
-        f"new segmentation node must be hidden exactly once with True, "
-        f"got {node.hide_calls!r}"
-    )
-    assert node.display_calls == [1], "CreateDefaultDisplayNodes must still run"
-
-
-def test_get_or_create_segmentation_node_does_not_rehide_on_reuse():
-    """Reusing an existing segmentation reference must NOT call SetHideFromEditors again."""
-    from ZebrafishEmbryoAnalyzerLib.mrml import get_or_create_segmentation_node
-
-    existing = _FakeSegmentationNode()
-    param_node = _FakeSegmentationParamNode(existing_node=existing)
-    scene = _FakeSegmentationScene()
-
-    result = get_or_create_segmentation_node(param_node, scene)
-
-    assert result is existing
-    assert existing.hide_calls == [], (
-        f"existing segmentation node must not be re-hidden; got {existing.hide_calls!r}"
-    )
-    assert scene._add_count == 0
-
-
-# ---------------------------------------------------------------------------
-# Subprocess: update_current_image_node integration
-# ---------------------------------------------------------------------------
-
-def test_update_current_image_node_none_original_returns_none():
-    """update_current_image_node returns None when result['original'] is None."""
+def test_show_gallery_selection_in_slice_view_no_op_when_param_node_missing():
+    """No parameter node -> silent no-op, no exception propagates."""
     r = _run("""
         from unittest.mock import MagicMock
         from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
 
         logic = ZebrafishEmbryoAnalyzerLogic()
-        logic.getParameterNode = MagicMock(return_value=MagicMock())
+        logic.getParameterNode = MagicMock(return_value=None)
 
-        result = logic.update_current_image_node({"original": None}, 22.99)
+        result = logic.show_gallery_selection_in_slice_view({"filename": "x.png"})
         assert result is None, f"expected None, got {result!r}"
         print("OK")
     """)
@@ -1035,8 +876,8 @@ def test_update_current_image_node_none_original_returns_none():
     assert "OK" in r.stdout
 
 
-def test_update_current_image_node_none_result_returns_none():
-    """update_current_image_node returns None when result itself is None."""
+def test_show_gallery_selection_in_slice_view_no_op_when_result_none():
+    """None result -> silent no-op, no exception propagates."""
     r = _run("""
         from unittest.mock import MagicMock
         from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
@@ -1044,7 +885,7 @@ def test_update_current_image_node_none_result_returns_none():
         logic = ZebrafishEmbryoAnalyzerLogic()
         logic.getParameterNode = MagicMock(return_value=MagicMock())
 
-        result = logic.update_current_image_node(None, 22.99)
+        result = logic.show_gallery_selection_in_slice_view(None)
         assert result is None, f"expected None, got {result!r}"
         print("OK")
     """)
@@ -1052,32 +893,143 @@ def test_update_current_image_node_none_result_returns_none():
     assert "OK" in r.stdout
 
 
-def test_update_current_image_node_wraps_exception_as_mrml_error():
-    """Unexpected exceptions are wrapped as MRMLAdapterError."""
+def test_show_gallery_selection_in_slice_view_no_op_when_no_matching_volume_node():
+    """A result whose filename does not match any tracked volume node must no-op silently."""
     r = _run("""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
         from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
-        from ZebrafishEmbryoAnalyzerLib.errors import MRMLAdapterError
-        import numpy as np
 
         logic = ZebrafishEmbryoAnalyzerLogic()
         logic.getParameterNode = MagicMock(return_value=MagicMock())
 
-        fake_image = np.zeros((10, 10, 3), dtype="uint8")
-
-        with patch("ZebrafishEmbryoAnalyzerLib.mrml.get_or_create_image_node",
-                   side_effect=RuntimeError("mrml broke")):
-            try:
-                logic.update_current_image_node({"original": fake_image}, 22.99)
-                print("NO_ERROR")
-            except MRMLAdapterError as exc:
-                print(f"OK:{exc}")
-            except Exception as exc:
-                print(f"WRONG_TYPE:{type(exc).__name__}:{exc}")
+        # No tracked nodes -> find_tracked_volume_node_by_filename returns None.
+        with patch(
+            "ZebrafishEmbryoAnalyzerLib.mrml.find_tracked_volume_node_by_filename",
+            return_value=None,
+        ):
+            result = logic.show_gallery_selection_in_slice_view({"filename": "absent.png"})
+        assert result is None
+        print("OK")
     """)
     assert r.returncode == 0, r.stderr
-    assert r.stdout.startswith("OK:"), r.stdout
-    assert "NO_ERROR" not in r.stdout
+    assert "OK" in r.stdout
+
+
+def test_show_gallery_selection_in_slice_view_sets_background_and_toggles_visibility():
+    """Clicking a gallery thumbnail sets the slice-view background and toggles
+    the per-image segmentation visibility on (and the previously-visible one
+    off)."""
+    r = _run("""
+        from unittest.mock import MagicMock, patch
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+
+        logic = ZebrafishEmbryoAnalyzerLogic()
+        # Real Slicer returns "" for unset parameter strings; mimic that
+        # so the "no previous seg id" branch is taken on the first click.
+        param = MagicMock(); param.GetParameter.return_value = ""
+        logic.getParameterNode = MagicMock(return_value=param)
+
+        seg = MagicMock(); seg.GetID.return_value = "SegId1"
+        volume = MagicMock(); volume.GetNodeReference.return_value = seg
+
+        with patch(
+            "ZebrafishEmbryoAnalyzerLib.mrml.find_tracked_volume_node_by_filename",
+            return_value=volume,
+        ), patch(
+            "ZebrafishEmbryoAnalyzerLib.mrml.set_slice_viewer_background",
+            return_value=True,
+        ) as set_bg, patch(
+            "ZebrafishEmbryoAnalyzerLib.mrml.set_segmentation_visibility",
+        ) as set_vis:
+            logic.show_gallery_selection_in_slice_view({"filename": "x.png"})
+
+        set_bg.assert_called_once_with(volume)
+        # First click: no previous segmentation -> only the new one is shown.
+        set_vis.assert_called_once_with(seg, True)
+        print("OK")
+    """)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout
+
+
+def test_show_gallery_selection_in_slice_view_hides_previous_segmentation():
+    """A second click must hide the previously-visible segmentation before showing the new one."""
+    r = _run("""
+        from unittest.mock import MagicMock, patch
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+
+        logic = ZebrafishEmbryoAnalyzerLogic()
+        param = MagicMock()
+        param.GetParameter.return_value = "SegIdPrev"
+        logic.getParameterNode = MagicMock(return_value=param)
+
+        prev_seg = MagicMock()
+        new_seg  = MagicMock(); new_seg.GetID.return_value = "SegIdNew"
+        volume   = MagicMock(); volume.GetNodeReference.return_value = new_seg
+
+        scene = MagicMock()
+        scene.GetNodeByID.return_value = prev_seg
+        # Patch slicer.mrmlScene lookup at import time.
+        fake_slicer = MagicMock()
+        fake_slicer.mrmlScene = scene
+
+        with patch.dict("sys.modules", {"slicer": fake_slicer}), patch(
+            "ZebrafishEmbryoAnalyzerLib.mrml.find_tracked_volume_node_by_filename",
+            return_value=volume,
+        ), patch(
+            "ZebrafishEmbryoAnalyzerLib.mrml.set_slice_viewer_background",
+        ), patch(
+            "ZebrafishEmbryoAnalyzerLib.mrml.set_segmentation_visibility",
+        ) as set_vis:
+            logic.show_gallery_selection_in_slice_view({"filename": "y.png"})
+
+        # Visibility toggles: prev -> False, new -> True (in this order).
+        # The two nodes are different MagicMock instances in the test
+        # scope; assert by visibility value (the second positional arg),
+        # which is what differentiates them.
+        visibilities = [c.args[1] for c in set_vis.call_args_list]
+        assert visibilities == [False, True], visibilities
+        # Old seg-id parameter was overwritten with the new one.
+        param.SetParameter.assert_called_with(
+            "ZebrafishAnalysis.previousVisibleSegmentationId", "SegIdNew"
+        )
+        print("OK")
+    """)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout
+
+
+def test_show_gallery_selection_in_slice_view_handles_no_segmentation_reference():
+    """A volume node without a segmentation reference (analysis not run yet)
+    must still set the slice-view background — it must just skip the
+    segmentation toggle entirely."""
+    r = _run("""
+        from unittest.mock import MagicMock, patch
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+
+        logic = ZebrafishEmbryoAnalyzerLogic()
+        param = MagicMock(); param.GetParameter.return_value = ""
+        logic.getParameterNode = MagicMock(return_value=param)
+
+        volume = MagicMock(); volume.GetNodeReference.return_value = None
+
+        with patch(
+            "ZebrafishEmbryoAnalyzerLib.mrml.find_tracked_volume_node_by_filename",
+            return_value=volume,
+        ), patch(
+            "ZebrafishEmbryoAnalyzerLib.mrml.set_slice_viewer_background",
+        ) as set_bg, patch(
+            "ZebrafishEmbryoAnalyzerLib.mrml.set_segmentation_visibility",
+        ) as set_vis:
+            logic.show_gallery_selection_in_slice_view({"filename": "z.png"})
+
+        set_bg.assert_called_once_with(volume)
+        # No seg reference -> no toggle, no error.
+        set_vis.assert_not_called()
+        print("OK")
+    """)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout
 
 
 # ---------------------------------------------------------------------------

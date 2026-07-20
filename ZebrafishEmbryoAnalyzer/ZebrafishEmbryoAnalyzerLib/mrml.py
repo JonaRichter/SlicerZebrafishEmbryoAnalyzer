@@ -25,8 +25,6 @@ TABLE_SCHEMA = [
 ]
 
 ROLE_RESULTS_TABLE = "ResultsTable"
-ROLE_CURRENT_IMAGE = "CurrentImage"
-ROLE_CURRENT_SEGMENTATION = "CurrentSegmentation"
 # Role used for the per-image volume node reference list on the parameter
 # node (issue #38). Each successfully loaded image contributes one entry via
 # AddNodeReferenceID; replace-on-load clears the list before the next batch.
@@ -601,6 +599,78 @@ def list_tracked_volume_nodes(param_node, scene):
     return out
 
 
+def find_tracked_volume_node_by_filename(param_node, scene, filename):
+    """Return the tracked volume node whose display name equals ``filename``.
+
+    Issue #56: replaces the singleton "CurrentImage" lookup. Each image
+    in a batch has its own ``vtkMRMLVectorVolumeNode`` registered under
+    ``ROLE_ZEBRAFISH_IMAGES`` (issue #38) whose display name was set to
+    the basename at eager-creation time — matching the result dict's
+    ``filename`` key. Returns ``None`` if no match is found, the
+    parameter node / scene is unavailable, or ``filename`` is falsy.
+
+    O(n) over the tracked list is fine for typical gallery sizes (a few
+    dozen images per run).
+    """
+    if not filename or param_node is None or scene is None:
+        return None
+    for node in list_tracked_volume_nodes(param_node, scene):
+        try:
+            if node.GetName() == filename:
+                return node
+        except Exception:
+            continue
+    return None
+
+
+def set_slice_viewer_background(volume_node):
+    """Set ``volume_node`` as the background of all standard slice viewers.
+
+    Issue #56: drives the slice-view live preview off the already-existing
+    per-image volume node (issue #38), replacing the singleton "CurrentImage"
+    mechanism. Best-effort — every step is guarded so a missing slicer,
+    a stale node, or a binding mismatch never raises into the UI. Returns
+    ``True`` on success, ``False`` otherwise.
+
+    Must be called on the Slicer main thread (slicer.util touches MRML).
+    """
+    if volume_node is None:
+        return False
+    try:
+        import slicer
+    except Exception:
+        return False
+    try:
+        slicer.util.setSliceViewerLayers(background=volume_node)
+        return True
+    except Exception:
+        return False
+
+
+def set_segmentation_visibility(seg_node, visible):
+    """Toggle ``seg_node``'s display visibility.
+
+    Issue #56: gallery selection toggles per-image segmentation visibility
+    so the slice views show only the selected image's overlays (instead of
+    stacking every previously-clicked image's segmentation). Returns
+    ``True`` on success, ``False`` when the node is missing or has no
+    display node. No-op on slicer / display-property failure.
+    """
+    if seg_node is None:
+        return False
+    try:
+        display = seg_node.GetDisplayNode()
+    except Exception:
+        return False
+    if display is None:
+        return False
+    try:
+        display.SetVisibility(bool(visible))
+        return True
+    except Exception:
+        return False
+
+
 def image_geometry(h_orig: int, w_orig: int, um_per_px: float):
     """Return (dims, spacing, origin) for a vtkMRMLVectorVolumeNode.
 
@@ -624,33 +694,6 @@ def image_geometry(h_orig: int, w_orig: int, um_per_px: float):
     spacing = (spacing_mm, spacing_mm, 1.0)
     origin = (0.0, 0.0, 0.0)
     return dims, spacing, origin
-
-
-def get_or_create_image_node(param_node, scene):
-    """Return the existing CurrentImage node or create exactly one new node.
-
-    Looks up by reference role ROLE_CURRENT_IMAGE (not display name).
-    Creates a new vtkMRMLVectorVolumeNode named "ZebrafishEmbryoAnalyzer Current Image"
-    if no valid reference exists. Stores new node ID in param_node.
-    A wrong-type foreign node is left in scene unchanged; a new node is created.
-
-    Newly-created nodes are hidden from the Data module tree (issue #56):
-    these two singleton nodes exist solely to drive the Detail-tab live
-    preview and would otherwise appear as duplicate-looking top-level
-    entries alongside the per-image volume nodes (#38/#39). Hidden via
-    ``SetHideFromEditors(True)`` — guarded with ``hasattr`` so plain-pytest
-    fake nodes without this method stay compatible.
-    """
-    existing = param_node.GetNodeReference(ROLE_CURRENT_IMAGE)
-    if existing is not None and existing.IsA("vtkMRMLVectorVolumeNode"):
-        return existing
-    node = scene.AddNewNodeByClass(
-        "vtkMRMLVectorVolumeNode", "ZebrafishEmbryoAnalyzer Current Image"
-    )
-    if hasattr(node, "SetHideFromEditors"):
-        node.SetHideFromEditors(True)
-    param_node.SetNodeReferenceID(ROLE_CURRENT_IMAGE, node.GetID())
-    return node
 
 
 def update_image_node(image_rgb, um_per_px, node):
@@ -733,34 +776,6 @@ def resample_mask_to_original(mask_2d, h_orig, w_orig):
     binary = (mask_2d > 0).astype(np.uint8)
     # cv2.resize expects (width, height)
     return cv2.resize(binary, (w_orig, h_orig), interpolation=cv2.INTER_NEAREST)
-
-
-def get_or_create_segmentation_node(param_node, scene):
-    """Return the existing CurrentSegmentation node or create exactly one new node.
-
-    Looks up by reference role ROLE_CURRENT_SEGMENTATION (not display name).
-    Creates a new vtkMRMLSegmentationNode named
-    "ZebrafishEmbryoAnalyzer Current Segmentation" if no valid reference exists.
-    Stores new node ID in param_node.
-    A wrong-type foreign node is left in scene unchanged; a new node is created.
-
-    Newly-created nodes are hidden from the Data module tree (issue #56):
-    same rationale as ``get_or_create_image_node`` — the singleton
-    segmentation node exists only to drive the Detail-tab live preview and
-    would otherwise clutter the Subject Hierarchy alongside per-image
-    segmentation nodes (#39).
-    """
-    existing = param_node.GetNodeReference(ROLE_CURRENT_SEGMENTATION)
-    if existing is not None and existing.IsA("vtkMRMLSegmentationNode"):
-        return existing
-    node = scene.AddNewNodeByClass(
-        "vtkMRMLSegmentationNode", "ZebrafishEmbryoAnalyzer Current Segmentation"
-    )
-    node.CreateDefaultDisplayNodes()
-    if hasattr(node, "SetHideFromEditors"):
-        node.SetHideFromEditors(True)
-    param_node.SetNodeReferenceID(ROLE_CURRENT_SEGMENTATION, node.GetID())
-    return node
 
 
 def update_segmentation_node(result, um_per_px, node, image_node=None):
@@ -869,7 +884,8 @@ def _populate_image_node(image_rgb, um_per_px, node):
 def create_image_volume_node(image_rgb, um_per_px, name_hint, param_node, scene):
     """Create one new ``vtkMRMLVectorVolumeNode`` for an eagerly-loaded image.
 
-    Unlike :func:`get_or_create_image_node`, this function NEVER reuses an
+    Unlike the retired :func:`get_or_create_image_node` (singleton
+    ``CurrentImage`` removed in issue #56), this function NEVER reuses an
     existing node — each successful image gets its own persistent volume node
     created at folder-load time, before "Run Analysis" is clicked.
 
@@ -1064,8 +1080,10 @@ def _collect_node_reference_ids(node):
 #
 # Node-reference roles: the segmentation / markups nodes are attached to the
 # volume node via ``volumeNode.SetNodeReferenceID(role, node.GetID())`` —
-# the same attach pattern as ``ROLE_CURRENT_SEGMENTATION`` on the parameter
-# node. The volume node therefore owns all per-image children, which makes
+# the per-image segmentation was historically mirrored into a singleton
+# ``ROLE_CURRENT_SEGMENTATION`` node on the parameter node, but issue #56
+# retired that mechanism in favour of these per-image references directly.
+# The volume node therefore owns all per-image children, which makes
 # ``remove_all_image_volume_nodes`` recursive cleanup correct (children are
 # reachable through the volume node's references).
 
