@@ -7,6 +7,15 @@ show_result(index, results) — display result at index.
 import qt
 import numpy as np
 from ZebrafishEmbryoAnalyzerLib.zoom_view import ZoomableImageView
+from ZebrafishEmbryoAnalyzerLib.export import METRIC_KEYS
+
+_METRIC_LABELS = {
+    "length": "Length",
+    "curvature": "Curvature",
+    "ratio": "Ratio",
+    "eye_area": "Eye area",
+    "eye_diameter": "Eye diameter",
+}
 
 
 def _numpy_to_qpixmap(rgb_array: np.ndarray) -> "qt.QPixmap":
@@ -35,8 +44,9 @@ class DetailTab(qt.QWidget):
         self._on_navigate = on_navigate
         self._on_back = on_back
         self._logic = logic
-        self._on_exclude_change = on_exclude_change  # callable(filename, checked)
+        self._on_exclude_change = on_exclude_change  # callable(filename, metric_key, checked)
         self._current_filename = None
+        self._exclude_checkboxes = {}  # metric_key -> QCheckBox, rebuilt per show_result
         self._full_pixmap = None
         self._results = []
         self._current_idx = 0
@@ -78,10 +88,13 @@ class DetailTab(qt.QWidget):
         self._btn_prev.clicked.connect(lambda: self._on_navigate and self._on_navigate(-1))
         self._btn_next.clicked.connect(lambda: self._on_navigate and self._on_navigate(1))
 
-        # Exclude checkbox
-        self._chk_exclude = qt.QCheckBox("Exclude from export")
-        self._chk_exclude.setEnabled(False)
-        self._chk_exclude.toggled.connect(self._on_exclude_toggled)
+        # Exclude checkboxes — issue #74: one per active metric, rebuilt in
+        # show_result() since which metrics are active/computed varies per
+        # image (e.g. eye metrics only when eye segmentation ran).
+        self._exclude_group_label = qt.QLabel("Exclude from export:")
+        self._exclude_layout = qt.QVBoxLayout()
+        self._exclude_container = qt.QWidget()
+        self._exclude_container.setLayout(self._exclude_layout)
 
         # Metrics label
         self._metrics_label = qt.QLabel("")
@@ -111,7 +124,8 @@ class DetailTab(qt.QWidget):
         layout.addWidget(self._manual_row_widget, 0)
         layout.addWidget(self._manual_status, 0)
         layout.addLayout(_nav_row, 0)
-        layout.addWidget(self._chk_exclude, 0)
+        layout.addWidget(self._exclude_group_label, 0)
+        layout.addWidget(self._exclude_container, 0)
         layout.addWidget(self._metrics_label, 0)
 
         self._btn_prev.setEnabled(False)
@@ -134,7 +148,7 @@ class DetailTab(qt.QWidget):
         self._current_idx = index
         result = results[index]
         self._current_filename = result["filename"]
-        self._chk_exclude.setEnabled(True)
+        self._rebuild_exclude_checkboxes(result)
 
         self._metrics_label.setText(_format_metrics(result))
 
@@ -178,11 +192,42 @@ class DetailTab(qt.QWidget):
         """Call after a new batch run so stale pixmaps are discarded."""
         self._cache.clear()
 
-    def sync_exclude(self, is_excluded: bool) -> None:
-        """Update exclude checkbox state without firing callbacks."""
-        self._chk_exclude.blockSignals(True)
-        self._chk_exclude.setChecked(is_excluded)
-        self._chk_exclude.blockSignals(False)
+    def sync_exclude(self, excluded_metrics) -> None:
+        """Update exclude checkbox states without firing callbacks.
+
+        ``excluded_metrics``: a ``set`` of excluded metric keys for the
+        currently shown image (issue #74), or a plain ``bool`` for
+        backward-compatible callers — ``True`` checks every currently-shown
+        checkbox, ``False``/``None`` unchecks all of them.
+        """
+        if isinstance(excluded_metrics, bool) or excluded_metrics is None:
+            excluded_metrics = set(self._exclude_checkboxes) if excluded_metrics else set()
+        for key, chk in self._exclude_checkboxes.items():
+            chk.blockSignals(True)
+            chk.setChecked(key in excluded_metrics)
+            chk.blockSignals(False)
+
+    def _rebuild_exclude_checkboxes(self, result: dict) -> None:
+        """(Re)build one exclude checkbox per metric key that this result
+        actually has a value for — e.g. no "Eye area" checkbox when eye
+        segmentation wasn't run for this image. Derived from
+        ``export.METRIC_KEYS`` so a new metric column needs no change here.
+        """
+        for chk in self._exclude_checkboxes.values():
+            chk.setParent(None)
+        self._exclude_checkboxes = {}
+        excluded_metrics = result.get("exclude_metrics") or set()
+        for key in METRIC_KEYS:
+            if result.get(key) is None:
+                continue
+            chk = qt.QCheckBox()
+            chk.setText(_METRIC_LABELS.get(key, key))
+            chk.setChecked(key in excluded_metrics)
+            chk.toggled.connect(
+                lambda checked, k=key: self._on_exclude_toggled(k, checked)
+            )
+            self._exclude_layout.addWidget(chk)
+            self._exclude_checkboxes[key] = chk
 
     def reset(self):
         """Clear all visible and internal state after scene close."""
@@ -201,18 +246,17 @@ class DetailTab(qt.QWidget):
         self._btn_next.setEnabled(False)
         self._manual_row_widget.setVisible(False)
         self._manual_status.setVisible(False)
-        self._chk_exclude.blockSignals(True)
-        self._chk_exclude.setChecked(False)
-        self._chk_exclude.setEnabled(False)
-        self._chk_exclude.blockSignals(False)
+        for chk in self._exclude_checkboxes.values():
+            chk.setParent(None)
+        self._exclude_checkboxes = {}
 
     def cleanup(self):
         """Invalidate cache."""
         self.invalidate_cache()
 
-    def _on_exclude_toggled(self, checked: bool) -> None:
+    def _on_exclude_toggled(self, metric_key: str, checked: bool) -> None:
         if self._current_filename and self._on_exclude_change:
-            self._on_exclude_change(self._current_filename, checked)
+            self._on_exclude_change(self._current_filename, metric_key, checked)
 
     def _update_nav_state(self) -> None:
         n = len(self._results)

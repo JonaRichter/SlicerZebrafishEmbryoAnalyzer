@@ -380,7 +380,7 @@ def _build_widget_prompt_double(policy_result):
     w._gallery = MagicMock()
     w._results_tab = MagicMock()
     w._results = []
-    w._excluded = set()
+    w._excluded = {}  # issue #74: per-metric dict
     return w
 
 
@@ -417,7 +417,7 @@ def test_recompute_for_volume_node_uses_logic_output_and_refreshes_ui():
         _detail = MagicMock()
         _gallery = MagicMock()
         _results_tab = MagicMock()
-        _excluded = set()
+        _excluded = {}  # issue #74: per-metric dict
         _current_detail_idx = 0
         _results = []
         _main_widget = MagicMock()
@@ -454,7 +454,7 @@ def test_on_recompute_current_detail_noop_when_not_stale():
         _detail = MagicMock()
         _gallery = MagicMock()
         _results_tab = MagicMock()
-        _excluded = set()
+        _excluded = {}  # issue #74: per-metric dict
         _current_detail_idx = 0
         _results = [{"filename": "healthy.tif", "_volume_node": _FakeNodeRef()}]
 

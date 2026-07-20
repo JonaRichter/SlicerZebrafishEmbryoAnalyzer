@@ -60,7 +60,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._logic = logic
 
         self._results = []
-        self._excluded = set()
+        self._excluded = {}  # {filename: set(excluded_metric_keys)} (issue #74)
         self._image_paths = []
         self._current_detail_idx = 0
         self._updatingGUIFromParameterNode = False
@@ -566,7 +566,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                           "mask": None, "error": None, "length": None})
 
         self._results = stubs
-        self._excluded = set()
+        self._excluded = {}  # {filename: set(excluded_metric_keys)} (issue #74)
         self._detail.reset()
         self._results_tab.populate([], set())
         self._gallery.populate(stubs)
@@ -1138,20 +1138,26 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             "threshold": float(self._threshold_slider.value),
         }
 
-    def _on_exclude_change(self, filename: str, checked: bool) -> None:
+    def _on_exclude_change(self, filename: str, metric_key: str, checked: bool) -> None:
+        """Issue #74: per-metric exclude. ``self._excluded`` is
+        ``{filename: set(excluded_metric_keys)}``."""
+        row = self._excluded.setdefault(filename, set())
         if checked:
-            self._excluded.add(filename)
+            row.add(metric_key)
         else:
-            self._excluded.discard(filename)
+            row.discard(metric_key)
+        if not row:
+            self._excluded.pop(filename, None)
         self._results_tab.sync_exclude(self._excluded)
-        self._detail.sync_exclude(filename in self._excluded)
+        self._detail.sync_exclude(self._excluded.get(filename, set()))
 
     def _on_gallery_select(self, index: int):
         self._current_detail_idx = index
         self._tabs.setCurrentIndex(1)
         self._detail.show_result(index, self._results)
         if index < len(self._results):
-            self._detail.sync_exclude(self._results[index]["filename"] in self._excluded)
+            filename = self._results[index]["filename"]
+            self._detail.sync_exclude(self._excluded.get(filename, set()))
         self._detail.setFocus()
         if index < len(self._results):
             self._try_update_mrml_image(self._results[index])
@@ -1503,11 +1509,11 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._cancel_workers()
         self._results = []
         self._image_paths = []
-        self._excluded = set()
+        self._excluded = {}  # {filename: set(excluded_metric_keys)} (issue #74)
         self._detail.reset()
         self._queue_list.clear()
         self._gallery.populate([])
-        self._results_tab.populate([], set())
+        self._results_tab.populate([], {})
         self._run_stack.setCurrentIndex(0)
         # Scale-bar temporary state. _um_per_px is intentionally not reset here;
         # the caller syncs it from the new parameter node immediately after.
@@ -1548,7 +1554,12 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         # of the widget (queue_list, export) stays consistent.
         self._results = results
         self._image_paths = [r.get("filename") or "" for r in results]
-        self._excluded = {r["filename"] for r in self._results if r.get("exclude") or r.get("error")}
+        from ZebrafishEmbryoAnalyzerLib.export import METRIC_KEYS
+        self._excluded = {
+            r["filename"]: (r.get("exclude_metrics") or (set(METRIC_KEYS) if r.get("error") else set()))
+            for r in self._results
+            if r.get("exclude_metrics") or r.get("exclude") or r.get("error")
+        }
 
         # Gallery thumbnails come from each volume node's pixel array
         # (issue #41 acceptance: no dependency on the original source
@@ -1597,8 +1608,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             if self._results:
                 self._current_detail_idx = 0
                 self._detail.show_result(0, self._results)
-                sync_excl = bool(self._results[0]["filename"] in self._excluded)
-                self._detail.sync_exclude(sync_excl)
+                self._detail.sync_exclude(self._excluded.get(self._results[0]["filename"], set()))
                 self._refresh_detail_recompute_button()
         except Exception:
             logging.exception("ZebrafishEmbryoAnalyzer: detail view rebuild failed on scene reload")
@@ -1759,8 +1769,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 if r.get("original") is not None:
                     new_row["original"] = r["original"]
                 self._results[i] = new_row
-                if new_row["filename"] in self._excluded:
-                    self._excluded.discard(new_row["filename"])
+                self._excluded.pop(new_row["filename"], None)
                 break
 
         # Refresh UI.
@@ -1861,7 +1870,8 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._detail.invalidate_cache()
         self._gallery.populate(self._results)
         # Auto-exclude error rows so the visual state and export filter are consistent.
-        self._excluded = {r["filename"] for r in self._results if r.get("error")}
+        from ZebrafishEmbryoAnalyzerLib.export import METRIC_KEYS
+        self._excluded = {r["filename"]: set(METRIC_KEYS) for r in self._results if r.get("error")}
         self._results_tab.populate(self._results, self._excluded)
         self._tabs.setCurrentIndex(0)
         # Issue #42: wire ModifiedEvent observers on the per-image
@@ -2024,10 +2034,11 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         if path:
             if not path.endswith(".xlsx"):
                 path += ".xlsx"
-            active = [r for r in self._results if r["filename"] not in self._excluded]
+            # Issue #74: rows are never dropped for being excluded — only
+            # the specific excluded metric cells render as "Excluded".
             try:
-                export_excel(active, path)
-                slicer.util.infoDisplay(f"Saved {len(active)} rows to:\n{path}")
+                export_excel(self._results, path, excluded=self._excluded)
+                slicer.util.infoDisplay(f"Saved {len(self._results)} rows to:\n{path}")
                 self._remember_export_dir(path)
             except Exception as e:
                 slicer.util.errorDisplay(f"Export failed:\n{e}")
@@ -2042,10 +2053,11 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         if path:
             if not path.endswith(".csv"):
                 path += ".csv"
-            active = [r for r in self._results if r["filename"] not in self._excluded]
+            # Issue #74: rows are never dropped for being excluded — only
+            # the specific excluded metric cells render as "Excluded".
             try:
-                export_csv(active, path)
-                slicer.util.infoDisplay(f"Saved {len(active)} rows to:\n{path}")
+                export_csv(self._results, path, excluded=self._excluded)
+                slicer.util.infoDisplay(f"Saved {len(self._results)} rows to:\n{path}")
                 self._remember_export_dir(path)
             except Exception as e:
                 slicer.util.errorDisplay(f"Export failed:\n{e}")

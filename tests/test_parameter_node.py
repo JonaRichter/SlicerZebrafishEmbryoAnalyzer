@@ -1210,7 +1210,7 @@ def _make_w(**overrides):
     w._results        = []
     w._detail         = MagicMock()
     w._image_paths    = ["/img/a.tif", "/img/b.tif"]
-    w._excluded       = {"b.tif"}
+    w._excluded       = {"b.tif": {"length"}}  # issue #74: per-metric dict
     w._queue_list     = MagicMock()
     w._gallery        = MagicMock()
     w._results_tab    = MagicMock()
@@ -1318,11 +1318,11 @@ def test_reset_for_scene_close_preserves_existing_session_resets():
         w.reset_for_scene_close()
 
         assert w._image_paths == [], f"image_paths not cleared: {w._image_paths}"
-        assert w._excluded    == set(), f"excluded not cleared: {w._excluded}"
+        assert w._excluded    == {}, f"excluded not cleared: {w._excluded}"
         assert w._results     == [], f"results not cleared: {w._results}"
         w._queue_list.clear.assert_called_once()
         w._gallery.populate.assert_called_with([])
-        w._results_tab.populate.assert_called_with([], set())
+        w._results_tab.populate.assert_called_with([], {})
         w._run_stack.setCurrentIndex.assert_called_with(0)
         print("OK")
     """)

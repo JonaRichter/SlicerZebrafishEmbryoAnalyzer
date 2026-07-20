@@ -606,7 +606,14 @@ def test_per_image_writes_metric_attributes(
 def test_per_attribute_exclude_true_is_recorded(
     volume_node, scene, stub_update_segmentation_node, stub_slicer_import,
 ):
-    """User-excluded images must be queryable without scanning geometry."""
+    """User-excluded images must be queryable without scanning geometry.
+
+    Issue #74: the whole-row bool ``result["exclude"] = True`` (no explicit
+    ``exclude_metrics``) is the backward-compatible fallback path and is
+    encoded as the new schema's own whole-row shorthand "*" (not the legacy
+    "true" — that spelling is still accepted when *reading*, see
+    ``_decode_exclude_metrics``, but is no longer what this codebase writes).
+    """
     from ZebrafishEmbryoAnalyzerLib.mrml import (
         ATTR_EXCLUDE,
         apply_analysis_to_volume_node,
@@ -615,7 +622,7 @@ def test_per_attribute_exclude_true_is_recorded(
     result = _make_full_result()
     result["exclude"] = True
     apply_analysis_to_volume_node(result, volume_node, scene, 22.99)
-    assert volume_node.GetAttribute(ATTR_EXCLUDE) == "true"
+    assert volume_node.GetAttribute(ATTR_EXCLUDE) == "*"
 
 
 # ---------------------------------------------------------------------------

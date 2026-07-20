@@ -165,52 +165,70 @@ def _make_result(filename, error=None):
 
 
 class TestResultsTabExcludeColumn:
-    def test_exclude_column_header(self):
+    """Issue #74: exclude is per-metric, not whole-row. One checkbox column
+    per key in ``results_tab.METRIC_KEYS`` (imported from ``export.METRIC_KEYS``)."""
+
+    def test_exclude_columns_one_per_metric_key(self):
         tab = results_tab.ResultsTab()
-        # _EXCL_COL should be the last column
-        assert results_tab._EXCL_COL == len(results_tab.COLUMNS)
+        assert set(tab._excl_cols.keys()) == set(results_tab.METRIC_KEYS)
+        # All exclude columns come after the fixed COLUMNS.
+        assert min(tab._excl_cols.values()) == len(results_tab.COLUMNS)
 
     def test_populate_no_errors_unchecked(self):
         calls = []
-        tab = results_tab.ResultsTab(on_exclude_change=lambda fn, ch: calls.append((fn, ch)))
+        tab = results_tab.ResultsTab(on_exclude_change=lambda fn, k, ch: calls.append((fn, k, ch)))
         tab.populate([_make_result("a.png")])
-        assert tab._rows[0][0] == "a.png"
-        assert tab._rows[0][1].isChecked() is False
+        filename, checkboxes = tab._rows[0]
+        assert filename == "a.png"
+        assert all(chk.isChecked() is False for chk in checkboxes.values())
 
-    def test_populate_error_row_auto_checked(self):
+    def test_populate_error_row_auto_checks_every_metric(self):
         tab = results_tab.ResultsTab()
         tab.populate([_make_result("bad.png", error="timeout")])
-        assert tab._rows[0][1].isChecked() is True
+        _, checkboxes = tab._rows[0]
+        assert all(chk.isChecked() is True for chk in checkboxes.values())
 
-    def test_populate_previously_excluded(self):
+    def test_populate_previously_excluded_specific_metric_only(self):
+        tab = results_tab.ResultsTab()
+        tab.populate([_make_result("ok.png")], excluded={"ok.png": {"curvature"}})
+        _, checkboxes = tab._rows[0]
+        assert checkboxes["curvature"].isChecked() is True
+        assert checkboxes["length"].isChecked() is False
+
+    def test_populate_accepts_legacy_flat_filename_set(self):
+        """Backward compat: a plain set of filenames (old whole-row API)
+        still works, treated as every metric excluded."""
         tab = results_tab.ResultsTab()
         tab.populate([_make_result("ok.png")], excluded={"ok.png"})
-        assert tab._rows[0][1].isChecked() is True
+        _, checkboxes = tab._rows[0]
+        assert all(chk.isChecked() is True for chk in checkboxes.values())
 
-    def test_get_excluded_returns_checked(self):
+    def test_get_excluded_returns_per_metric_dict(self):
         tab = results_tab.ResultsTab()
         tab.populate([_make_result("a.png"), _make_result("b.png", error="err")])
         result = tab.get_excluded()
-        assert result == {"b.png"}
+        assert result["b.png"] == set(results_tab.METRIC_KEYS)
+        assert "a.png" not in result
 
     def test_sync_exclude_updates_without_callback(self):
         calls = []
-        tab = results_tab.ResultsTab(on_exclude_change=lambda fn, ch: calls.append((fn, ch)))
+        tab = results_tab.ResultsTab(on_exclude_change=lambda fn, k, ch: calls.append((fn, k, ch)))
         tab.populate([_make_result("a.png"), _make_result("b.png")])
         calls.clear()
-        tab.sync_exclude({"a.png"})
+        tab.sync_exclude({"a.png": {"length"}})
         # No callbacks should have fired
         assert calls == []
-        assert tab._rows[0][1].isChecked() is True
-        assert tab._rows[1][1].isChecked() is False
+        assert tab._rows[0][1]["length"].isChecked() is True
+        assert tab._rows[0][1]["curvature"].isChecked() is False
+        assert all(chk.isChecked() is False for chk in tab._rows[1][1].values())
 
-    def test_checkbox_fires_callback(self):
+    def test_checkbox_fires_callback_with_metric_key(self):
         calls = []
-        tab = results_tab.ResultsTab(on_exclude_change=lambda fn, ch: calls.append((fn, ch)))
+        tab = results_tab.ResultsTab(on_exclude_change=lambda fn, k, ch: calls.append((fn, k, ch)))
         tab.populate([_make_result("x.png")])
-        # Simulate user checking the box
-        tab._rows[0][1].setChecked(True)
-        assert ("x.png", True) in calls
+        # Simulate user checking the "curvature" exclude box.
+        tab._rows[0][1]["curvature"].setChecked(True)
+        assert ("x.png", "curvature", True) in calls
 
     def test_populate_empty_clears_rows(self):
         tab = results_tab.ResultsTab()
@@ -218,3 +236,27 @@ class TestResultsTabExcludeColumn:
         tab.populate([])
         assert tab._rows == []
         assert tab._table.rowCount == 0
+
+    def test_generic_over_new_metric_key_added_to_headers(self, monkeypatch):
+        """Issue #74's load-bearing requirement: adding a brand-new metric
+        key (simulating a future metric like swim bladder) must make it
+        excludable here with zero code changes to this module — only the
+        ``METRIC_KEYS`` list (itself derived from ``export.HEADERS``) needs
+        to include it. Patches ``results_tab.METRIC_KEYS`` directly (the
+        name this module actually reads) rather than reloading modules,
+        which would risk cross-test ``sys.modules["qt"]`` pollution — this
+        repo has documented import-order test flakiness before (see
+        ``test_setup_model_offer.py``) and this test must not add to it.
+        """
+        synthetic_keys = list(results_tab.METRIC_KEYS) + ["swim_area"]
+        monkeypatch.setattr(results_tab, "METRIC_KEYS", synthetic_keys)
+
+        tab = results_tab.ResultsTab()
+        assert "swim_area" in tab._excl_cols
+
+        result = _make_result("fish.png")
+        result["swim_area"] = 12.5
+        tab.populate([result], excluded={"fish.png": {"swim_area"}})
+        _, checkboxes = tab._rows[0]
+        assert checkboxes["swim_area"].isChecked() is True
+        assert checkboxes["length"].isChecked() is False

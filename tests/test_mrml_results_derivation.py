@@ -91,14 +91,22 @@ def _write_metric_attributes(result, node):
         ATTR_EYE_AREA,
         ATTR_EYE_DIAMETER,
         ATTR_EXCLUDE,
+        _encode_exclude_metrics,
     )
+    from ZebrafishEmbryoAnalyzerLib.export import METRIC_KEYS
 
     node.SetAttribute(ATTR_LENGTH, _fmt(result.get("length")))
     node.SetAttribute(ATTR_CURVATURE_CLASS, _fmt(result.get("curvature")))
     node.SetAttribute(ATTR_RATIO, _fmt(result.get("ratio")))
     node.SetAttribute(ATTR_EYE_AREA, _fmt(result.get("eye_area")))
     node.SetAttribute(ATTR_EYE_DIAMETER, _fmt(result.get("eye_diameter")))
-    node.SetAttribute(ATTR_EXCLUDE, "true" if bool(result.get("exclude")) else "false")
+    # Issue #74: per-metric exclude. ``exclude_metrics`` (a set of metric
+    # keys) takes precedence; the legacy whole-row ``exclude`` bool is the
+    # fallback, matching production's ``_write_metric_attributes``.
+    exclude_metrics = result.get("exclude_metrics")
+    if exclude_metrics is None:
+        exclude_metrics = set(METRIC_KEYS) if result.get("exclude") else set()
+    node.SetAttribute(ATTR_EXCLUDE, _encode_exclude_metrics(exclude_metrics, METRIC_KEYS))
 
 
 def _make_node_from_result(result, name=None):
@@ -262,6 +270,87 @@ def test_boolean_exclude_round_trip():
         assert bool(derived["exclude"]) is excluded, (
             f"exclude round-trip lost: expected {excluded}, got {derived['exclude']!r}"
         )
+
+
+def test_per_metric_exclude_round_trip():
+    """Issue #74: excluding a specific subset of metrics round-trips
+    exactly that subset, not the whole row."""
+    from ZebrafishEmbryoAnalyzerLib import mrml
+
+    result = {
+        "filename": "fish_partial.png",
+        "length": 1.0, "curvature": 0, "ratio": 1.0,
+        "eye_area": 2.0, "eye_diameter": 3.0,
+        "exclude_metrics": {"curvature", "eye_area"},
+        "error": "",
+    }
+    node = _make_node_from_result(result)
+    assert node.GetAttribute(mrml.ATTR_EXCLUDE) == "curvature,eye_area"
+    derived = mrml.volume_node_to_result_dict(node)
+    assert derived["exclude_metrics"] == {"curvature", "eye_area"}
+    assert derived["exclude"] is True  # summary bool: at least one excluded
+
+
+def test_exclude_metrics_covering_all_keys_encodes_as_wildcard():
+    """Excluding every known metric key must encode as the compact "*"
+    form, not a redundant explicit list — this is also what the whole-row
+    error-auto-exclude path relies on."""
+    from ZebrafishEmbryoAnalyzerLib import mrml
+    from ZebrafishEmbryoAnalyzerLib.export import METRIC_KEYS
+
+    result = {
+        "filename": "fish_all_excluded.png",
+        "length": 1.0, "curvature": 0, "ratio": 1.0,
+        "eye_area": 2.0, "eye_diameter": 3.0,
+        "exclude_metrics": set(METRIC_KEYS),
+        "error": "",
+    }
+    node = _make_node_from_result(result)
+    assert node.GetAttribute(mrml.ATTR_EXCLUDE) == "*"
+    derived = mrml.volume_node_to_result_dict(node)
+    assert derived["exclude_metrics"] == set(METRIC_KEYS)
+
+
+def test_legacy_whole_row_bool_schema_migrates_to_all_metrics_excluded():
+    """A scene saved before issue #74 wrote ``ATTR_EXCLUDE`` as a plain
+    "true"/"false" boolean. Reading that legacy value back must not crash
+    and must treat "true" as every metric excluded — otherwise a user's
+    prior exclude state on an old scene silently vanishes on first reload
+    after this feature lands."""
+    from ZebrafishEmbryoAnalyzerLib import mrml
+    from ZebrafishEmbryoAnalyzerLib.export import METRIC_KEYS
+
+    node = _FakeVolumeNode(name="legacy_excluded.png")
+    node.SetAttribute(mrml.ATTR_EXCLUDE, "true")  # old schema, written directly
+    derived = mrml.volume_node_to_result_dict(node)
+    assert derived["exclude_metrics"] == set(METRIC_KEYS)
+    assert derived["exclude"] is True
+
+    node2 = _FakeVolumeNode(name="legacy_included.png")
+    node2.SetAttribute(mrml.ATTR_EXCLUDE, "false")
+    derived2 = mrml.volume_node_to_result_dict(node2)
+    assert derived2["exclude_metrics"] == set()
+    assert derived2["exclude"] is False
+
+
+def test_decode_encode_exclude_metrics_helpers_round_trip():
+    """Direct unit coverage for the encode/decode grammar (issue #74)."""
+    from ZebrafishEmbryoAnalyzerLib.mrml import (
+        _decode_exclude_metrics,
+        _encode_exclude_metrics,
+    )
+
+    known = ["length", "curvature", "ratio"]
+    assert _decode_exclude_metrics(None, known) == set()
+    assert _decode_exclude_metrics("", known) == set()
+    assert _decode_exclude_metrics("false", known) == set()
+    assert _decode_exclude_metrics("true", known) == set(known)
+    assert _decode_exclude_metrics("*", known) == set(known)
+    assert _decode_exclude_metrics("length,ratio", known) == {"length", "ratio"}
+
+    assert _encode_exclude_metrics(set(), known) == "false"
+    assert _encode_exclude_metrics({"length"}, known) == "length"
+    assert _encode_exclude_metrics(set(known), known) == "*"
 
 
 def test_curvature_class_int_round_trip():

@@ -92,9 +92,16 @@ from unittest.mock import MagicMock
 # Any qt.QXxx used as a base class (QWidget, QLabel, etc.) must be a real Python
 # type so that classes defined in the import chain (zoom_view, detail_tab) work
 # with object.__new__.  __getattr__ on the module provides a real class as fallback
-# for any attribute not explicitly set.
+# for any attribute not explicitly set. Issue #74: detail_tab now also
+# *instantiates* qt.QCheckBox() directly (not just as a base class) and calls
+# ordinary widget methods (setText, setChecked, ...) on the instance, so the
+# fallback class needs a permissive no-op __getattr__ too rather than only
+# existing to be subclassed.
 class _FakeQBase:
-    pass
+    def __getattr__(self, name):
+        # A MagicMock is both callable (chk.setText(...)) and supports
+        # further attribute access (chk.toggled.connect(...)).
+        return MagicMock()
 
 class _QtModule(types.ModuleType):
     def __getattr__(self, name):
@@ -364,7 +371,7 @@ def test_reset_for_scene_close_clears_results_and_paths():
         w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
         w._results     = [{"filename": "a.png"}, {"filename": "b.png"}]
         w._image_paths = ["/a.png", "/b.png"]
-        w._excluded    = {"b.png"}
+        w._excluded    = {"b.png": {"length"}}  # issue #74: per-metric dict
         w._queue_list  = MagicMock()
         w._detail      = MagicMock()
         w._gallery     = MagicMock()
@@ -377,9 +384,9 @@ def test_reset_for_scene_close_clears_results_and_paths():
 
         w.reset_for_scene_close()
 
-        assert w._results     == [],    f"_results: {w._results!r}"
-        assert w._image_paths == [],    f"_image_paths: {w._image_paths!r}"
-        assert w._excluded    == set(), f"_excluded: {w._excluded!r}"
+        assert w._results     == [], f"_results: {w._results!r}"
+        assert w._image_paths == [], f"_image_paths: {w._image_paths!r}"
+        assert w._excluded    == {}, f"_excluded: {w._excluded!r}"
         print("OK")
     """)
     assert r.returncode == 0, r.stderr
@@ -671,7 +678,8 @@ def test_detail_tab_reset_shows_placeholder():
         d._btn_next = MagicMock()
         d._manual_row_widget = MagicMock()
         d._manual_status = MagicMock()
-        d._chk_exclude = MagicMock()
+        d._exclude_checkboxes = {}
+        d._exclude_layout = MagicMock()
         d._current_filename = None
 
         d.reset()
@@ -709,7 +717,8 @@ def test_detail_tab_reset_clears_texts_and_labels():
         d._btn_next = MagicMock()
         d._manual_row_widget = MagicMock()
         d._manual_status = MagicMock()
-        d._chk_exclude = MagicMock()
+        d._exclude_checkboxes = {}
+        d._exclude_layout = MagicMock()
         d._current_filename = None
 
         d.reset()
@@ -744,7 +753,8 @@ def test_detail_tab_reset_disables_navigation_and_clears_index():
         d._btn_next = btn_next
         d._manual_row_widget = MagicMock()
         d._manual_status = MagicMock()
-        d._chk_exclude = MagicMock()
+        d._exclude_checkboxes = {}
+        d._exclude_layout = MagicMock()
         d._current_filename = None
 
         d.reset()
@@ -778,7 +788,8 @@ def test_detail_tab_reset_invalidates_cache_without_worker_state():
         d._btn_next = MagicMock()
         d._manual_row_widget = MagicMock()
         d._manual_status = MagicMock()
-        d._chk_exclude = MagicMock()
+        d._exclude_checkboxes = {}
+        d._exclude_layout = MagicMock()
         d._current_filename = None
 
         d.reset()
@@ -818,7 +829,8 @@ def test_detail_tab_show_result_builds_selected_pixmap_only():
         d._btn_next = MagicMock()
         d._nav_label = MagicMock()
         d._pending_reset_zoom = True
-        d._chk_exclude = MagicMock()
+        d._exclude_checkboxes = {}
+        d._exclude_layout = MagicMock()
         d._current_filename = None
 
         import ZebrafishEmbryoAnalyzerLib.detail_tab as _dt
@@ -857,7 +869,8 @@ def test_detail_tab_reset_does_not_reference_poll_timer():
         d._btn_next = MagicMock()
         d._manual_row_widget = MagicMock()
         d._manual_status = MagicMock()
-        d._chk_exclude = MagicMock()
+        d._exclude_checkboxes = {}
+        d._exclude_layout = MagicMock()
         d._current_filename = None
         mock_timer = MagicMock()
         d._poll_timer = mock_timer
@@ -899,7 +912,8 @@ def test_detail_tab_accepts_new_results_after_reset():
         d._logic = MagicMock()
         d._btn_revert_auto = MagicMock()
         d._btn_manual_adjust = MagicMock()
-        d._chk_exclude = MagicMock()
+        d._exclude_checkboxes = {}
+        d._exclude_layout = MagicMock()
         d._current_filename = None
 
         # Reset first, then call show_result with fresh data.

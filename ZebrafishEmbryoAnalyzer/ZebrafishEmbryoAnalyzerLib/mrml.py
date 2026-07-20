@@ -58,6 +58,39 @@ ATTR_SEG_MTIME = ATTR_PREFIX + "segMTime"
 # mask in the Segment Editor. Cleared on successful recompute.
 ATTR_STALE = ATTR_PREFIX + "stale"
 
+
+def _decode_exclude_metrics(raw, known_keys):
+    """Parse the ``ATTR_EXCLUDE`` attribute value into a set of excluded
+    metric keys (issue #74 — per-metric exclude, generic over ``known_keys``
+    so a new metric added to ``export.HEADERS`` needs no change here).
+
+    Grammar, newest first:
+
+    * ``None`` / ``""`` / ``"false"`` → no metrics excluded (also the
+      backward-compatible reading of the old whole-row-bool schema's
+      "false").
+    * ``"true"`` / ``"*"`` → every key in ``known_keys`` excluded — "true"
+      is the old whole-row-bool schema (a scene saved before this issue),
+      "*" is the new schema's own whole-row shorthand (used for the
+      automatic error-row exclude).
+    * Anything else → a comma-separated list of metric keys.
+    """
+    if not raw or raw == "false":
+        return set()
+    if raw in ("true", "*"):
+        return set(known_keys)
+    return {k for k in raw.split(",") if k}
+
+
+def _encode_exclude_metrics(excluded_metrics, known_keys):
+    """Inverse of :func:`_decode_exclude_metrics`."""
+    excluded_metrics = set(excluded_metrics or ())
+    if not excluded_metrics:
+        return "false"
+    if known_keys and excluded_metrics >= set(known_keys):
+        return "*"
+    return ",".join(sorted(excluded_metrics))
+
 # Markups colors mirror ``overlay.py`` so the real MRML nodes match the custom
 # Detail-tab overlay visually. Stored as RGB floats in [0, 1] — VTK's expected
 # range for ``vtkMRMLDisplayNode.SetColor``.
@@ -256,7 +289,11 @@ def volume_node_to_result_dict(node):
     * ``length``, ``ratio``, ``eye_area``, ``eye_diameter`` → ``float`` or
       ``None`` when the attribute is absent/empty.
     * ``curvature`` → ``int`` if parseable, otherwise the raw string.
-    * ``exclude`` → ``bool`` (default ``False`` when missing).
+    * ``exclude`` → ``bool`` (default ``False`` when missing; ``True`` iff
+      at least one metric is excluded — issue #74).
+    * ``exclude_metrics`` → ``set`` of excluded metric keys (empty set when
+      none excluded). This is the actual per-metric exclude state; ``exclude``
+      is a convenience summary derived from it.
     * ``error`` → ``str`` or empty string.
     * ``filename`` → display name of the volume node (preserves
       provenance without depending on the source path; reload works even
@@ -278,8 +315,10 @@ def volume_node_to_result_dict(node):
     def _nn(x):
         return None if isinstance(x, float) and math.isnan(x) else x
 
+    from ZebrafishEmbryoAnalyzerLib.export import METRIC_KEYS
+
     exclude_raw = node.GetAttribute(ATTR_EXCLUDE) if hasattr(node, "GetAttribute") else None
-    exclude_val = exclude_raw == "true" if exclude_raw in (None, "", "true", "false") else False
+    exclude_metrics = _decode_exclude_metrics(exclude_raw, METRIC_KEYS)
 
     error_raw = node.GetAttribute("ZebrafishAnalysis.error") if hasattr(node, "GetAttribute") else None
     error_val = error_raw if isinstance(error_raw, str) else ""
@@ -293,7 +332,8 @@ def volume_node_to_result_dict(node):
         "ratio": _nn(ratio),
         "eye_area": _nn(eye_area),
         "eye_diameter": _nn(eye_diameter),
-        "exclude": exclude_val,
+        "exclude": bool(exclude_metrics),
+        "exclude_metrics": exclude_metrics,
         "error": error_val,
         # No ``original`` — see docstring.
     }
@@ -416,11 +456,14 @@ def volume_node_to_result_dict_with_validation(node):
     overwritten, because validator errors take precedence over the
     "Could not read image." error from the pipeline.
     """
+    from ZebrafishEmbryoAnalyzerLib.export import METRIC_KEYS
+
     row = volume_node_to_result_dict(node)
     err_field, _msg = validate_volume_node(node)
     if err_field:
         row["error"] = err_field
         row["exclude"] = True
+        row["exclude_metrics"] = set(METRIC_KEYS)
     return row
 
 
@@ -1082,8 +1125,11 @@ def _write_metric_attributes(result, volume_node):
     * ``ZebrafishAnalysis.ratio``         — float length/straight or ""
     * ``ZebrafishAnalysis.eye_area``      — float µm² or ""
     * ``ZebrafishAnalysis.eye_diameter``  — float µm or ""
-    * ``ZebrafishAnalysis.exclude``       — "true" / "false" (always present;
-      defaults to "false" when the key is missing on the result dict)
+    * ``ZebrafishAnalysis.exclude``       — "false", "*", or a comma-separated
+      list of excluded metric keys (issue #74 — per-metric exclude; see
+      ``_decode_exclude_metrics``/``_encode_exclude_metrics``). Always
+      present; defaults to "false" when neither ``exclude`` nor
+      ``exclude_metrics`` is set on the result dict.
     * ``ZebrafishAnalysis.segMTime``      — float, segmentation node
       ``GetMTime()`` at the moment the attributes were written; used by
       sub-issue #5 to detect external edits.
@@ -1096,8 +1142,12 @@ def _write_metric_attributes(result, volume_node):
     """
     if volume_node is None or not hasattr(volume_node, "SetAttribute"):
         return
-    exclude_raw = result.get("exclude", False)
-    exclude_val = bool(exclude_raw) if exclude_raw is not None else False
+    from ZebrafishEmbryoAnalyzerLib.export import METRIC_KEYS
+
+    exclude_metrics = result.get("exclude_metrics")
+    if exclude_metrics is None:
+        # Backward-compat: caller only set the old whole-row bool.
+        exclude_metrics = set(METRIC_KEYS) if result.get("exclude") else set()
     volume_node.SetAttribute(ATTR_LENGTH, _format_attr(result.get("length")))
     volume_node.SetAttribute(
         ATTR_CURVATURE_CLASS, _format_attr(result.get("curvature"))
@@ -1107,7 +1157,7 @@ def _write_metric_attributes(result, volume_node):
     volume_node.SetAttribute(
         ATTR_EYE_DIAMETER, _format_attr(result.get("eye_diameter"))
     )
-    volume_node.SetAttribute(ATTR_EXCLUDE, "true" if exclude_val else "false")
+    volume_node.SetAttribute(ATTR_EXCLUDE, _encode_exclude_metrics(exclude_metrics, METRIC_KEYS))
     # segMTime is supplied by the per-image helper once the segmentation node
     # is created. The writer sets it via SetAttribute(ATTR_SEG_MTIME, ...)
     # immediately after ``update_segmentation_node`` returns.
