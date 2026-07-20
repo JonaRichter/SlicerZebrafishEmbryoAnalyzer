@@ -92,6 +92,7 @@ def segmentation_pipeline(
     Returns:
         - default: (original_images, segmented_images, grown_images)
         - if include_eyes=True: (original_images, segmented_images, grown_images, eyes_images)
+        - if include_edema=True (and include_eyes=False): (original_images, segmented_images, grown_images, edema_images)
         - if include_eyes=True and include_edema=True: (original_images, segmented_images, grown_images, eyes_images, edema_images)
     """
     import cv2
@@ -199,5 +200,12 @@ def segmentation_pipeline(
 
     if include_eyes:
         return original_images, segmented_images, grown_images, eyes_images
+
+    # Issue #73: edema segmentation must be independently selectable from
+    # eye segmentation — previously edema_images was computed above but
+    # silently dropped here whenever include_eyes was False, so a caller
+    # requesting only include_edema=True got no edema masks back at all.
+    if include_edema:
+        return original_images, segmented_images, grown_images, edema_images
 
     return original_images, segmented_images, grown_images

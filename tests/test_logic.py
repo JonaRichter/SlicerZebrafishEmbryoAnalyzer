@@ -143,6 +143,100 @@ def test_analyse_images_raises_model_not_cached_when_body_missing(tmp_path, synt
             )
 
 
+# ---------------------------------------------------------------------------
+# Issue #73: edema segmentation, independent of eyes
+# ---------------------------------------------------------------------------
+
+def test_analyse_images_edema_without_eyes_computes_edema_area(
+    tmp_path, synthetic_fish_image, mock_model_paths
+):
+    """include_edema=True (eyes=False) must read the 4-tuple
+    (originals, masks, growns, edema) — not mistake it for the
+    eyes-only 4-tuple shape — and compute edema_area."""
+    import cv2
+    img_path = str(tmp_path / "fish.png")
+    cv2.imwrite(img_path, synthetic_fish_image)
+
+    dummy_mask = np.ones((256, 256), dtype=np.uint8)
+    dummy_edema = np.zeros((256, 256), dtype=np.uint8)
+    dummy_edema[10:20, 10:20] = 1
+
+    with patch("ZebrafishEmbryoAnalyzerCore.seg.segmentation_pipeline") as mock_pipeline, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.load_model"), \
+         patch("ZebrafishEmbryoAnalyzerCore.length.tube_length_border2border") as mock_length, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.classification_curvature") as mock_curv:
+
+        mock_pipeline.return_value = (
+            [synthetic_fish_image[:, :, ::-1]],
+            [dummy_mask],
+            [dummy_mask.copy()],
+            [dummy_edema],
+        )
+        mock_length.return_value = (1200.0, 1100.0,
+                                    np.array([[64, 128], [192, 128]]),
+                                    ((64, 128), (192, 128)))
+        mock_curv.return_value = (MagicMock(), MagicMock(item=lambda: 2))
+
+        from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
+        results = analyse_images(
+            [img_path],
+            {"length": True, "curvature": True, "ratio": True,
+             "eyes": False, "edema": True, "hitl": False, "threshold": 0.85,
+             "um_per_px": 22.99, "model_id": "desy"},
+        )
+
+    assert len(results) == 1
+    assert results[0]["error"] is None
+    assert results[0]["edema_area"] is not None
+    assert results[0]["edema_area"] > 0
+    # Called with edema kwargs, no eye kwargs (eyes=False).
+    _, seg_kwargs = mock_pipeline.call_args
+    assert seg_kwargs.get("include_edema") is True
+    assert "eye_model_path" not in seg_kwargs
+
+
+def test_analyse_images_edema_ignored_for_general_model(
+    tmp_path, synthetic_fish_image, mock_model_paths
+):
+    """edema=True but model_id="general" (no edema role in MODEL_SETS)
+    must not attempt to require/load an edema model — defensive
+    server-side gating, matching the UI-level checkbox gating."""
+    import cv2
+    img_path = str(tmp_path / "fish.png")
+    cv2.imwrite(img_path, synthetic_fish_image)
+
+    dummy_mask = np.ones((256, 256), dtype=np.uint8)
+
+    with patch("ZebrafishEmbryoAnalyzerCore.seg.segmentation_pipeline") as mock_pipeline, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.load_model"), \
+         patch("ZebrafishEmbryoAnalyzerCore.length.tube_length_border2border") as mock_length, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.classification_curvature") as mock_curv:
+
+        mock_pipeline.return_value = (
+            [synthetic_fish_image[:, :, ::-1]],
+            [dummy_mask],
+            [dummy_mask.copy()],
+        )
+        mock_length.return_value = (1200.0, 1100.0,
+                                    np.array([[64, 128], [192, 128]]),
+                                    ((64, 128), (192, 128)))
+        mock_curv.return_value = (MagicMock(), MagicMock(item=lambda: 2))
+
+        from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
+        results = analyse_images(
+            [img_path],
+            {"length": True, "curvature": True, "ratio": True,
+             "eyes": False, "edema": True, "hitl": False, "threshold": 0.85,
+             "um_per_px": 22.99, "model_id": "general"},
+        )
+
+    assert len(results) == 1
+    assert results[0]["error"] is None
+    assert results[0]["edema_area"] is None
+    _, seg_kwargs = mock_pipeline.call_args
+    assert "include_edema" not in seg_kwargs
+
+
 def test_preload_models_raises_model_not_cached_when_body_missing(tmp_path):
     """preload_models must raise ModelNotCachedError when body model file is absent."""
     from ZebrafishEmbryoAnalyzerLib import logic

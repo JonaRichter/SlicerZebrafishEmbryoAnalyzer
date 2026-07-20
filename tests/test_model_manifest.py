@@ -86,9 +86,12 @@ def test_model_sets_has_general_and_desy():
 def test_model_set_has_all_roles(variant):
     required_roles = {"body", "eye", "curvature"}
     assert required_roles.issubset(set(MODEL_SETS[variant].keys()))
-    # edema is intentionally excluded from MODEL_SETS to avoid gating the Run
-    # button on a model that is not yet used (include_edema defaults to False).
-    assert "edema" not in MODEL_SETS[variant]
+    # Issue #73: edema is DESY-only, matching the live reference webapp
+    # (its general/"Complex & Slower" preset has no edema model either).
+    if variant == "desy":
+        assert "edema" in MODEL_SETS[variant]
+    else:
+        assert "edema" not in MODEL_SETS[variant]
 
 
 # ---------------------------------------------------------------------------
@@ -276,11 +279,16 @@ def test_desy_reuses_curvature():
     assert MODEL_SETS["desy"]["curvature"] is MODEL_SETS["general"]["curvature"]
 
 
-def test_edema_in_models_but_not_in_model_sets():
-    """Edema model described in MODELS but excluded from MODEL_SETS (no UI control)."""
+def test_edema_only_wired_for_desy_not_general():
+    """Issue #73: the pre-existing 'general_edema' entry stays unused (it's
+    a different, older model file — best_model_edema_3400_focal.pth — not
+    the one the live webapp actually deploys); the new 'desy_edema' entry
+    (desy_edema_512_finetuned.pth) is wired only into MODEL_SETS['desy']."""
     assert "general_edema" in MODELS
+    assert "desy_edema" in MODELS
+    assert MODELS["general_edema"]["filename"] != MODELS["desy_edema"]["filename"]
     assert "edema" not in MODEL_SETS["general"]
-    assert "edema" not in MODEL_SETS["desy"]
+    assert MODEL_SETS["desy"]["edema"] is MODELS["desy_edema"]
 
 
 # ---------------------------------------------------------------------------

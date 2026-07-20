@@ -21,6 +21,7 @@ TABLE_SCHEMA = [
     ("LengthStraightRatio", "ratio",        "double"),
     ("EyeArea_um2",         "eye_area",     "double"),
     ("EyeDiameter_um",      "eye_diameter", "double"),
+    ("EdemaArea_um2",       "edema_area",   "double"),  # issue #73
     ("Error",               "error",        "string"),
 ]
 
@@ -51,6 +52,7 @@ ATTR_CURVATURE_CLASS = ATTR_PREFIX + "curvature_class"
 ATTR_RATIO = ATTR_PREFIX + "ratio"
 ATTR_EYE_AREA = ATTR_PREFIX + "eye_area"
 ATTR_EYE_DIAMETER = ATTR_PREFIX + "eye_diameter"
+ATTR_EDEMA_AREA = ATTR_PREFIX + "edema_area"  # issue #73
 ATTR_EXCLUDE = ATTR_PREFIX + "exclude"
 ATTR_SEG_MTIME = ATTR_PREFIX + "segMTime"
 # Issue #42: a segmentation node's ``ModifiedEvent`` observer sets
@@ -309,6 +311,7 @@ def volume_node_to_result_dict(node):
     ratio = _coerce_attr_float(node, ATTR_RATIO)
     eye_area = _coerce_attr_float(node, ATTR_EYE_AREA)
     eye_diameter = _coerce_attr_float(node, ATTR_EYE_DIAMETER)
+    edema_area = _coerce_attr_float(node, ATTR_EDEMA_AREA)
 
     # math.nan is the canonical "missing" sentinel in results_to_rows; mirror
     # it here so a run-after-analysis reload comparison is value-equal.
@@ -332,6 +335,7 @@ def volume_node_to_result_dict(node):
         "ratio": _nn(ratio),
         "eye_area": _nn(eye_area),
         "eye_diameter": _nn(eye_diameter),
+        "edema_area": _nn(edema_area),
         "exclude": bool(exclude_metrics),
         "exclude_metrics": exclude_metrics,
         "error": error_val,
@@ -795,6 +799,7 @@ def update_segmentation_node(result, um_per_px, node, image_node=None):
     result["original"]: uint8 ndarray shape (H_orig, W_orig, 3).
     result["mask"]: 2-D ndarray shape (256, 256) — body mask (>0 means body).
     result["eye_mask"]: 2-D bool ndarray shape (256, 256) or None — eye mask.
+    result["edema_mask"]: 2-D bool ndarray shape (256, 256) or None — edema mask (issue #73).
     um_per_px: physical scale of the original image in micrometres per pixel.
     image_node: optional vtkMRMLVectorVolumeNode — used to set reference geometry
         so Slicer can position the segmentation in slice views.
@@ -811,6 +816,7 @@ def update_segmentation_node(result, um_per_px, node, image_node=None):
       8. node.GetSegmentation().RemoveAllSegments()
       9. Add "Body" segment (green) — always.
       10. Add "Eye" segment (red) — only when eye_mask is not None and eye_mask.any().
+      10a. Add "Edema" segment (blue) — only when edema_mask is not None and edema_mask.any().
       11. Populate each segment via SetBinaryLabelmapToSegment.
       12. Set reference image geometry from image_node if provided.
     """
@@ -830,6 +836,7 @@ def update_segmentation_node(result, um_per_px, node, image_node=None):
 
     mask_2d = result.get("mask")
     eye_mask_2d = result.get("eye_mask")
+    edema_mask_2d = result.get("edema_mask")
 
     body_2d = resample_mask_to_original(mask_2d, h_orig, w_orig) if mask_2d is not None else None
     has_eye = (
@@ -838,6 +845,12 @@ def update_segmentation_node(result, um_per_px, node, image_node=None):
         and eye_mask_2d.any()
     )
     eye_2d = resample_mask_to_original(eye_mask_2d, h_orig, w_orig) if has_eye else None
+    has_edema = (
+        edema_mask_2d is not None
+        and hasattr(edema_mask_2d, "any")
+        and edema_mask_2d.any()
+    )
+    edema_2d = resample_mask_to_original(edema_mask_2d, h_orig, w_orig) if has_edema else None
 
     def _make_oriented_image(arr_2d):
         """Build a vtkOrientedImageData from a 2-D uint8 (0/1) array."""
@@ -871,6 +884,16 @@ def update_segmentation_node(result, um_per_px, node, image_node=None):
             eye_id = seg.AddEmptySegment("Eye", "Eye", [1.0, 0.0, 0.0])
             slicer.vtkSlicerSegmentationsModuleLogic.SetBinaryLabelmapToSegment(
                 _make_oriented_image(eye_2d), node, eye_id
+            )
+
+        if edema_2d is not None:
+            # Issue #73: blue, matching the live reference webapp's own
+            # edema overlay color (yellow=body, red=eye, blue=edema) —
+            # follow that established convention rather than inventing a
+            # new one. Does not collide with Body (green) or Eye (red).
+            edema_id = seg.AddEmptySegment("Edema", "Edema", [0.0, 0.4, 1.0])
+            slicer.vtkSlicerSegmentationsModuleLogic.SetBinaryLabelmapToSegment(
+                _make_oriented_image(edema_2d), node, edema_id
             )
 
         if image_node is not None:
@@ -1157,6 +1180,7 @@ def _write_metric_attributes(result, volume_node):
     volume_node.SetAttribute(
         ATTR_EYE_DIAMETER, _format_attr(result.get("eye_diameter"))
     )
+    volume_node.SetAttribute(ATTR_EDEMA_AREA, _format_attr(result.get("edema_area")))
     volume_node.SetAttribute(ATTR_EXCLUDE, _encode_exclude_metrics(exclude_metrics, METRIC_KEYS))
     # segMTime is supplied by the per-image helper once the segmentation node
     # is created. The writer sets it via SetAttribute(ATTR_SEG_MTIME, ...)

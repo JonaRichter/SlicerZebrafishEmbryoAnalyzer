@@ -131,6 +131,7 @@ _RESULT_KEYS = (
     "mask",
     "grown",
     "eye_mask",
+    "edema_mask",
     "path_points",
     "straight_line_points",
     "length",
@@ -138,6 +139,7 @@ _RESULT_KEYS = (
     "ratio",
     "eye_area",
     "eye_diameter",
+    "edema_area",
     "spacing",
     "error",
 )
@@ -248,6 +250,9 @@ def analyse_images(image_paths: list, params: dict,
 
     um_per_px = float(params.get("um_per_px", 22.99))
     include_eyes = params.get("eyes", False)
+    include_edema = params.get("edema", False) and "edema" in MODEL_SETS.get(
+        params.get("model_id", "general"), MODEL_SETS["general"]
+    )
 
     model_id = params.get("model_id", "general")
     model_set = MODEL_SETS.get(model_id, MODEL_SETS["general"])
@@ -265,6 +270,13 @@ def analyse_images(image_paths: list, params: dict,
         if not eye_path.exists():
             raise ModelNotCachedError(
                 f"{eye_entry['label']} not found at {eye_path}. Download models first."
+            )
+    if include_edema:
+        edema_entry = model_set["edema"]
+        edema_path = get_cached_path(edema_entry)
+        if not edema_path.exists():
+            raise ModelNotCachedError(
+                f"{edema_entry['label']} not found at {edema_path}. Download models first."
             )
     if params.get("curvature", True):
         curv_entry = MODELS["curvature"]
@@ -294,6 +306,10 @@ def analyse_images(image_paths: list, params: dict,
     )
     if include_eyes:
         _seg_kwargs["eye_model_path"] = str(eye_path)
+    if include_edema:
+        _seg_kwargs["include_edema"] = True
+        _seg_kwargs["edema_model_path"] = str(edema_path)
+        _seg_kwargs["edema_encoder_name"] = edema_entry["encoder"]
 
     n = len(image_paths)
     results = []
@@ -310,16 +326,29 @@ def analyse_images(image_paths: list, params: dict,
                 shutil.copy2(image_path, os.path.join(_tmp, os.path.basename(image_path)))
                 seg_result = segmentation_pipeline(_tmp, **_seg_kwargs)
 
-            if include_eyes and len(seg_result) == 4:
+            # Issue #73: segmentation_pipeline's return shape depends on
+            # which of include_eyes/include_edema were requested — a 4-tuple
+            # is ambiguous between "eyes only" and "edema only" by length
+            # alone, so disambiguate using what this call actually asked for
+            # (mirrors segmentation_pipeline's own if/elif branch order).
+            if include_eyes and include_edema and len(seg_result) == 5:
+                originals_bgr, masks, growns, eyes_list, edema_list = seg_result
+            elif include_eyes and len(seg_result) == 4:
                 originals_bgr, masks, growns, eyes_list = seg_result
+                edema_list = [None]
+            elif include_edema and len(seg_result) == 4:
+                originals_bgr, masks, growns, edema_list = seg_result
+                eyes_list = [None]
             else:
                 originals_bgr, masks, growns = seg_result[:3]
                 eyes_list = [None]
+                edema_list = [None]
 
             orig_bgr = originals_bgr[0] if originals_bgr else None
             mask    = masks[0]      if masks      else None
             grown   = growns[0]     if growns     else None
             eye     = eyes_list[0]  if eyes_list  else None
+            edema   = edema_list[0] if edema_list else None
 
             if orig_bgr is None:
                 r["error"] = "Could not read image."
@@ -343,9 +372,11 @@ def analyse_images(image_paths: list, params: dict,
             r["mask"]      = mask
             r["grown"]     = grown
             r["eye_mask"]  = eye
+            r["edema_mask"] = edema
 
-            mask_bin = (mask > 0) if mask is not None else None
-            eye_bin  = (eye  > 0) if eye  is not None else None
+            mask_bin  = (mask  > 0) if mask  is not None else None
+            eye_bin   = (eye   > 0) if eye   is not None else None
+            edema_bin = (edema > 0) if edema is not None else None
 
             h_orig, w_orig = orig_bgr.shape[:2]
             mask_h, mask_w = mask.shape[:2] if mask is not None else (256, 256)
@@ -398,6 +429,21 @@ def analyse_images(image_paths: list, params: dict,
                 except Exception as exc:
                     if r["error"] is None:
                         r["error"] = f"Eye metrics error: {exc}"
+
+            # ---- edema metrics ----
+            # Issue #73: reuses compute_eye_metrics as a generic mask-area
+            # helper, same as the live reference webapp does for edema —
+            # only the area is reported (no "diameter" column, matching
+            # export.py's HEADERS for this metric).
+            if params.get("edema", False) and edema_bin is not None and mask_bin is not None:
+                try:
+                    info = compute_eye_metrics(
+                        edema_bin, mask_fish=mask_bin, spacing=spacing
+                    )
+                    r["edema_area"] = float(info.get("eye_area", 0))
+                except Exception as exc:
+                    if r["error"] is None:
+                        r["error"] = f"Edema metrics error: {exc}"
 
         except Exception as exc:
             import traceback

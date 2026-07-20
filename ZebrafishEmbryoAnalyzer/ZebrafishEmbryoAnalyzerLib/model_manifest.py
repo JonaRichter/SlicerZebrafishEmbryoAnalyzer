@@ -113,6 +113,23 @@ MODELS: dict = {
         "license": "LICENSE_PENDING",
         "preprocessing_compat": "v1",
     },
+    # Issue #73: edema is only offered for the DESY preset, matching the
+    # live reference webapp (huggingface.co/spaces/markdanielarndt/Zebrafish)
+    # — its "Complex & Slower"/general preset has no edema model at all.
+    # This is a distinct file from the pre-existing unused "general_edema"
+    # entry above (best_model_edema_3400_focal.pth) — do not conflate them.
+    "desy_edema": {
+        "id": "desy_edema",
+        "repo_id": "markdanielarndt/Zebrafish_Segmentation",
+        "filename": "desy_edema_512_finetuned.pth",
+        "revision": "237d21d6d7538fc5b661bf43b70f378f945991ee",
+        "label": "DESY edema segmentation model",
+        "encoder": "vgg19",
+        "sha256": "5c4c99299da84842bc2efa8aa42ae693b5d3bc5e30ad675b2772e4096e09728b",
+        "size_bytes": 116_289_947,
+        "license": "LICENSE_PENDING",
+        "preprocessing_compat": "v1",
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -128,6 +145,7 @@ MODEL_SETS: dict = {
     "desy": {
         "body": MODELS["desy_body"],
         "eye": MODELS["desy_eye"],
+        "edema": MODELS["desy_edema"],  # issue #73: DESY-only
         "curvature": MODELS["curvature"],
     },
 }

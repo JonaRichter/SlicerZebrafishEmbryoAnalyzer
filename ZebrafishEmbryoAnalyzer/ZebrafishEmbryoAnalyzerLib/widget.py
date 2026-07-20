@@ -282,10 +282,14 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._chk_curvature = qt.QCheckBox("Curvature class");    self._chk_curvature.setChecked(True)
         self._chk_ratio     = qt.QCheckBox("Length/straight ratio"); self._chk_ratio.setChecked(True)
         self._chk_eyes      = qt.QCheckBox("Eye segmentation");   self._chk_eyes.setChecked(False)
+        # Issue #73: edema segmentation, DESY-model-only (see
+        # _enforce_edema_model_dependency — the live reference webapp's
+        # general/"Complex & Slower" preset has no edema model either).
+        self._chk_edema     = qt.QCheckBox("Edema segmentation"); self._chk_edema.setChecked(False)
         self._chk_hitl      = qt.QCheckBox("Confidence threshold"); self._chk_hitl.setChecked(False)
 
         for chk in (self._chk_length, self._chk_curvature, self._chk_ratio,
-                    self._chk_eyes, self._chk_hitl):
+                    self._chk_eyes, self._chk_edema, self._chk_hitl):
             an_layout.addWidget(chk)
         self._enforce_length_ratio_dependency()
 
@@ -308,6 +312,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         for _label, _mid, _ in _MODEL_ENTRIES:
             self._model_combo.addItem(_label, _mid)
         m_layout.addRow("Segmentation model:", self._model_combo)
+        self._enforce_edema_model_dependency()
 
         scale_box = ctk.ctkCollapsibleButton()
         scale_box.text      = "Scale bar"
@@ -496,6 +501,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._threshold_slider.valueChanged.connect(self._notify_settings_changed)
         self._um_per_px.valueChanged.connect(self._notify_settings_changed)
         self._model_combo.currentIndexChanged.connect(self._notify_settings_changed)
+        self._model_combo.currentIndexChanged.connect(self._enforce_edema_model_dependency)
 
     def _on_load_folder(self):
         settings = qt.QSettings()
@@ -795,6 +801,8 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             required["curvature"] = model_set["curvature"]
         if self._chk_eyes.isChecked() and "eye" in model_set:
             required["eye"] = model_set["eye"]
+        if self._chk_edema.isChecked() and "edema" in model_set:
+            required["edema"] = model_set["edema"]
         return required
 
     def _missing_required_models(self, model_id):
@@ -984,6 +992,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             "curvature": self._chk_curvature.isChecked(),
             "ratio":     self._chk_ratio.isChecked(),
             "eyes":      self._chk_eyes.isChecked(),
+            "edema":     self._chk_edema.isChecked(),
             "hitl":      self._chk_hitl.isChecked(),
             "threshold": self._threshold_slider.value,
             "um_per_px": self._um_per_px.value,
@@ -1287,6 +1296,25 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._chk_ratio.setEnabled(length_enabled)
         if not length_enabled:
             self._chk_ratio.setChecked(False)
+
+    def _enforce_edema_model_dependency(self, *args):
+        """Issue #73: edema segmentation is only available for the DESY
+        model (see model_manifest.MODEL_SETS — 'edema' role only exists on
+        'desy', matching the live reference webapp's model registry, which
+        has no edema model on its general/"Complex & Slower" preset either).
+        Grey out + force-uncheck the checkbox for any other model selection,
+        mirroring _enforce_length_ratio_dependency's pattern for #60.
+        """
+        from ZebrafishEmbryoAnalyzerLib.model_manifest import MODEL_SETS
+        model_id = self._model_combo.currentData or _DEFAULT_MODEL_ID
+        model_set = MODEL_SETS.get(model_id, MODEL_SETS[_DEFAULT_MODEL_ID])
+        edema_available = "edema" in model_set
+        self._chk_edema.setEnabled(edema_available)
+        self._chk_edema.setToolTip(
+            "" if edema_available else "Edema segmentation requires the DESY model."
+        )
+        if not edema_available:
+            self._chk_edema.setChecked(False)
 
     def updateGUIFromParameterNode(self, node):
         """Read parameter values from node and apply to all setting controls."""

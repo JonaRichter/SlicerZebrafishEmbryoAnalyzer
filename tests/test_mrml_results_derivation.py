@@ -90,6 +90,7 @@ def _write_metric_attributes(result, node):
         ATTR_RATIO,
         ATTR_EYE_AREA,
         ATTR_EYE_DIAMETER,
+        ATTR_EDEMA_AREA,
         ATTR_EXCLUDE,
         _encode_exclude_metrics,
     )
@@ -100,6 +101,7 @@ def _write_metric_attributes(result, node):
     node.SetAttribute(ATTR_RATIO, _fmt(result.get("ratio")))
     node.SetAttribute(ATTR_EYE_AREA, _fmt(result.get("eye_area")))
     node.SetAttribute(ATTR_EYE_DIAMETER, _fmt(result.get("eye_diameter")))
+    node.SetAttribute(ATTR_EDEMA_AREA, _fmt(result.get("edema_area")))
     # Issue #74: per-metric exclude. ``exclude_metrics`` (a set of metric
     # keys) takes precedence; the legacy whole-row ``exclude`` bool is the
     # fallback, matching production's ``_write_metric_attributes``.
@@ -158,6 +160,24 @@ def test_volume_node_to_result_dict_round_trip_basic():
     assert rows_from_nodes == rows_from_results, (
         f"derived rows diverge: {rows_from_nodes!r} vs {rows_from_results!r}"
     )
+
+
+def test_edema_area_round_trips_through_volume_node_attribute():
+    """Issue #73: edema_area must survive a save/reload cycle the same way
+    eye_area already does — this is the explicit scene-reload-persistence
+    acceptance criterion, not just an in-session behavior."""
+    from ZebrafishEmbryoAnalyzerLib import mrml
+
+    result = {
+        "filename": "fish_edema.png",
+        "length": 1.0, "curvature": 0, "ratio": 1.0,
+        "eye_area": None, "eye_diameter": None,
+        "edema_area": 42.5,
+        "exclude": False, "error": "",
+    }
+    node = _make_node_from_result(result)
+    derived = mrml.volume_node_to_result_dict(node)
+    assert derived["edema_area"] == pytest.approx(42.5)
 
 
 def test_volume_nodes_to_rows_matches_results_to_rows_for_equivalent_state():
