@@ -216,6 +216,47 @@ def test_clear_volume_node_stale_is_noop_when_not_stale():
     assert is_volume_node_stale(n) is False
 
 
+def test_clear_stale_marking_undoes_all_three_coupled_attributes():
+    """``clear_stale_marking`` reverses the whole stale marking (stale +
+    exclude + error) on a row carrying the stale-error signature, so a
+    reloaded scene comes back clean and the overlay is not suppressed."""
+    from ZebrafishEmbryoAnalyzerLib.mrml import (
+        mark_volume_node_stale, clear_stale_marking, is_volume_node_stale,
+        ATTR_STALE, ATTR_EXCLUDE,
+    )
+    n = _make_attr_node("embryo.tif")
+    mark_volume_node_stale(n)
+    assert clear_stale_marking(n) is True
+    assert is_volume_node_stale(n) is False
+    assert n.GetAttribute(ATTR_STALE) is None
+    assert n.GetAttribute("ZebrafishAnalysis.error") is None
+    # Reset to "false", not removed: validate_volume_node's "was analysed"
+    # check keys on the attribute's presence.
+    assert n.GetAttribute(ATTR_EXCLUDE) == "false"
+
+
+def test_clear_stale_marking_preserves_genuine_user_exclude():
+    """A genuine user exclusion carries no stale error, so
+    ``clear_stale_marking`` leaves it untouched and reports no change."""
+    from ZebrafishEmbryoAnalyzerLib.mrml import (
+        clear_stale_marking, ATTR_EXCLUDE,
+    )
+    n = _make_attr_node("embryo.tif", **{ATTR_EXCLUDE: "true"})
+    assert clear_stale_marking(n) is False
+    assert n.GetAttribute(ATTR_EXCLUDE) == "true"
+
+
+def test_clear_stale_marking_preserves_unrelated_error_row():
+    """An unrelated error (e.g. unreadable image) is not the stale
+    signature, so ``clear_stale_marking`` leaves the error verbatim."""
+    from ZebrafishEmbryoAnalyzerLib.mrml import clear_stale_marking
+    n = _make_attr_node(
+        "embryo.tif", **{"ZebrafishAnalysis.error": "Could not read image."}
+    )
+    assert clear_stale_marking(n) is False
+    assert n.GetAttribute("ZebrafishAnalysis.error") == "Could not read image."
+
+
 # --------------------------------------------------------------------------- #
 # Layer 2: Logic class — observer setup + list_stale + recompute plumbing
 # --------------------------------------------------------------------------- #

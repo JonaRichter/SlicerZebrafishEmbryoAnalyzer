@@ -359,6 +359,56 @@ def test_logic_rebuild_results_from_scene_walks_tracked_nodes():
     assert "OK" in r.stdout
 
 
+def test_logic_rebuild_results_from_scene_undoes_persisted_stale_marking():
+    """Regression (issue #56 follow-up): the shared rebuild path scrubs a
+    row that comes back from a saved scene carrying the stale marking, so
+    BOTH scene-reload entry points (EndImportEvent and the enter() /
+    try_rebuild_from_scene_if_empty path when the scene loaded before the
+    module was opened) get a clean row — no replayed recompute prompt, no
+    "could not be restored" warning, no overlay suppressed by exclude."""
+    r = _run_in_subprocess(r"""
+        from unittest.mock import MagicMock, patch
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+        from ZebrafishEmbryoAnalyzerLib.mrml import (
+            STALE_ERROR_MESSAGE, ATTR_STALE, ATTR_EXCLUDE,
+        )
+
+        class Node:
+            def __init__(self, name, attrs):
+                self._n = name; self._a = dict(attrs)
+            def GetName(self): return self._n
+            def GetID(self): return "id_" + self._n
+            def GetAttribute(self, k): return self._a.get(k)
+            def SetAttribute(self, k, v): self._a[k] = v
+            def RemoveAttribute(self, k): self._a.pop(k, None)
+            def GetNodeReferenceID(self, role): return ""
+            def GetImageData(self): return None
+
+        node = Node("fish.jpg", {
+            ATTR_STALE: "true",
+            ATTR_EXCLUDE: "true",
+            "ZebrafishAnalysis.error": STALE_ERROR_MESSAGE,
+        })
+
+        logic = ZebrafishEmbryoAnalyzerLogic()
+        logic.getParameterNode = MagicMock(return_value=MagicMock())
+        import slicer
+        slicer.mrmlScene = MagicMock()
+        with patch("ZebrafishEmbryoAnalyzerLib.mrml.list_tracked_volume_nodes",
+                   return_value=[node]), \
+             patch("ZebrafishEmbryoAnalyzerLib.mrml.volume_node_to_pixels",
+                   return_value=None):
+            logic.rebuild_results_from_scene()
+
+        assert node.GetAttribute(ATTR_STALE) is None
+        assert node.GetAttribute("ZebrafishAnalysis.error") is None
+        assert node.GetAttribute(ATTR_EXCLUDE) == "false"
+        print("OK")
+    """)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout
+
+
 def test_logic_rebuild_results_from_scene_returns_empty_on_no_param_node():
     """No parameter node → empty list, no exception."""
     r = _run_in_subprocess(r"""

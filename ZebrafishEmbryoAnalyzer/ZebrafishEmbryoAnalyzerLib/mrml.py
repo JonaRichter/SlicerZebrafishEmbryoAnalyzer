@@ -523,6 +523,54 @@ def clear_volume_node_stale(volume_node):
         pass
 
 
+def clear_stale_marking(volume_node):
+    """Undo the full stale marking that :func:`mark_volume_node_stale` writes.
+
+    ``mark_volume_node_stale`` sets ``stale=true``, ``exclude=true`` and
+    ``error=STALE_ERROR_MESSAGE`` together, and Slicer serialises all three
+    into the saved scene. On reload the saved segmentation *is* the current
+    state (Data module is ground truth), so a row flagged stale in the
+    previous session must come back clean — otherwise the reload replays the
+    recompute prompt, the "could not be restored" warning, and
+    :func:`overlay.make_full_overlay` suppresses the overlay because the row
+    is excluded.
+
+    Only rows carrying the exact stale-error signature are touched, so a
+    genuine user exclusion (which never carries the stale error) and
+    unrelated error rows (e.g. "Could not read image.") are left verbatim.
+    ``exclude`` is reset to ``"false"`` rather than removed so
+    :func:`validate_volume_node`'s "was analysed" check — keyed on the
+    attribute's presence — still holds.
+
+    Returns True when a stale marking was undone, False otherwise. Never
+    raises: safe to call over every tracked node on the scene-reload path.
+    """
+    if volume_node is None or not hasattr(volume_node, "GetAttribute"):
+        return False
+    error_attr = ATTR_PREFIX + "error"
+    try:
+        if volume_node.GetAttribute(error_attr) != STALE_ERROR_MESSAGE:
+            return False
+    except Exception:
+        return False
+    try:
+        if hasattr(volume_node, "RemoveAttribute"):
+            volume_node.RemoveAttribute(ATTR_STALE)
+    except Exception:
+        pass
+    try:
+        if hasattr(volume_node, "RemoveAttribute"):
+            volume_node.RemoveAttribute(error_attr)
+    except Exception:
+        pass
+    try:
+        if hasattr(volume_node, "SetAttribute"):
+            volume_node.SetAttribute(ATTR_EXCLUDE, "false")
+    except Exception:
+        pass
+    return True
+
+
 def volume_nodes_to_results(volume_nodes):
     """Map a list of volume nodes to the canonical results list shape.
 

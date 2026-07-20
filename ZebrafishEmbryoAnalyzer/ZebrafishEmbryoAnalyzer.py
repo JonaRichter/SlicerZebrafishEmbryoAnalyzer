@@ -492,10 +492,7 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
             import slicer
             from ZebrafishEmbryoAnalyzerLib.mrml import (
                 list_tracked_volume_nodes,
-                clear_volume_node_stale,
-                STALE_ERROR_MESSAGE,
-                ATTR_PREFIX,
-                ATTR_EXCLUDE,
+                clear_stale_marking,
             )
         except Exception:
             return
@@ -505,31 +502,9 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
         scene = getattr(slicer, "mrmlScene", None)
         if scene is None:
             return
-        stale_error_attr = ATTR_PREFIX + "error"
         for vol in list_tracked_volume_nodes(param_node, scene):
-            # Was this row marked stale by our observer? Check before we
-            # clear anything, so we can undo the coupled exclude/error too.
             try:
-                stale_induced = (
-                    hasattr(vol, "GetAttribute")
-                    and vol.GetAttribute(stale_error_attr) == STALE_ERROR_MESSAGE
-                )
-            except Exception:
-                stale_induced = False
-            try:
-                clear_volume_node_stale(vol)
-            except Exception:
-                pass
-            if not stale_induced:
-                continue
-            try:
-                if hasattr(vol, "RemoveAttribute"):
-                    vol.RemoveAttribute(stale_error_attr)
-            except Exception:
-                pass
-            try:
-                if hasattr(vol, "SetAttribute"):
-                    vol.SetAttribute(ATTR_EXCLUDE, "false")
+                clear_stale_marking(vol)
             except Exception:
                 pass
 
@@ -744,6 +719,7 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
                 volume_node_to_result_dict_with_validation,
                 volume_node_to_pixels,
                 _populate_row_overlays_from_scene,
+                clear_stale_marking,
             )
         except Exception:
             return []
@@ -755,6 +731,17 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
         nodes = list_tracked_volume_nodes(param_node, scene)
         results = []
         for node in nodes:
+            # Issue #56 follow-up: a scene saved with a stale-flagged row
+            # comes back carrying ``stale``/``exclude``/``error`` attributes
+            # from the previous session. This rebuild is the single choke
+            # point both scene-reload entry paths funnel through
+            # (``_on_scene_end_import`` when the scene loads while the module
+            # is open, and ``enter()`` -> ``try_rebuild_from_scene_if_empty``
+            # when the scene was loaded first), so undo the stale marking
+            # here — otherwise the ``enter()`` path replays the recompute
+            # prompt and the "could not be restored" warning and the overlay
+            # stays suppressed. No-op for genuine user exclusions.
+            clear_stale_marking(node)
             row = volume_node_to_result_dict_with_validation(node)
             px = volume_node_to_pixels(node)
             if px is not None:
