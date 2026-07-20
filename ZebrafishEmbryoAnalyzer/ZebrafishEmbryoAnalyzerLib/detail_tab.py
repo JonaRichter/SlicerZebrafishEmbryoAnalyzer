@@ -30,6 +30,8 @@ def _build_rgb_array(result: dict) -> np.ndarray:
 
 
 class DetailTab(qt.QWidget):
+    _SPLITTER_SETTINGS_KEY = "ZebrafishEmbryoAnalyzer/detailSplitterState"
+
     def __init__(self, on_navigate=None, on_back=None, logic=None, on_exclude_change=None):
         super().__init__()
         self._on_navigate = on_navigate
@@ -94,6 +96,7 @@ class DetailTab(qt.QWidget):
         _nav_row.addWidget(self._nav_label)
         _nav_row.addWidget(self._btn_next)
         _nav_row.addStretch(1)
+        self._nav_row_layout = _nav_row
 
         _manual_row = qt.QHBoxLayout()
         _manual_row.addStretch(1)
@@ -106,13 +109,41 @@ class DetailTab(qt.QWidget):
         self._manual_row_widget.setLayout(_manual_row)
         self._manual_row_widget.setVisible(False)
 
+        # Sidebar: every control that used to live below the image goes here.
+        # Issue #66: sub-issues #67/#68/#11/#69 will further split this into
+        # Measurements / Actions / Nav sections; for now the order is the
+        # existing vertical stack moved verbatim so nothing is lost.
+        self._sidebar = qt.QWidget()
+        sidebar_layout = qt.QVBoxLayout(self._sidebar)
+        sidebar_layout.setContentsMargins(8, 8, 8, 8)
+        sidebar_layout.setSpacing(8)
+        sidebar_layout.addWidget(self._manual_row_widget, 0)
+        sidebar_layout.addWidget(self._manual_status, 0)
+        sidebar_layout.addWidget(self._chk_exclude, 0)
+        sidebar_layout.addWidget(self._metrics_label, 0)
+        sidebar_layout.addStretch(1)
+        sidebar_layout.addLayout(self._nav_row_layout, 0)
+        self._sidebar.setMinimumWidth(220)
+
+        # Image on the left, sidebar on the right, user-resizable, persisted.
+        self._splitter = qt.QSplitter(qt.Qt.Horizontal)
+        self._splitter.setChildrenCollapsible(False)
+        self._splitter.setHandleWidth(4)
+        self._splitter.addWidget(self._view)
+        self._splitter.addWidget(self._sidebar)
+        self._splitter.setStretchFactor(0, 1)
+        self._splitter.setStretchFactor(1, 0)
+        try:
+            self._splitter.splitterMoved.connect(
+                lambda *_: self.save_splitter_state()
+            )
+        except Exception:
+            pass
+        self._restore_splitter_state()
+
         layout = qt.QVBoxLayout(self)
-        layout.addWidget(self._view, 1)
-        layout.addWidget(self._manual_row_widget, 0)
-        layout.addWidget(self._manual_status, 0)
-        layout.addLayout(_nav_row, 0)
-        layout.addWidget(self._chk_exclude, 0)
-        layout.addWidget(self._metrics_label, 0)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._splitter)
 
         self._btn_prev.setEnabled(False)
         self._btn_next.setEnabled(False)
@@ -208,11 +239,53 @@ class DetailTab(qt.QWidget):
 
     def cleanup(self):
         """Invalidate cache."""
+        self.save_splitter_state()
         self.invalidate_cache()
 
     def _on_exclude_toggled(self, checked: bool) -> None:
         if self._current_filename and self._on_exclude_change:
             self._on_exclude_change(self._current_filename, checked)
+
+    # ------------------------------------------------------------------
+    # Splitter width persistence
+    # ------------------------------------------------------------------
+
+    def _restore_splitter_state(self) -> None:
+        """Issue #66: restore the sidebar's saved width from QSettings, if any.
+
+        Silently no-ops when no saved state exists yet (first run) or when
+        the stored value isn't a usable QByteArray (corrupted storage from
+        an older build) — the splitter falls back to its sizeHint() layout.
+        """
+        try:
+            settings = qt.QSettings()
+            state = settings.value(self._SPLITTER_SETTINGS_KEY)
+        except Exception:
+            return
+        if not state:
+            return
+        try:
+            self._splitter.restoreState(state)
+        except Exception:
+            # Stale or invalid bytes — leave the splitter on its default sizeHint layout.
+            pass
+
+    def save_splitter_state(self) -> None:
+        """Persist the current splitter sizes to QSettings.
+
+        Called from :meth:`cleanup` so the user's resize survives widget
+        teardown. Also wired live to ``splitterMoved`` so a SIGKILL of
+        Slicer doesn't lose the most recent drag.
+        """
+        if not hasattr(self, "_splitter") or self._splitter is None:
+            return
+        try:
+            settings = qt.QSettings()
+            settings.setValue(
+                self._SPLITTER_SETTINGS_KEY, self._splitter.saveState()
+            )
+        except Exception:
+            pass
 
     def _update_nav_state(self) -> None:
         n = len(self._results)
