@@ -1935,3 +1935,398 @@ def test_validate_volume_node_returns_error_for_dangling_seg():
         else:
             monkey.pop("slicer", None)
     assert err == ("Segmentation node missing", ""), err
+
+
+# --- Issue #56 Mode B regression: post-Run-Analysis row resolution ---
+#
+# ``Widget.refresh_results_against_scene`` was skipping every row whose
+# analysis-output controller result lacks a stashed ``_volume_node`` key,
+# so stale segmentation references never surfaced as auto-excluded after
+# a user deleted the seg in the Data module. The fix routes through
+# ``Logic.find_tracked_volume_node_for_row`` which falls back to a scene
+# lookup by filename. These tests pin both branches.
+
+def test_logic_find_tracked_volume_node_for_row_prefers_stashed():
+    import sys as _sys
+    _saved = {}
+    for _n in (
+        "vtk", "vtkmodules", "vtkmodules.vtkCommonCore",
+        "slicer", "slicer.util", "slicer.ScriptedLoadableModule",
+        "ZebrafishEmbryoAnalyzerLib.errors",
+        "ZebrafishEmbryoAnalyzerLib.model_manifest",
+        "ZebrafishEmbryoAnalyzerLib.model_downloader",
+        "ZebrafishEmbryoAnalyzerLib.inference_runner",
+        "ZebrafishEmbryoAnalyzerLib.inference_worker",
+        "ZebrafishEmbryoAnalyzerLib.mrml",
+        "ZebrafishEmbryoAnalyzerLib.widget",
+        "ZebrafishEmbryoAnalyzerLib.gallery_tab",
+        "ZebrafishEmbryoAnalyzerLib.detail_tab",
+        "ZebrafishEmbryoAnalyzerLib.zoom_view",
+        "ZebrafishEmbryoAnalyzerCore.seg",
+        "ZebrafishEmbryoAnalyzerCore.seg_helper",
+        "ZebrafishEmbryoAnalyzerCore.length",
+        "ZebrafishEmbryoAnalyzerCore.manual",
+        "ZebrafishEmbryoAnalyzerCore.scalebar",
+    ):
+        if _n in _sys.modules:
+            _saved[_n] = _sys.modules[_n]
+    try:
+        """When the row carries ``_volume_node`` (scene-reload path), the
+        method uses it directly without touching the scene. Pinned by
+        raising inside ``getParameterNode`` to prove the scene lookup never
+        runs in this branch."""
+        import types
+        from unittest.mock import MagicMock
+        # Real ``ZebrafishEmbryoAnalyzer`` imports vtk at module top; stub
+        # the slicer/VTK-heavy transitive imports to bypass that without a
+        # Slicer installation. Mirrors the pattern used elsewhere in this
+        # file (e.g. the setup_segmentation_staleness_observers tests).
+        sys.modules.setdefault("vtk", types.ModuleType("vtk"))
+        sys.modules.setdefault("vtkmodules", types.ModuleType("vtkmodules"))
+        sys.modules.setdefault("vtkmodules.vtkCommonCore", types.ModuleType(
+            "vtkmodules.vtkCommonCore"))
+        class _VTKMixin:
+            pass
+        class _BaseModule:
+            pass
+        sys.modules["slicer"] = types.SimpleNamespace(
+            VTKObservationMixin=_VTKMixin,
+        )
+        sys.modules["slicer.ScriptedLoadableModule"] = types.SimpleNamespace(
+            ScriptedLoadableModule=_BaseModule,
+            ScriptedLoadableModuleWidget=_BaseModule,
+            ScriptedLoadableModuleLogic=_BaseModule,
+        )
+        sys.modules["slicer.util"] = types.SimpleNamespace(
+            VTKObservationMixin=_VTKMixin,
+        )
+        for name in (
+            "ZebrafishEmbryoAnalyzerLib.errors",
+            "ZebrafishEmbryoAnalyzerLib.model_manifest",
+            "ZebrafishEmbryoAnalyzerLib.model_downloader",
+            "ZebrafishEmbryoAnalyzerLib.inference_runner",
+            "ZebrafishEmbryoAnalyzerLib.inference_worker",
+            "ZebrafishEmbryoAnalyzerLib.mrml",
+            "ZebrafishEmbryoAnalyzerLib.widget",
+            "ZebrafishEmbryoAnalyzerLib.gallery_tab",
+            "ZebrafishEmbryoAnalyzerLib.detail_tab",
+            "ZebrafishEmbryoAnalyzerLib.zoom_view",
+            "ZebrafishEmbryoAnalyzerCore.seg",
+            "ZebrafishEmbryoAnalyzerCore.seg_helper",
+            "ZebrafishEmbryoAnalyzerCore.length",
+            "ZebrafishEmbryoAnalyzerCore.manual",
+            "ZebrafishEmbryoAnalyzerCore.scalebar",
+        ):
+            sys.modules.setdefault(name, types.ModuleType(name))
+
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+        logic = ZebrafishEmbryoAnalyzerLogic.__new__(ZebrafishEmbryoAnalyzerLogic)
+        fake_vol = _FakeVolumeNode(name="reload.png")
+        row = {
+            "filename": "reload.png",
+            "error": "",
+            "exclude": False,
+            "_volume_node": fake_vol,
+        }
+        def _raise():
+            raise AssertionError(
+                "scene lookup must not be invoked when _volume_node is set"
+            )
+        logic.getParameterNode = _raise
+        assert logic.find_tracked_volume_node_for_row(row) is fake_vol
+
+
+    finally:
+        for _n in (
+            "vtk", "vtkmodules", "vtkmodules.vtkCommonCore",
+            "slicer", "slicer.util", "slicer.ScriptedLoadableModule",
+            "ZebrafishEmbryoAnalyzerLib.errors",
+            "ZebrafishEmbryoAnalyzerLib.model_manifest",
+            "ZebrafishEmbryoAnalyzerLib.model_downloader",
+            "ZebrafishEmbryoAnalyzerLib.inference_runner",
+            "ZebrafishEmbryoAnalyzerLib.inference_worker",
+            "ZebrafishEmbryoAnalyzerLib.mrml",
+            "ZebrafishEmbryoAnalyzerLib.widget",
+            "ZebrafishEmbryoAnalyzerLib.gallery_tab",
+            "ZebrafishEmbryoAnalyzerLib.detail_tab",
+            "ZebrafishEmbryoAnalyzerLib.zoom_view",
+            "ZebrafishEmbryoAnalyzerCore.seg",
+            "ZebrafishEmbryoAnalyzerCore.seg_helper",
+            "ZebrafishEmbryoAnalyzerCore.length",
+            "ZebrafishEmbryoAnalyzerCore.manual",
+            "ZebrafishEmbryoAnalyzerCore.scalebar",
+        ):
+            _sys.modules.pop(_n, None)
+        for _n, _m in _saved.items():
+            _sys.modules[_n] = _m
+
+
+def test_logic_find_tracked_volume_node_for_row_falls_back_to_filename():
+    import sys as _sys
+    _saved = {}
+    for _n in (
+        "vtk", "vtkmodules", "vtkmodules.vtkCommonCore",
+        "slicer", "slicer.util", "slicer.ScriptedLoadableModule",
+        "ZebrafishEmbryoAnalyzerLib.errors",
+        "ZebrafishEmbryoAnalyzerLib.model_manifest",
+        "ZebrafishEmbryoAnalyzerLib.model_downloader",
+        "ZebrafishEmbryoAnalyzerLib.inference_runner",
+        "ZebrafishEmbryoAnalyzerLib.inference_worker",
+        "ZebrafishEmbryoAnalyzerLib.mrml",
+        "ZebrafishEmbryoAnalyzerLib.widget",
+        "ZebrafishEmbryoAnalyzerLib.gallery_tab",
+        "ZebrafishEmbryoAnalyzerLib.detail_tab",
+        "ZebrafishEmbryoAnalyzerLib.zoom_view",
+        "ZebrafishEmbryoAnalyzerCore.seg",
+        "ZebrafishEmbryoAnalyzerCore.seg_helper",
+        "ZebrafishEmbryoAnalyzerCore.length",
+        "ZebrafishEmbryoAnalyzerCore.manual",
+        "ZebrafishEmbryoAnalyzerCore.scalebar",
+    ):
+        if _n in _sys.modules:
+            _saved[_n] = _sys.modules[_n]
+    try:
+        """When the row lacks ``_volume_node`` (post-Run-Analysis path:
+        controller results carry mask/eye_mask/path_points but no
+        _volume_node), the method resolves via scene lookup keyed on
+        ``row['filename']``."""
+        import types
+        from unittest.mock import MagicMock
+        sys.modules.setdefault("vtk", types.ModuleType("vtk"))
+        sys.modules.setdefault("vtkmodules", types.ModuleType("vtkmodules"))
+        sys.modules.setdefault("vtkmodules.vtkCommonCore", types.ModuleType(
+            "vtkmodules.vtkCommonCore"))
+        class _VTKMixin:
+            pass
+        fake_scene = MagicMock()
+        fake_vol = _FakeVolumeNode(name="post_run_analysis.png")
+        fake_scene.GetNodeByID.return_value = fake_vol
+        sys.modules["slicer"] = types.SimpleNamespace(
+            mrmlScene=fake_scene, VTKObservationMixin=_VTKMixin,
+        )
+        sys.modules["slicer.util"] = types.SimpleNamespace(
+            VTKObservationMixin=_VTKMixin,
+        )
+        for name in (
+            "ZebrafishEmbryoAnalyzerLib.errors",
+            "ZebrafishEmbryoAnalyzerLib.model_manifest",
+            "ZebrafishEmbryoAnalyzerLib.model_downloader",
+            "ZebrafishEmbryoAnalyzerLib.inference_runner",
+            "ZebrafishEmbryoAnalyzerLib.inference_worker",
+            "ZebrafishEmbryoAnalyzerLib.mrml",
+            "ZebrafishEmbryoAnalyzerLib.widget",
+            "ZebrafishEmbryoAnalyzerLib.gallery_tab",
+            "ZebrafishEmbryoAnalyzerLib.detail_tab",
+            "ZebrafishEmbryoAnalyzerLib.zoom_view",
+            "ZebrafishEmbryoAnalyzerCore.seg",
+            "ZebrafishEmbryoAnalyzerCore.seg_helper",
+            "ZebrafishEmbryoAnalyzerCore.length",
+            "ZebrafishEmbryoAnalyzerCore.manual",
+            "ZebrafishEmbryoAnalyzerCore.scalebar",
+        ):
+            sys.modules.setdefault(name, types.ModuleType(name))
+
+        mrml_mod = sys.modules["ZebrafishEmbryoAnalyzerLib.mrml"]
+        # Restore the original function on exit so subsequent tests in
+        # this file (and downstream files like test_mrml_node) still
+        # import the real function via sys.modules entry restoration —
+        # a bare sys.modules.pop/restore does NOT undo attribute-level
+        # mutations, this guard does.
+        _saved_attr = getattr(mrml_mod, "find_tracked_volume_node_by_filename", None)
+        mrml_mod.find_tracked_volume_node_by_filename = (
+            lambda _pn, _sc, _fn: fake_vol
+        )
+        try:
+            from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+            logic = ZebrafishEmbryoAnalyzerLogic.__new__(ZebrafishEmbryoAnalyzerLogic)
+            logic.getParameterNode = lambda: MagicMock()
+            row = {
+                "filename": "post_run_analysis.png",
+                "error": "",
+                "exclude": False,
+                # NB: no _volume_node key at all — fallback path.
+            }
+            result = logic.find_tracked_volume_node_for_row(row)
+            assert result is fake_vol, (
+                "find_tracked_volume_node_for_row must look up by filename when "
+                "row._volume_node is missing — got %r" % (result,)
+            )
+        finally:
+            if _saved_attr is not None:
+                mrml_mod.find_tracked_volume_node_by_filename = _saved_attr
+    finally:
+        for _n in (
+            "vtk", "vtkmodules", "vtkmodules.vtkCommonCore",
+            "slicer", "slicer.util", "slicer.ScriptedLoadableModule",
+            "ZebrafishEmbryoAnalyzerLib.errors",
+            "ZebrafishEmbryoAnalyzerLib.model_manifest",
+            "ZebrafishEmbryoAnalyzerLib.model_downloader",
+            "ZebrafishEmbryoAnalyzerLib.inference_runner",
+            "ZebrafishEmbryoAnalyzerLib.inference_worker",
+            "ZebrafishEmbryoAnalyzerLib.mrml",
+            "ZebrafishEmbryoAnalyzerLib.widget",
+            "ZebrafishEmbryoAnalyzerLib.gallery_tab",
+            "ZebrafishEmbryoAnalyzerLib.detail_tab",
+            "ZebrafishEmbryoAnalyzerLib.zoom_view",
+            "ZebrafishEmbryoAnalyzerCore.seg",
+            "ZebrafishEmbryoAnalyzerCore.seg_helper",
+            "ZebrafishEmbryoAnalyzerCore.length",
+            "ZebrafishEmbryoAnalyzerCore.manual",
+            "ZebrafishEmbryoAnalyzerCore.scalebar",
+        ):
+            _sys.modules.pop(_n, None)
+        for _n, _m in _saved.items():
+            _sys.modules[_n] = _m
+
+
+
+
+# --- Issue #56 Mode B follow-up: scrub cached overlay inputs from
+# auto-excluded rows so the gallery thumbnail doesn't draw a stale
+# segmentation from a node the user removed in the Data module.
+
+def test_logic_scrub_excluded_row_overlays_drops_cached_inputs():
+    """``Logic.scrub_excluded_row_overlays`` must pop ``mask`` /
+    ``eye_mask`` / ``path_points`` / ``straight_line_points`` from rows
+    whose ``error`` is non-empty or ``exclude`` is truthy, and leave
+    rows without that state alone. Idempotent — calling twice is a
+    no-op the second time."""
+    import types
+    sys.modules.setdefault("vtk", types.ModuleType("vtk"))
+    sys.modules.setdefault("vtkmodules", types.ModuleType("vtkmodules"))
+    sys.modules.setdefault("vtkmodules.vtkCommonCore", types.ModuleType(
+        "vtkmodules.vtkCommonCore"))
+    class _VTKMixin:
+        pass
+    class _BaseModule:
+        pass
+    sys.modules["slicer"] = types.SimpleNamespace(VTKObservationMixin=_VTKMixin)
+    sys.modules["slicer.util"] = types.SimpleNamespace(
+        VTKObservationMixin=_VTKMixin,
+    )
+    sys.modules["slicer.ScriptedLoadableModule"] = types.SimpleNamespace(
+        ScriptedLoadableModule=_BaseModule,
+        ScriptedLoadableModuleWidget=_BaseModule,
+        ScriptedLoadableModuleLogic=_BaseModule,
+    )
+    for name in (
+        "ZebrafishEmbryoAnalyzerLib.errors",
+        "ZebrafishEmbryoAnalyzerLib.model_manifest",
+        "ZebrafishEmbryoAnalyzerLib.model_downloader",
+        "ZebrafishEmbryoAnalyzerLib.inference_runner",
+        "ZebrafishEmbryoAnalyzerLib.inference_worker",
+        "ZebrafishEmbryoAnalyzerLib.mrml",
+        "ZebrafishEmbryoAnalyzerLib.widget",
+        "ZebrafishEmbryoAnalyzerLib.gallery_tab",
+        "ZebrafishEmbryoAnalyzerLib.detail_tab",
+        "ZebrafishEmbryoAnalyzerLib.zoom_view",
+        "ZebrafishEmbryoAnalyzerCore.seg",
+        "ZebrafishEmbryoAnalyzerCore.seg_helper",
+        "ZebrafishEmbryoAnalyzerCore.length",
+        "ZebrafishEmbryoAnalyzerCore.manual",
+        "ZebrafishEmbryoAnalyzerCore.scalebar",
+    ):
+        sys.modules.setdefault(name, types.ModuleType(name))
+
+    from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+    logic = ZebrafishEmbryoAnalyzerLogic.__new__(ZebrafishEmbryoAnalyzerLogic)
+
+    # Healthy row (no error/exclude) — every cached overlay input must
+    # survive. Mirrors a row whose segmentation is still in the scene.
+    healthy = {
+        "filename":  "healthy.png",
+        "mask":      "should-stay",
+        "eye_mask":  "should-stay",
+        "path_points": "should-stay",
+        "straight_line_points": "should-stay",
+        "error":     "",
+        "exclude":   False,
+    }
+    # Deleted-seg row — every cached overlay input must be removed.
+    deleted = {
+        "filename":  "deleted.png",
+        "mask":      "should-go",
+        "eye_mask":  "should-go",
+        "path_points": "should-go",
+        "straight_line_points": "should-go",
+        "error":     "Segmentation node missing",
+        "exclude":   True,
+    }
+    rows = [healthy, deleted]
+    logic.scrub_excluded_row_overlays(rows)
+
+    for key in ("mask", "eye_mask", "path_points", "straight_line_points"):
+        assert healthy[key] == "should-stay", key
+        assert key not in deleted, (
+            "deleted-seg row must have %r scrubbed; row=%r" % (key, deleted)
+        )
+
+    # Idempotency: a second call with no overlay inputs left on the
+    # deleted row must not raise and must not re-introduce them.
+    logic.scrub_excluded_row_overlays(rows)
+    for key in ("mask", "eye_mask", "path_points", "straight_line_points"):
+        assert healthy[key] == "should-stay"
+        assert key not in deleted
+
+    # Non-dict rows and missing-key rows must not raise.
+    rows_misc = [None, "not-a-dict", {"filename": "ok"}, deleted]
+    logic.scrub_excluded_row_overlays(rows_misc)
+
+
+def test_logic_scrub_excluded_row_overlays_handles_exclude_without_error():
+    """Even when only ``exclude`` is truthy (no ``error`` message), the
+    overlay inputs must still be scrubbed — e.g. a future "user
+    unchecked this row manually" path uses ``exclude=True`` without
+    setting ``error``."""
+    import types
+    sys.modules.setdefault("vtk", types.ModuleType("vtk"))
+    sys.modules.setdefault("vtkmodules", types.ModuleType("vtkmodules"))
+    sys.modules.setdefault("vtkmodules.vtkCommonCore", types.ModuleType(
+        "vtkmodules.vtkCommonCore"))
+    class _VTKMixin:
+        pass
+    class _BaseModule:
+        pass
+    sys.modules["slicer"] = types.SimpleNamespace(VTKObservationMixin=_VTKMixin)
+    sys.modules["slicer.util"] = types.SimpleNamespace(
+        VTKObservationMixin=_VTKMixin,
+    )
+    sys.modules["slicer.ScriptedLoadableModule"] = types.SimpleNamespace(
+        ScriptedLoadableModule=_BaseModule,
+        ScriptedLoadableModuleWidget=_BaseModule,
+        ScriptedLoadableModuleLogic=_BaseModule,
+    )
+    for name in (
+        "ZebrafishEmbryoAnalyzerLib.errors",
+        "ZebrafishEmbryoAnalyzerLib.model_manifest",
+        "ZebrafishEmbryoAnalyzerLib.model_downloader",
+        "ZebrafishEmbryoAnalyzerLib.inference_runner",
+        "ZebrafishEmbryoAnalyzerLib.inference_worker",
+        "ZebrafishEmbryoAnalyzerLib.mrml",
+        "ZebrafishEmbryoAnalyzerLib.widget",
+        "ZebrafishEmbryoAnalyzerLib.gallery_tab",
+        "ZebrafishEmbryoAnalyzerLib.detail_tab",
+        "ZebrafishEmbryoAnalyzerLib.zoom_view",
+        "ZebrafishEmbryoAnalyzerCore.seg",
+        "ZebrafishEmbryoAnalyzerCore.seg_helper",
+        "ZebrafishEmbryoAnalyzerCore.length",
+        "ZebrafishEmbryoAnalyzerCore.manual",
+        "ZebrafishEmbryoAnalyzerCore.scalebar",
+    ):
+        sys.modules.setdefault(name, types.ModuleType(name))
+
+    from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+    logic = ZebrafishEmbryoAnalyzerLogic.__new__(ZebrafishEmbryoAnalyzerLogic)
+
+    row = {
+        "filename":  "manual-exclude.png",
+        "mask":      "should-go",
+        "eye_mask":  "should-go",
+        "path_points": "should-go",
+        "straight_line_points": "should-go",
+        "error":     "",
+        "exclude":   True,
+    }
+    logic.scrub_excluded_row_overlays([row])
+    for _key in ("mask", "eye_mask", "path_points", "straight_line_points"):
+        assert _key not in row, _key

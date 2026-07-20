@@ -1657,7 +1657,10 @@ class ZebrafishEmbryoAnalyzerMainWidget:
 
         changed = False
         for i, row in enumerate(self._results):
-            vol = row.get("_volume_node") if isinstance(row, dict) else None
+            try:
+                vol = self._logic.find_tracked_volume_node_for_row(row)
+            except Exception:
+                continue
             if vol is None or not hasattr(vol, "GetID"):
                 continue
             try:
@@ -1675,6 +1678,16 @@ class ZebrafishEmbryoAnalyzerMainWidget:
 
         if not changed:
             return
+
+        # Issue #56 follow-up: scrub cached segmentation-overlay inputs
+        # from rows that were just auto-excluded. See
+        # ``Logic.scrub_excluded_row_overlays`` for why this matters.
+        try:
+            self._logic.scrub_excluded_row_overlays(self._results)
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: row overlay-input scrub failed"
+            )
 
         # Re-derive excluded set from the updated rows so the gallery's
         # eye-icons, queue list strikethrough, and results tab match.

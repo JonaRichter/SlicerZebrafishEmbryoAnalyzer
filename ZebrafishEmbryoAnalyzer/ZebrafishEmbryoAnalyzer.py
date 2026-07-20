@@ -729,6 +729,82 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
         except Exception:
             return False
 
+    def find_tracked_volume_node_for_row(self, row):
+        """Issue #56 Mode B follow-up: return the ``vtkMRMLVolumeNode``
+        backing one result row.
+
+        First checks ``row.get("_volume_node")`` (stashed by
+        :func:`rebuild_results_from_scene`, which is the
+        scene-reload-only data path). If that is missing — the common
+        case after ``_handle_runner_finished`` rewrites
+        ``self._results`` from controller output, where rows carry
+        ``mask`` / ``eye_mask`` / ``path_points`` but NOT
+        ``_volume_node`` — falls back to
+        :func:`mrml.find_tracked_volume_node_by_filename` keyed on
+        ``row["filename"]``.
+
+        Lets :meth:`Widget.refresh_results_against_scene` re-validate
+        every row regardless of how it was populated.
+
+        Returns ``None`` when neither path produces a node — callers
+        should treat that as "skip this row" rather than an error.
+        """
+        if isinstance(row, dict):
+            vol = row.get("_volume_node")
+            if vol is not None and hasattr(vol, "GetID"):
+                return vol
+            filename = row.get("filename") or ""
+            if not filename:
+                return None
+            try:
+                import slicer
+                from ZebrafishEmbryoAnalyzerLib.mrml import (
+                    find_tracked_volume_node_by_filename,
+                )
+                param_node = self.getParameterNode()
+                scene = getattr(slicer, "mrmlScene", None)
+                return find_tracked_volume_node_by_filename(
+                    param_node, scene, filename,
+                )
+            except Exception:
+                return None
+        return None
+
+    def scrub_excluded_row_overlays(self, rows):
+        """Issue #56 follow-up: drop cached segmentation-overlay inputs
+        from every row that is auto-excluded (``error`` non-empty or
+        ``exclude`` truthy). Lets ``make_overlay`` render the bare
+        original image without needing conditional state-aware logic in
+        ``overlay.py``.
+
+        Removes ``mask`` / ``eye_mask`` / ``path_points`` /
+        ``straight_line_points`` from each excluded row dict in place.
+        Idempotent — calling it twice is a no-op the second time. Safe
+        against missing keys (only existing keys are deleted) and
+        against non-dict rows (silently skipped). Never raises.
+
+        The widget's ``refresh_results_against_scene`` calls this after
+        auto-excluding freshly-dangling-seg rows so the gallery
+        thumbnail and detail tab stop drawing a segmentation that was
+        removed in the Data module — honouring "Data module is ground
+        truth" visually, not just textually.
+        """
+        if not rows:
+            return
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if not (row.get("error") or row.get("exclude")):
+                continue
+            for _key in (
+                "mask", "eye_mask", "path_points", "straight_line_points",
+            ):
+                if _key in row:
+                    try:
+                        del row[_key]
+                    except Exception:
+                        pass
+
     def validate_tracked_row_exclusion(self, volume_node):
         """Issue #56 Mode B follow-up: return ``(error_message, should_exclude)``
         for one volume node by delegating to :func:`mrml.validate_volume_node`.
