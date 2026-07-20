@@ -237,6 +237,108 @@ def test_analyse_images_edema_ignored_for_general_model(
     assert "include_edema" not in seg_kwargs
 
 
+# ---------------------------------------------------------------------------
+# Issue #72: swim bladder segmentation
+# ---------------------------------------------------------------------------
+
+def test_analyse_images_swimbladder_computes_area_and_width(
+    tmp_path, synthetic_fish_image, mock_model_paths
+):
+    """swimbladder=True must compute swim_area/swim_width via
+    compute_tube_metrics, and pass swimbladder_model_type='FPN' through to
+    segmentation_pipeline (from the manifest entry's model_type field)."""
+    import cv2
+    img_path = str(tmp_path / "fish.png")
+    cv2.imwrite(img_path, synthetic_fish_image)
+
+    dummy_mask = np.ones((256, 256), dtype=np.uint8)
+    dummy_swim = np.zeros((256, 256), dtype=np.uint8)
+    dummy_swim[100:120, 100:140] = 1
+
+    with patch("ZebrafishEmbryoAnalyzerCore.seg.segmentation_pipeline") as mock_pipeline, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.load_model"), \
+         patch("ZebrafishEmbryoAnalyzerCore.length.tube_length_border2border") as mock_length, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.classification_curvature") as mock_curv:
+
+        mock_pipeline.return_value = (
+            [synthetic_fish_image[:, :, ::-1]],
+            [dummy_mask],
+            [dummy_mask.copy()],
+            [dummy_swim],
+        )
+        mock_length.return_value = (1200.0, 1100.0,
+                                    np.array([[64, 128], [192, 128]]),
+                                    ((64, 128), (192, 128)))
+        mock_curv.return_value = (MagicMock(), MagicMock(item=lambda: 2))
+
+        from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
+        results = analyse_images(
+            [img_path],
+            {"length": True, "curvature": True, "ratio": True,
+             "eyes": False, "swimbladder": True, "hitl": False, "threshold": 0.85,
+             "um_per_px": 22.99, "model_id": "general"},
+        )
+
+    assert len(results) == 1
+    assert results[0]["error"] is None
+    assert results[0]["swim_area"] is not None
+    assert results[0]["swim_area"] > 0
+    assert results[0]["swim_width"] is not None
+    assert results[0]["swim_width"] > 0
+    _, seg_kwargs = mock_pipeline.call_args
+    assert seg_kwargs.get("include_swimbladder") is True
+    assert seg_kwargs.get("swimbladder_model_type") == "FPN"
+
+
+def test_analyse_images_all_three_optional_metrics_together(
+    tmp_path, synthetic_fish_image, mock_model_paths
+):
+    """eyes + edema + swimbladder together must each get their own metric,
+    matching the fixed (eyes, edema, swimbladder) reconstruction order."""
+    import cv2
+    img_path = str(tmp_path / "fish.png")
+    cv2.imwrite(img_path, synthetic_fish_image)
+
+    dummy_mask = np.ones((256, 256), dtype=np.uint8)
+    dummy_eye = np.zeros((256, 256), dtype=np.uint8); dummy_eye[10:20, 10:20] = 1
+    dummy_edema = np.zeros((256, 256), dtype=np.uint8); dummy_edema[30:40, 30:40] = 1
+    dummy_swim = np.zeros((256, 256), dtype=np.uint8); dummy_swim[100:120, 100:140] = 1
+
+    with patch("ZebrafishEmbryoAnalyzerCore.seg.segmentation_pipeline") as mock_pipeline, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.load_model"), \
+         patch("ZebrafishEmbryoAnalyzerCore.length.tube_length_border2border") as mock_length, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.classification_curvature") as mock_curv:
+
+        mock_pipeline.return_value = (
+            [synthetic_fish_image[:, :, ::-1]],
+            [dummy_mask],
+            [dummy_mask.copy()],
+            [dummy_eye],
+            [dummy_edema],
+            [dummy_swim],
+        )
+        mock_length.return_value = (1200.0, 1100.0,
+                                    np.array([[64, 128], [192, 128]]),
+                                    ((64, 128), (192, 128)))
+        mock_curv.return_value = (MagicMock(), MagicMock(item=lambda: 2))
+
+        from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
+        results = analyse_images(
+            [img_path],
+            {"length": True, "curvature": True, "ratio": True,
+             "eyes": True, "edema": True, "swimbladder": True,
+             "hitl": False, "threshold": 0.85,
+             "um_per_px": 22.99, "model_id": "desy"},
+        )
+
+    assert len(results) == 1
+    r = results[0]
+    assert r["error"] is None
+    assert r["eye_area"] is not None and r["eye_area"] > 0
+    assert r["edema_area"] is not None and r["edema_area"] > 0
+    assert r["swim_area"] is not None and r["swim_area"] > 0
+
+
 def test_preload_models_raises_model_not_cached_when_body_missing(tmp_path):
     """preload_models must raise ModelNotCachedError when body model file is absent."""
     from ZebrafishEmbryoAnalyzerLib import logic

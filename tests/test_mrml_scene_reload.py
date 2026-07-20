@@ -196,6 +196,8 @@ def test_volume_node_to_result_dict_with_validation_healthy(mrml_module):
         "ZebrafishAnalysis.eye_area": "",
         "ZebrafishAnalysis.eye_diameter": "",
         "ZebrafishAnalysis.edema_area": "",
+        "ZebrafishAnalysis.swim_area": "",
+        "ZebrafishAnalysis.swim_width": "",
         "ZebrafishAnalysis.exclude": "false",
         "ZebrafishAnalysis.error": "",  # explicit empty
     }
@@ -236,6 +238,8 @@ def test_volume_node_to_result_dict_with_validation_broken_seg_ref(mrml_module):
         "ZebrafishAnalysis.eye_area": "",
         "ZebrafishAnalysis.eye_diameter": "",
         "ZebrafishAnalysis.edema_area": "",
+        "ZebrafishAnalysis.swim_area": "",
+        "ZebrafishAnalysis.swim_width": "",
         "ZebrafishAnalysis.exclude": "false",
         "ZebrafishAnalysis.error": "",
     }

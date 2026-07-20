@@ -13,6 +13,8 @@ HEADERS = [
     ("Eye area (µm²)",        "eye_area"),
     ("Eye diameter (µm)",     "eye_diameter"),
     ("Edema area (µm²)",      "edema_area"),
+    ("Swim bladder area (µm²)", "swim_area"),
+    ("Swim bladder width (µm)", "swim_width"),
     ("Error",                 "error"),
 ]
 

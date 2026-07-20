@@ -4,9 +4,9 @@ import numpy as np
 
 _UNET_CACHE = {}  # lazy-loaded cache keyed by (filename_or_path, encoder_name)
 
-def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model", revision="main", force_download=False, encoder_name="vgg16"):
+def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model", revision="main", force_download=False, encoder_name="vgg16", model_type="Unet"):
     """
-    Load a binary Unet model from a local path.
+    Load a binary segmentation model from a local path.
 
     ``model_path`` must point to an existing local file.  The ``repo_id``,
     ``filename``, ``revision``, and ``force_download`` parameters are accepted
@@ -15,17 +15,24 @@ def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model"
     ZebrafishEmbryoAnalyzerLib.model_downloader to download model files before
     calling this function.
 
+    ``model_type``: "Unet" (default, used for body/eye/edema) or "FPN"
+    (issue #72 — the swim bladder model is trained on an FPN architecture,
+    matching the live reference webapp's own model registry).
+
     Returns the model instance when successful, otherwise None.
     Raises RuntimeError when no usable local path is found.
     """
-    cache_key = (model_path or filename, encoder_name)
+    cache_key = (model_path or filename, encoder_name, model_type)
     if cache_key in _UNET_CACHE:
         print(f"{label.capitalize()} served from cache.")
         return _UNET_CACHE[cache_key]
 
     import torch
-    from segmentation_models_pytorch import Unet
-    model = Unet(encoder_name=encoder_name, encoder_weights="imagenet", in_channels=3, classes=1)
+    if model_type == "FPN":
+        from segmentation_models_pytorch import FPN as _ModelClass
+    else:
+        from segmentation_models_pytorch import Unet as _ModelClass
+    model = _ModelClass(encoder_name=encoder_name, encoder_weights="imagenet", in_channels=3, classes=1)
     resolved_path = None
 
     if model_path and os.path.exists(model_path):
@@ -79,6 +86,12 @@ def segmentation_pipeline(
     edema_repo_id="markdanielarndt/Zebrafish_Segmentation",
     edema_model_filename="best_model_edema_3400_focal.pth",
     edema_encoder_name="vgg19",
+    include_swimbladder=False,
+    swimbladder_model_path=None,
+    swimbladder_repo_id="markdanielarndt/Zebrafish_Segmentation",
+    swimbladder_model_filename="best_model_swimmbladder_512_09072026.pth",
+    swimbladder_encoder_name="vgg19",
+    swimbladder_model_type="FPN",
 ):
     """
     Perform body segmentation on all images in the specified folder or file list.
@@ -88,12 +101,20 @@ def segmentation_pipeline(
 
     Optional eye segmentation can be enabled by setting include_eyes=True.
     Optional edema segmentation can be enabled by setting include_edema=True.
+    Optional swim bladder segmentation can be enabled by setting
+    include_swimbladder=True (issue #72 — uses an FPN model architecture,
+    not Unet; see _load_unet_model's model_type parameter).
 
-    Returns:
-        - default: (original_images, segmented_images, grown_images)
-        - if include_eyes=True: (original_images, segmented_images, grown_images, eyes_images)
-        - if include_edema=True (and include_eyes=False): (original_images, segmented_images, grown_images, edema_images)
-        - if include_eyes=True and include_edema=True: (original_images, segmented_images, grown_images, eyes_images, edema_images)
+    Returns a tuple of (original_images, segmented_images, grown_images),
+    followed by one additional list per enabled optional flag, in this
+    fixed order: eyes_images (if include_eyes), edema_images (if
+    include_edema), swimbladder_images (if include_swimbladder). E.g.
+    include_eyes=True and include_swimbladder=True (edema off) returns
+    (original_images, segmented_images, grown_images, eyes_images,
+    swimbladder_images) — a 5-tuple, with the caller responsible for
+    reconstructing which optional list is which from its own flags (see
+    ZebrafishEmbryoAnalyzerLib/logic.py's analyse_images for the reference
+    reconstruction).
     """
     import cv2
     if file_list is not None:
@@ -111,6 +132,7 @@ def segmentation_pipeline(
     original_images = []
     eyes_images = []
     edema_images = []
+    swimbladder_images = []
 
     print(f"Loading body segmentation model from {body_model_path or f'{body_repo_id}/{body_model_filename}'} (revision={body_revision}, force_download={body_force_download})...")
     loaded_model = _load_unet_model(
@@ -156,6 +178,22 @@ def segmentation_pipeline(
         else:
             print("Edema model loaded successfully!")
 
+    swimbladder_model = None
+    if include_swimbladder:
+        print(f"Loading swim bladder segmentation model from {swimbladder_repo_id}/{swimbladder_model_filename}...")
+        swimbladder_model = _load_unet_model(
+            model_path=swimbladder_model_path,
+            repo_id=swimbladder_repo_id,
+            filename=swimbladder_model_filename,
+            label="swim bladder model",
+            encoder_name=swimbladder_encoder_name,
+            model_type=swimbladder_model_type,
+        )
+        if swimbladder_model is None:
+            print(f"WARNING: Swim bladder model unavailable at {swimbladder_repo_id}/{swimbladder_model_filename}. Returning empty swim bladder masks.")
+        else:
+            print("Swim bladder model loaded successfully!")
+
     import torch
     # Preprocessing parameters
     mean = np.array([0.485, 0.456, 0.406])
@@ -191,21 +229,30 @@ def segmentation_pipeline(
                 segmented_edema_array = np.zeros((target_size[0], target_size[1]), dtype=np.uint8)
             edema_images.append(segmented_edema_array)
 
+        if include_swimbladder:
+            if swimbladder_model is not None:
+                segmented_swim, _ = segment_fish(input_image, swimbladder_model, biggest_only=False)
+                segmented_swim_array = np.array(segmented_swim)
+            else:
+                segmented_swim_array = np.zeros((target_size[0], target_size[1]), dtype=np.uint8)
+            swimbladder_images.append(segmented_swim_array)
+
         grown_images.append(grown_image)
         segmented_images.append(filled_image)
         original_images.append(original_image)
 
-    if include_eyes and include_edema:
-        return original_images, segmented_images, grown_images, eyes_images, edema_images
-
+    # Issue #72: build the optional-output tuple generically from whichever
+    # flags were requested, in a fixed (eyes, edema, swimbladder) order —
+    # replaces the earlier hand-enumerated if/elif branches (issue #73),
+    # which would have needed 2**3 combinations once a third independent
+    # optional output was added. Backward compatible: no flags -> the
+    # original 3-tuple; exactly one flag -> the original 4-tuple shape.
+    extra_outputs = []
     if include_eyes:
-        return original_images, segmented_images, grown_images, eyes_images
-
-    # Issue #73: edema segmentation must be independently selectable from
-    # eye segmentation — previously edema_images was computed above but
-    # silently dropped here whenever include_eyes was False, so a caller
-    # requesting only include_edema=True got no edema masks back at all.
+        extra_outputs.append(eyes_images)
     if include_edema:
-        return original_images, segmented_images, grown_images, edema_images
+        extra_outputs.append(edema_images)
+    if include_swimbladder:
+        extra_outputs.append(swimbladder_images)
 
-    return original_images, segmented_images, grown_images
+    return (original_images, segmented_images, grown_images, *extra_outputs)

@@ -91,6 +91,8 @@ def _write_metric_attributes(result, node):
         ATTR_EYE_AREA,
         ATTR_EYE_DIAMETER,
         ATTR_EDEMA_AREA,
+        ATTR_SWIM_AREA,
+        ATTR_SWIM_WIDTH,
         ATTR_EXCLUDE,
         _encode_exclude_metrics,
     )
@@ -102,6 +104,8 @@ def _write_metric_attributes(result, node):
     node.SetAttribute(ATTR_EYE_AREA, _fmt(result.get("eye_area")))
     node.SetAttribute(ATTR_EYE_DIAMETER, _fmt(result.get("eye_diameter")))
     node.SetAttribute(ATTR_EDEMA_AREA, _fmt(result.get("edema_area")))
+    node.SetAttribute(ATTR_SWIM_AREA, _fmt(result.get("swim_area")))
+    node.SetAttribute(ATTR_SWIM_WIDTH, _fmt(result.get("swim_width")))
     # Issue #74: per-metric exclude. ``exclude_metrics`` (a set of metric
     # keys) takes precedence; the legacy whole-row ``exclude`` bool is the
     # fallback, matching production's ``_write_metric_attributes``.
@@ -178,6 +182,23 @@ def test_edema_area_round_trips_through_volume_node_attribute():
     node = _make_node_from_result(result)
     derived = mrml.volume_node_to_result_dict(node)
     assert derived["edema_area"] == pytest.approx(42.5)
+
+
+def test_swim_area_and_width_round_trip_through_volume_node_attributes():
+    """Issue #72: swim_area/swim_width must survive a save/reload cycle."""
+    from ZebrafishEmbryoAnalyzerLib import mrml
+
+    result = {
+        "filename": "fish_swim.png",
+        "length": 1.0, "curvature": 0, "ratio": 1.0,
+        "eye_area": None, "eye_diameter": None,
+        "swim_area": 88.0, "swim_width": 12.5,
+        "exclude": False, "error": "",
+    }
+    node = _make_node_from_result(result)
+    derived = mrml.volume_node_to_result_dict(node)
+    assert derived["swim_area"] == pytest.approx(88.0)
+    assert derived["swim_width"] == pytest.approx(12.5)
 
 
 def test_volume_nodes_to_rows_matches_results_to_rows_for_equivalent_state():

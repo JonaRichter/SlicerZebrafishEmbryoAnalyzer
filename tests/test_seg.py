@@ -218,6 +218,103 @@ def test_segmentation_pipeline_include_edema_without_eyes_returns_four_tuple(tmp
     assert len(edema) == 1
 
 
+def test_segmentation_pipeline_include_swimbladder_uses_fpn_model_type(tmp_path):
+    """Issue #72: swim bladder segmentation must load its model with
+    model_type='FPN', not the default 'Unet' — matching the live reference
+    webapp's own model architecture for this specific model."""
+    import cv2
+
+    dummy_img = np.zeros((64, 64, 3), dtype=np.uint8)
+    cv2.imwrite(str(tmp_path / "fish.png"), dummy_img)
+
+    body_model_path = str(tmp_path / "body_model.pth")
+    swim_model_path = str(tmp_path / "swim_model.pth")
+    (tmp_path / "body_model.pth").write_bytes(b"dummy")
+    (tmp_path / "swim_model.pth").write_bytes(b"dummy")
+
+    dummy_model = _make_dummy_model()
+    pil_mask = Image.fromarray(np.zeros((256, 256), dtype=np.uint8))
+    confidence = np.zeros((256, 256), dtype=np.uint8)
+
+    mock_torch = MagicMock()
+    mock_torch.load.return_value = {}
+    mock_torch.no_grad.return_value.__enter__ = lambda s: s
+    mock_torch.no_grad.return_value.__exit__ = MagicMock(return_value=False)
+    mock_torch.tensor.return_value = MagicMock()
+
+    with patch.dict(sys.modules, {"torch": mock_torch}), \
+         patch("segmentation_models_pytorch.Unet") as mock_unet, \
+         patch("segmentation_models_pytorch.FPN") as mock_fpn, \
+         patch("ZebrafishEmbryoAnalyzerCore.seg.segment_fish") as mock_seg:
+
+        mock_unet.return_value = dummy_model
+        mock_fpn.return_value = dummy_model
+        mock_seg.return_value = (pil_mask, confidence)
+
+        from ZebrafishEmbryoAnalyzerCore.seg import segmentation_pipeline
+        result = segmentation_pipeline(
+            folder_path=str(tmp_path),
+            include_eyes=False,
+            include_swimbladder=True,
+            body_model_path=body_model_path,
+            swimbladder_model_path=swim_model_path,
+        )
+
+    assert len(result) == 4
+    originals, masks, growns, swim = result
+    assert len(swim) == 1
+    mock_fpn.assert_called_once()  # body used Unet (mock_unet), swim used FPN
+    mock_unet.assert_called_once()
+
+
+def test_segmentation_pipeline_all_three_optional_outputs_in_fixed_order(tmp_path):
+    """Issue #72: eyes + edema + swimbladder together must return a 6-tuple
+    in the documented (eyes, edema, swimbladder) order, not just any two of
+    the three combined."""
+    import cv2
+
+    dummy_img = np.zeros((64, 64, 3), dtype=np.uint8)
+    cv2.imwrite(str(tmp_path / "fish.png"), dummy_img)
+
+    for name in ("body_model.pth", "eye_model.pth", "edema_model.pth", "swim_model.pth"):
+        (tmp_path / name).write_bytes(b"dummy")
+
+    dummy_model = _make_dummy_model()
+    pil_mask = Image.fromarray(np.zeros((256, 256), dtype=np.uint8))
+    confidence = np.zeros((256, 256), dtype=np.uint8)
+
+    mock_torch = MagicMock()
+    mock_torch.load.return_value = {}
+    mock_torch.no_grad.return_value.__enter__ = lambda s: s
+    mock_torch.no_grad.return_value.__exit__ = MagicMock(return_value=False)
+    mock_torch.tensor.return_value = MagicMock()
+
+    with patch.dict(sys.modules, {"torch": mock_torch}), \
+         patch("segmentation_models_pytorch.Unet") as mock_unet, \
+         patch("segmentation_models_pytorch.FPN") as mock_fpn, \
+         patch("ZebrafishEmbryoAnalyzerCore.seg.segment_fish") as mock_seg:
+
+        mock_unet.return_value = dummy_model
+        mock_fpn.return_value = dummy_model
+        mock_seg.return_value = (pil_mask, confidence)
+
+        from ZebrafishEmbryoAnalyzerCore.seg import segmentation_pipeline
+        result = segmentation_pipeline(
+            folder_path=str(tmp_path),
+            include_eyes=True,
+            include_edema=True,
+            include_swimbladder=True,
+            body_model_path=str(tmp_path / "body_model.pth"),
+            eye_model_path=str(tmp_path / "eye_model.pth"),
+            edema_model_path=str(tmp_path / "edema_model.pth"),
+            swimbladder_model_path=str(tmp_path / "swim_model.pth"),
+        )
+
+    assert len(result) == 6
+    originals, masks, growns, eyes, edema, swim = result
+    assert len(eyes) == len(edema) == len(swim) == 1
+
+
 def test_segmentation_pipeline_model_load_failure_raises(tmp_path):
     """RuntimeError is raised when the body model cannot be loaded."""
     import cv2

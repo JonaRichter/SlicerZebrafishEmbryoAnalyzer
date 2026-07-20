@@ -132,6 +132,7 @@ _RESULT_KEYS = (
     "grown",
     "eye_mask",
     "edema_mask",
+    "swim_mask",
     "path_points",
     "straight_line_points",
     "length",
@@ -140,6 +141,8 @@ _RESULT_KEYS = (
     "eye_area",
     "eye_diameter",
     "edema_area",
+    "swim_area",
+    "swim_width",
     "spacing",
     "error",
 )
@@ -244,6 +247,7 @@ def analyse_images(image_paths: list, params: dict,
         tube_length_border2border,
         classification_curvature,
         compute_eye_metrics,
+        compute_tube_metrics,
     )
     from ZebrafishEmbryoAnalyzerLib.errors import ModelNotCachedError
     from ZebrafishEmbryoAnalyzerLib.model_manifest import MODEL_SETS, get_cached_path, MODELS
@@ -251,6 +255,9 @@ def analyse_images(image_paths: list, params: dict,
     um_per_px = float(params.get("um_per_px", 22.99))
     include_eyes = params.get("eyes", False)
     include_edema = params.get("edema", False) and "edema" in MODEL_SETS.get(
+        params.get("model_id", "general"), MODEL_SETS["general"]
+    )
+    include_swimbladder = params.get("swimbladder", False) and "swimbladder" in MODEL_SETS.get(
         params.get("model_id", "general"), MODEL_SETS["general"]
     )
 
@@ -277,6 +284,13 @@ def analyse_images(image_paths: list, params: dict,
         if not edema_path.exists():
             raise ModelNotCachedError(
                 f"{edema_entry['label']} not found at {edema_path}. Download models first."
+            )
+    if include_swimbladder:
+        swim_entry = model_set["swimbladder"]
+        swim_path = get_cached_path(swim_entry)
+        if not swim_path.exists():
+            raise ModelNotCachedError(
+                f"{swim_entry['label']} not found at {swim_path}. Download models first."
             )
     if params.get("curvature", True):
         curv_entry = MODELS["curvature"]
@@ -310,6 +324,11 @@ def analyse_images(image_paths: list, params: dict,
         _seg_kwargs["include_edema"] = True
         _seg_kwargs["edema_model_path"] = str(edema_path)
         _seg_kwargs["edema_encoder_name"] = edema_entry["encoder"]
+    if include_swimbladder:
+        _seg_kwargs["include_swimbladder"] = True
+        _seg_kwargs["swimbladder_model_path"] = str(swim_path)
+        _seg_kwargs["swimbladder_encoder_name"] = swim_entry["encoder"]
+        _seg_kwargs["swimbladder_model_type"] = swim_entry.get("model_type", "FPN")
 
     n = len(image_paths)
     results = []
@@ -326,29 +345,31 @@ def analyse_images(image_paths: list, params: dict,
                 shutil.copy2(image_path, os.path.join(_tmp, os.path.basename(image_path)))
                 seg_result = segmentation_pipeline(_tmp, **_seg_kwargs)
 
-            # Issue #73: segmentation_pipeline's return shape depends on
-            # which of include_eyes/include_edema were requested — a 4-tuple
-            # is ambiguous between "eyes only" and "edema only" by length
-            # alone, so disambiguate using what this call actually asked for
-            # (mirrors segmentation_pipeline's own if/elif branch order).
-            if include_eyes and include_edema and len(seg_result) == 5:
-                originals_bgr, masks, growns, eyes_list, edema_list = seg_result
-            elif include_eyes and len(seg_result) == 4:
-                originals_bgr, masks, growns, eyes_list = seg_result
-                edema_list = [None]
-            elif include_edema and len(seg_result) == 4:
-                originals_bgr, masks, growns, edema_list = seg_result
-                eyes_list = [None]
-            else:
-                originals_bgr, masks, growns = seg_result[:3]
-                eyes_list = [None]
-                edema_list = [None]
+            # Issue #72: segmentation_pipeline returns (originals, masks,
+            # growns) plus one extra list per requested optional flag, in
+            # the fixed (eyes, edema, swimbladder) order it documents —
+            # reconstruct which extra is which the same way, generically,
+            # rather than hand-enumerating every flag combination.
+            originals_bgr, masks, growns = seg_result[:3]
+            extras = list(seg_result[3:])
+            extra_order = []
+            if include_eyes:
+                extra_order.append("eyes")
+            if include_edema:
+                extra_order.append("edema")
+            if include_swimbladder:
+                extra_order.append("swimbladder")
+            extra_map = dict(zip(extra_order, extras))
+            eyes_list = extra_map.get("eyes") or [None]
+            edema_list = extra_map.get("edema") or [None]
+            swim_list = extra_map.get("swimbladder") or [None]
 
             orig_bgr = originals_bgr[0] if originals_bgr else None
             mask    = masks[0]      if masks      else None
             grown   = growns[0]     if growns     else None
             eye     = eyes_list[0]  if eyes_list  else None
             edema   = edema_list[0] if edema_list else None
+            swim    = swim_list[0]  if swim_list  else None
 
             if orig_bgr is None:
                 r["error"] = "Could not read image."
@@ -373,10 +394,12 @@ def analyse_images(image_paths: list, params: dict,
             r["grown"]     = grown
             r["eye_mask"]  = eye
             r["edema_mask"] = edema
+            r["swim_mask"] = swim
 
             mask_bin  = (mask  > 0) if mask  is not None else None
             eye_bin   = (eye   > 0) if eye   is not None else None
             edema_bin = (edema > 0) if edema is not None else None
+            swim_bin  = (swim  > 0) if swim  is not None else None
 
             h_orig, w_orig = orig_bgr.shape[:2]
             mask_h, mask_w = mask.shape[:2] if mask is not None else (256, 256)
@@ -444,6 +467,19 @@ def analyse_images(image_paths: list, params: dict,
                 except Exception as exc:
                     if r["error"] is None:
                         r["error"] = f"Edema metrics error: {exc}"
+
+            # ---- swim bladder metrics ----
+            # Issue #72: compute_tube_metrics fits a minimum-area rotated
+            # rectangle, giving both area and a cross-sectional width — the
+            # same helper the live reference webapp uses for this metric.
+            if params.get("swimbladder", False) and swim_bin is not None:
+                try:
+                    info = compute_tube_metrics(swim_bin, spacing=spacing)
+                    r["swim_area"] = float(info.get("area", 0))
+                    r["swim_width"] = float(info.get("width", 0))
+                except Exception as exc:
+                    if r["error"] is None:
+                        r["error"] = f"Swim bladder metrics error: {exc}"
 
         except Exception as exc:
             import traceback

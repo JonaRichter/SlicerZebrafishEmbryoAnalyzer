@@ -286,10 +286,13 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         # _enforce_edema_model_dependency — the live reference webapp's
         # general/"Complex & Slower" preset has no edema model either).
         self._chk_edema     = qt.QCheckBox("Edema segmentation"); self._chk_edema.setChecked(False)
+        # Issue #72: swim bladder, available on both presets (unlike edema)
+        # — no model-dependency gating needed.
+        self._chk_swimbladder = qt.QCheckBox("Swim bladder segmentation"); self._chk_swimbladder.setChecked(False)
         self._chk_hitl      = qt.QCheckBox("Confidence threshold"); self._chk_hitl.setChecked(False)
 
         for chk in (self._chk_length, self._chk_curvature, self._chk_ratio,
-                    self._chk_eyes, self._chk_edema, self._chk_hitl):
+                    self._chk_eyes, self._chk_edema, self._chk_swimbladder, self._chk_hitl):
             an_layout.addWidget(chk)
         self._enforce_length_ratio_dependency()
 
@@ -803,6 +806,8 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             required["eye"] = model_set["eye"]
         if self._chk_edema.isChecked() and "edema" in model_set:
             required["edema"] = model_set["edema"]
+        if self._chk_swimbladder.isChecked() and "swimbladder" in model_set:
+            required["swimbladder"] = model_set["swimbladder"]
         return required
 
     def _missing_required_models(self, model_id):
@@ -993,6 +998,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             "ratio":     self._chk_ratio.isChecked(),
             "eyes":      self._chk_eyes.isChecked(),
             "edema":     self._chk_edema.isChecked(),
+            "swimbladder": self._chk_swimbladder.isChecked(),
             "hitl":      self._chk_hitl.isChecked(),
             "threshold": self._threshold_slider.value,
             "um_per_px": self._um_per_px.value,

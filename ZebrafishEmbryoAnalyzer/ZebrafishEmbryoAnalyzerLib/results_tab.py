@@ -15,6 +15,8 @@ COLUMNS = [
     ("Eye area (µm²)",        "eye_area",     lambda v: f"{v:.1f}" if v is not None else ""),
     ("Eye diameter (µm)",     "eye_diameter", lambda v: f"{v:.1f}" if v is not None else ""),
     ("Edema area (µm²)",      "edema_area",   lambda v: f"{v:.1f}" if v is not None else ""),
+    ("Swim bladder area (µm²)", "swim_area",  lambda v: f"{v:.1f}" if v is not None else ""),
+    ("Swim bladder width (µm)", "swim_width", lambda v: f"{v:.1f}" if v is not None else ""),
     ("Error",                 "error",        lambda v: v or ""),
 ]
 

@@ -16,9 +16,12 @@ _STRAIGHT_CLR = (200, 0,   200)  # magenta
 _EDEMA_COLOR  = (255, 102, 0  )  # blue — issue #73, matches the MRML "Edema"
                                  # segment color in mrml.py and the live
                                  # reference webapp's own edema overlay color
+_SWIM_COLOR   = (204, 0,   153)  # purple/violet — issue #72, matches the
+                                 # MRML "SwimBladder" segment color
 _MASK_ALPHA   = 0.35
 _EYE_ALPHA    = 0.45
 _EDEMA_ALPHA  = 0.45
+_SWIM_ALPHA   = 0.45
 
 
 def _blend_mask(base_bgr: np.ndarray, mask: np.ndarray, color_bgr: tuple, alpha: float) -> np.ndarray:
@@ -69,6 +72,11 @@ def make_full_overlay(result: dict) -> np.ndarray:
     if edema_mask is not None:
         dm = cv2.resize(edema_mask.astype(np.uint8), (w_base, h_base), interpolation=cv2.INTER_NEAREST)
         base = _blend_mask(base, dm, _EDEMA_COLOR, _EDEMA_ALPHA)
+
+    swim_mask = result.get("swim_mask")
+    if swim_mask is not None:
+        sm = cv2.resize(swim_mask.astype(np.uint8), (w_base, h_base), interpolation=cv2.INTER_NEAREST)
+        base = _blend_mask(base, sm, _SWIM_COLOR, _SWIM_ALPHA)
 
     path_pts = result.get("path_points")
     if path_pts is not None and len(path_pts) >= 2:

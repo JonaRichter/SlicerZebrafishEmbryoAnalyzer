@@ -470,6 +470,7 @@ def test_populate_table_node_columns_and_names(monkeypatch):
     rows = [{"Filename": "a.png", "Length_um": 1.0, "CurvatureClass": "1",
               "LengthStraightRatio": 1.05, "EyeArea_um2": math.nan,
               "EyeDiameter_um": math.nan, "EdemaArea_um2": math.nan,
+              "SwimBladderArea_um2": math.nan, "SwimBladderWidth_um": math.nan,
               "Error": ""}]
     node = _FakeTableNode()
     mrml_mod.populate_table_node(rows, node)
@@ -500,6 +501,7 @@ def test_populate_table_node_applies_atomically(monkeypatch):
     rows = [{"Filename": "a.png", "Length_um": 1.0, "CurvatureClass": "1",
               "LengthStraightRatio": 1.05, "EyeArea_um2": math.nan,
               "EyeDiameter_um": math.nan, "EdemaArea_um2": math.nan,
+              "SwimBladderArea_um2": math.nan, "SwimBladderWidth_um": math.nan,
               "Error": ""}]
     node = _TrackingNode()
     mrml_mod.populate_table_node(rows, node)
@@ -527,6 +529,7 @@ def test_populate_table_node_existing_table_preserved_on_failure(monkeypatch):
     rows = [{"Filename": "a.png", "Length_um": 1.0, "CurvatureClass": "1",
               "LengthStraightRatio": 1.05, "EyeArea_um2": math.nan,
               "EyeDiameter_um": math.nan, "EdemaArea_um2": math.nan,
+              "SwimBladderArea_um2": math.nan, "SwimBladderWidth_um": math.nan,
               "Error": ""}]
 
     with pytest.raises(Exception):

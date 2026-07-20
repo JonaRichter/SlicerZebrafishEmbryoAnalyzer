@@ -43,6 +43,7 @@ def _make_widget(eyes_checked=False, curvature_checked=True):
     widget._chk_eyes = _make_checkbox(checked=eyes_checked)
     widget._chk_curvature = _make_checkbox(checked=curvature_checked)
     widget._chk_edema = _make_checkbox(checked=False)  # issue #73
+    widget._chk_swimbladder = _make_checkbox(checked=False)  # issue #72
     return widget
 
 

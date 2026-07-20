@@ -22,6 +22,8 @@ TABLE_SCHEMA = [
     ("EyeArea_um2",         "eye_area",     "double"),
     ("EyeDiameter_um",      "eye_diameter", "double"),
     ("EdemaArea_um2",       "edema_area",   "double"),  # issue #73
+    ("SwimBladderArea_um2", "swim_area",    "double"),  # issue #72
+    ("SwimBladderWidth_um", "swim_width",   "double"),  # issue #72
     ("Error",               "error",        "string"),
 ]
 
@@ -53,6 +55,8 @@ ATTR_RATIO = ATTR_PREFIX + "ratio"
 ATTR_EYE_AREA = ATTR_PREFIX + "eye_area"
 ATTR_EYE_DIAMETER = ATTR_PREFIX + "eye_diameter"
 ATTR_EDEMA_AREA = ATTR_PREFIX + "edema_area"  # issue #73
+ATTR_SWIM_AREA = ATTR_PREFIX + "swim_area"  # issue #72
+ATTR_SWIM_WIDTH = ATTR_PREFIX + "swim_width"  # issue #72
 ATTR_EXCLUDE = ATTR_PREFIX + "exclude"
 ATTR_SEG_MTIME = ATTR_PREFIX + "segMTime"
 # Issue #42: a segmentation node's ``ModifiedEvent`` observer sets
@@ -312,6 +316,8 @@ def volume_node_to_result_dict(node):
     eye_area = _coerce_attr_float(node, ATTR_EYE_AREA)
     eye_diameter = _coerce_attr_float(node, ATTR_EYE_DIAMETER)
     edema_area = _coerce_attr_float(node, ATTR_EDEMA_AREA)
+    swim_area = _coerce_attr_float(node, ATTR_SWIM_AREA)
+    swim_width = _coerce_attr_float(node, ATTR_SWIM_WIDTH)
 
     # math.nan is the canonical "missing" sentinel in results_to_rows; mirror
     # it here so a run-after-analysis reload comparison is value-equal.
@@ -336,6 +342,8 @@ def volume_node_to_result_dict(node):
         "eye_area": _nn(eye_area),
         "eye_diameter": _nn(eye_diameter),
         "edema_area": _nn(edema_area),
+        "swim_area": _nn(swim_area),
+        "swim_width": _nn(swim_width),
         "exclude": bool(exclude_metrics),
         "exclude_metrics": exclude_metrics,
         "error": error_val,
@@ -851,6 +859,13 @@ def update_segmentation_node(result, um_per_px, node, image_node=None):
         and edema_mask_2d.any()
     )
     edema_2d = resample_mask_to_original(edema_mask_2d, h_orig, w_orig) if has_edema else None
+    swim_mask_2d = result.get("swim_mask")
+    has_swim = (
+        swim_mask_2d is not None
+        and hasattr(swim_mask_2d, "any")
+        and swim_mask_2d.any()
+    )
+    swim_2d = resample_mask_to_original(swim_mask_2d, h_orig, w_orig) if has_swim else None
 
     def _make_oriented_image(arr_2d):
         """Build a vtkOrientedImageData from a 2-D uint8 (0/1) array."""
@@ -894,6 +909,14 @@ def update_segmentation_node(result, um_per_px, node, image_node=None):
             edema_id = seg.AddEmptySegment("Edema", "Edema", [0.0, 0.4, 1.0])
             slicer.vtkSlicerSegmentationsModuleLogic.SetBinaryLabelmapToSegment(
                 _make_oriented_image(edema_2d), node, edema_id
+            )
+
+        if swim_2d is not None:
+            # Issue #72: purple/violet — distinct from Body (green), Eye
+            # (red), Edema (blue), and the overlay's cyan/magenta path lines.
+            swim_id = seg.AddEmptySegment("SwimBladder", "SwimBladder", [0.6, 0.0, 0.8])
+            slicer.vtkSlicerSegmentationsModuleLogic.SetBinaryLabelmapToSegment(
+                _make_oriented_image(swim_2d), node, swim_id
             )
 
         if image_node is not None:
@@ -1181,6 +1204,8 @@ def _write_metric_attributes(result, volume_node):
         ATTR_EYE_DIAMETER, _format_attr(result.get("eye_diameter"))
     )
     volume_node.SetAttribute(ATTR_EDEMA_AREA, _format_attr(result.get("edema_area")))
+    volume_node.SetAttribute(ATTR_SWIM_AREA, _format_attr(result.get("swim_area")))
+    volume_node.SetAttribute(ATTR_SWIM_WIDTH, _format_attr(result.get("swim_width")))
     volume_node.SetAttribute(ATTR_EXCLUDE, _encode_exclude_metrics(exclude_metrics, METRIC_KEYS))
     # segMTime is supplied by the per-image helper once the segmentation node
     # is created. The writer sets it via SetAttribute(ATTR_SEG_MTIME, ...)

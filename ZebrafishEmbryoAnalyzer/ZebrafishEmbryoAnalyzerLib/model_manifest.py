@@ -130,6 +130,41 @@ MODELS: dict = {
         "license": "LICENSE_PENDING",
         "preprocessing_compat": "v1",
     },
+    # Issue #72: swim bladder is a new third segmentation type, offered on
+    # both presets (unlike edema) — this repo's "general" preset already
+    # supports optional eye segmentation, putting it functionally closer to
+    # the live webapp's "Complex & Slower" tier (which has swim bladder)
+    # than its bare "Fast & Easy" tier (which doesn't); see #72's design
+    # decision note. Uses an FPN architecture, not Unet — "model_type" is
+    # read by ZebrafishEmbryoAnalyzerLib.logic and passed to
+    # ZebrafishEmbryoAnalyzerCore.seg._load_unet_model. Entries missing
+    # "model_type" default to "Unet" (all other entries above).
+    "general_swimbladder": {
+        "id": "general_swimbladder",
+        "repo_id": "markdanielarndt/Zebrafish_Segmentation",
+        "filename": "best_model_swimmbladder_512_09072026.pth",
+        "revision": "237d21d6d7538fc5b661bf43b70f378f945991ee",
+        "label": "Swim bladder segmentation model",
+        "encoder": "vgg19",
+        "model_type": "FPN",
+        "sha256": "d11e41c7504bbd388f29b53d2a31a731190e4b1b26f036326f4a3c104334d5ab",
+        "size_bytes": 88_459_594,
+        "license": "LICENSE_PENDING",
+        "preprocessing_compat": "v1",
+    },
+    "desy_swimbladder": {
+        "id": "desy_swimbladder",
+        "repo_id": "markdanielarndt/Zebrafish_Segmentation",
+        "filename": "desy_swimmbladder_512_finetuned.pth",
+        "revision": "237d21d6d7538fc5b661bf43b70f378f945991ee",
+        "label": "DESY swim bladder segmentation model",
+        "encoder": "vgg19",
+        "model_type": "FPN",
+        "sha256": "92a47377cf450d3fcb7ec52c7065d1e5b74e36b125460752496ff66837655d1c",
+        "size_bytes": 88_459_870,
+        "license": "LICENSE_PENDING",
+        "preprocessing_compat": "v1",
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -140,12 +175,14 @@ MODEL_SETS: dict = {
     "general": {
         "body": MODELS["general_body"],
         "eye": MODELS["general_eye"],
+        "swimbladder": MODELS["general_swimbladder"],  # issue #72
         "curvature": MODELS["curvature"],
     },
     "desy": {
         "body": MODELS["desy_body"],
         "eye": MODELS["desy_eye"],
         "edema": MODELS["desy_edema"],  # issue #73: DESY-only
+        "swimbladder": MODELS["desy_swimbladder"],  # issue #72
         "curvature": MODELS["curvature"],
     },
 }

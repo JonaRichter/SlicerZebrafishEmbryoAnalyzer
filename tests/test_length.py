@@ -76,3 +76,56 @@ def test_tube_length_returns_tuple():
     assert len(result) == 2
     assert isinstance(result[0], float)
     assert isinstance(result[1], float)
+
+
+# ---------------------------------------------------------------------------
+# Issue #72: compute_tube_metrics (swim bladder area/width)
+# ---------------------------------------------------------------------------
+
+def test_compute_tube_metrics_rectangle_area_length_width():
+    """A known axis-aligned rectangle mask must yield area/length/width
+    matching (within pixel-boundary rounding) its actual dimensions."""
+    from ZebrafishEmbryoAnalyzerCore.length import compute_tube_metrics
+    mask = np.zeros((100, 100), dtype=np.uint8)
+    mask[40:60, 10:90] = 1  # 80 wide x 20 tall
+    out = compute_tube_metrics(mask, spacing=(1.0, 1.0))
+    assert out["area"] == pytest.approx(1600.0, rel=0.05)
+    assert out["length"] == pytest.approx(80.0, abs=2.0)
+    assert out["width"] == pytest.approx(20.0, abs=2.0)
+    assert out["length_line"] is not None
+    assert out["width_line"] is not None
+
+
+def test_compute_tube_metrics_spacing_scales_area():
+    from ZebrafishEmbryoAnalyzerCore.length import compute_tube_metrics
+    mask = np.zeros((100, 100), dtype=np.uint8)
+    mask[40:60, 10:90] = 1
+    out_unit = compute_tube_metrics(mask, spacing=(1.0, 1.0))
+    out_scaled = compute_tube_metrics(mask, spacing=(2.0, 2.0))
+    assert out_scaled["area"] == pytest.approx(out_unit["area"] * 4, rel=0.05)
+
+
+def test_compute_tube_metrics_none_mask_returns_zeroed_dict():
+    from ZebrafishEmbryoAnalyzerCore.length import compute_tube_metrics
+    out = compute_tube_metrics(None)
+    assert out == {"area": 0.0, "length": 0.0, "width": 0.0,
+                    "length_line": None, "width_line": None}
+
+
+def test_compute_tube_metrics_empty_mask_returns_zeroed_dict():
+    from ZebrafishEmbryoAnalyzerCore.length import compute_tube_metrics
+    mask = np.zeros((50, 50), dtype=np.uint8)
+    out = compute_tube_metrics(mask)
+    assert out["area"] == 0.0
+    assert out["length"] == 0.0
+    assert out["width"] == 0.0
+
+
+def test_compute_tube_metrics_picks_largest_component():
+    """Multiple disconnected blobs — must measure only the largest one."""
+    from ZebrafishEmbryoAnalyzerCore.length import compute_tube_metrics
+    mask = np.zeros((100, 100), dtype=np.uint8)
+    mask[10:15, 10:15] = 1       # small blob, 5x5
+    mask[40:60, 10:90] = 1       # large blob, 80x20
+    out = compute_tube_metrics(mask, spacing=(1.0, 1.0))
+    assert out["area"] == pytest.approx(1600.0, rel=0.05)
