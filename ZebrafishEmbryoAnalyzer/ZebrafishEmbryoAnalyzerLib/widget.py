@@ -261,8 +261,11 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._chk_hitl      = qt.QCheckBox("Confidence threshold"); self._chk_hitl.setChecked(False)
 
         for chk in (self._chk_length, self._chk_curvature, self._chk_ratio,
-                    self._chk_eyes, self._chk_hitl):
+                    self._chk_eyes):
             an_layout.addWidget(chk)
+        # Confidence threshold hidden from UI (issue #79); widget still
+        # created above and stays wired into settings/parameter-node sync.
+        # an_layout.addWidget(self._chk_hitl)
 
         self._threshold_slider = ctk.ctkSliderWidget()
         self._threshold_slider.minimum    = 0.0
@@ -270,7 +273,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._threshold_slider.singleStep = 0.01
         self._threshold_slider.value      = 0.85
         self._threshold_slider.decimals   = 2
-        an_layout.addWidget(self._threshold_slider)
+        # an_layout.addWidget(self._threshold_slider)
         an_layout.addStretch()
 
         model_box = ctk.ctkCollapsibleButton()
