@@ -398,6 +398,60 @@ def test_list_tracked_volume_nodes_returns_ordered_nodes():
     param.GetNumberOfNodeReferences.assert_called_once_with(mrml.ROLE_ZEBRAFISH_IMAGES)
 
 
+def test_list_tracked_volume_nodes_sorts_by_load_order_attribute():
+    """A Save Scene -> Load Scene round-trip was observed to come back with
+    the NodeReference array itself reordered even though every node/reference
+    survived (found while testing #61). list_tracked_volume_nodes must
+    restore folder-load order from each node's ZebrafishAnalysis.loadOrder
+    attribute (set at eager-creation time) rather than trusting the
+    reference array's own enumeration order.
+    """
+    from ZebrafishEmbryoAnalyzerLib import mrml
+
+    n0 = _FakeVolumeNode(name="n0", attrs={"ZebrafishAnalysis.loadOrder": "0"})
+    n1 = _FakeVolumeNode(name="n1", attrs={"ZebrafishAnalysis.loadOrder": "1"})
+    n2 = _FakeVolumeNode(name="n2", attrs={"ZebrafishAnalysis.loadOrder": "2"})
+    nodes = [n0, n1, n2]
+
+    # Reference list comes back scrambled (simulating the reload reorder).
+    scrambled_ids = [n2.GetID(), n0.GetID(), n1.GetID()]
+    param = _mock_param_with_refs(scrambled_ids, mrml.ROLE_ZEBRAFISH_IMAGES)
+
+    scene = MagicMock()
+    def _by_id(nid):
+        for n in nodes:
+            if n.GetID() == nid:
+                return n
+        return None
+    scene.GetNodeByID = MagicMock(side_effect=_by_id)
+
+    listed = mrml.list_tracked_volume_nodes(param, scene)
+    assert listed == [n0, n1, n2]
+
+
+def test_list_tracked_volume_nodes_keeps_reference_order_without_attribute():
+    """Nodes with no loadOrder attribute (older scenes, other test fakes)
+    must keep their relative reference-list order rather than crash or
+    reorder unpredictably.
+    """
+    from ZebrafishEmbryoAnalyzerLib import mrml
+
+    nodes = [_FakeVolumeNode(name=f"n{i}") for i in range(3)]
+    ids = [n.GetID() for n in nodes]
+    param = _mock_param_with_refs(ids, mrml.ROLE_ZEBRAFISH_IMAGES)
+
+    scene = MagicMock()
+    def _by_id(nid):
+        for n in nodes:
+            if n.GetID() == nid:
+                return n
+        return None
+    scene.GetNodeByID = MagicMock(side_effect=_by_id)
+
+    listed = mrml.list_tracked_volume_nodes(param, scene)
+    assert listed == nodes
+
+
 def test_list_tracked_volume_nodes_skips_missing_ids():
     """A reference whose node no longer exists must be silently dropped —
     it will surface as a missing row in the table (not a crash)."""
