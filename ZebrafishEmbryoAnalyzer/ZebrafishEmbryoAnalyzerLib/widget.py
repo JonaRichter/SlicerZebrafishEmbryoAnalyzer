@@ -418,11 +418,21 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         export_box = ctk.ctkCollapsibleButton()
         export_box.text = "Export"
         vbox.addWidget(export_box)
-        ex_layout = qt.QHBoxLayout(export_box)
+        ex_layout = qt.QVBoxLayout(export_box)
+        # Issue #75: Excel sheet name, sanitized on export (export.py's
+        # sanitize_sheet_name) — matches the live reference webapp's own
+        # "Generate Final Excel" sheet-name field.
+        ex_form = qt.QFormLayout()
+        self._excel_sheet_name_edit = qt.QLineEdit()
+        self._excel_sheet_name_edit.setPlaceholderText("Fish Data")
+        ex_form.addRow("Excel sheet name:", self._excel_sheet_name_edit)
+        ex_layout.addLayout(ex_form)
+        ex_btn_row = qt.QHBoxLayout()
         self._btn_excel = qt.QPushButton("Excel")
         self._btn_csv   = qt.QPushButton("CSV")
-        ex_layout.addWidget(self._btn_excel)
-        ex_layout.addWidget(self._btn_csv)
+        ex_btn_row.addWidget(self._btn_excel)
+        ex_btn_row.addWidget(self._btn_csv)
+        ex_layout.addLayout(ex_btn_row)
 
 
     def _build_right_panel(self, splitter):
@@ -2170,8 +2180,9 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 path += ".xlsx"
             # Issue #74: rows are never dropped for being excluded — only
             # the specific excluded metric cells render as "Excluded".
+            sheet_name = self._excel_sheet_name_edit.text.strip() or None
             try:
-                export_excel(self._results, path, excluded=self._excluded)
+                export_excel(self._results, path, excluded=self._excluded, sheet_name=sheet_name)
                 slicer.util.infoDisplay(f"Saved {len(self._results)} rows to:\n{path}")
                 self._remember_export_dir(path)
             except Exception as e:

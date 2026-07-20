@@ -739,3 +739,41 @@ def test_apply_manual_scale_failure_shows_message(widget_module):
     }
     w._on_apply_manual_scale_clicked()
     w._scale_status.setText.assert_called_with("Endpoints are too close together.")
+
+
+# ---------------------------------------------------------------------------
+# Issue #75: Excel sheet-name field wiring
+# ---------------------------------------------------------------------------
+
+def test_on_export_excel_passes_sheet_name_from_field(widget_module, tmp_path):
+    import slicer as _slicer
+    w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
+    w._results = [{"filename": "fish.png", "length": 1.0}]
+    w._excluded = {}
+    w._excel_sheet_name_edit = MagicMock()
+    w._excel_sheet_name_edit.text = "My Batch"
+    w._resolve_export_start_dir = MagicMock(return_value=str(tmp_path))
+    w._remember_export_dir = MagicMock()
+    out_path = str(tmp_path / "out.xlsx")
+    with patch("qt.QFileDialog.getSaveFileName", return_value=out_path), \
+         patch("ZebrafishEmbryoAnalyzerLib.export.export_excel") as mock_export:
+        w._on_export_excel()
+    mock_export.assert_called_once_with(
+        w._results, out_path, excluded=w._excluded, sheet_name="My Batch"
+    )
+
+
+def test_on_export_excel_blank_sheet_name_passes_none(widget_module, tmp_path):
+    w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
+    w._results = [{"filename": "fish.png", "length": 1.0}]
+    w._excluded = {}
+    w._excel_sheet_name_edit = MagicMock()
+    w._excel_sheet_name_edit.text = "   "
+    w._resolve_export_start_dir = MagicMock(return_value=str(tmp_path))
+    w._remember_export_dir = MagicMock()
+    out_path = str(tmp_path / "out.xlsx")
+    with patch("qt.QFileDialog.getSaveFileName", return_value=out_path), \
+         patch("ZebrafishEmbryoAnalyzerLib.export.export_excel") as mock_export:
+        w._on_export_excel()
+    _, kwargs = mock_export.call_args
+    assert kwargs["sheet_name"] is None

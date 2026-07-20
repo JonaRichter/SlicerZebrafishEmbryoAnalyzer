@@ -13,6 +13,7 @@ REQUIRED_PACKAGES = [
     "huggingface_hub",
     "openpyxl",
     "pytesseract",
+    "matplotlib",  # issue #75: embedded boxplots in the Excel export
 ]
 
 TORCH_PACKAGES = ["torch", "torchvision"]
