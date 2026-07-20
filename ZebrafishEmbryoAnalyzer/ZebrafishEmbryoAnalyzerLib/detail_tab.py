@@ -164,11 +164,6 @@ class DetailTab(qt.QWidget):
         self._actions_heading = qt.QLabel("Actions")
         self._actions_heading.setStyleSheet("font-weight: bold;")
 
-        # Default state — widget.py will overwrite via set_stale() right
-        # after show_result() for each navigation. Tests that construct a
-        # bare DetailTab() without MRML state stay covered by this default.
-        self._current_is_stale = False
-
         # Issue #67: filename label + status badge live at the top of the
         # sidebar so the user always sees the current row's identity + state.
         # _ElidedLabel keeps the filename on one line and clips with '…' at
@@ -177,12 +172,28 @@ class DetailTab(qt.QWidget):
         self._filename_label = _ElidedLabel("")
         self._filename_label.setStyleSheet("font-weight: bold;")
 
+        # Canonical source of truth for badge / error banner / Recompute
+        # button is the volume node's MRML attributes (ADR 0001 — issue
+        # #67). set_current_volume_node() is the entry point used by
+        # widget.py at every navigation / scene-rebuild / recompute site.
+        # _current_is_stale is a legacy bool fallback kept so the older
+        # set_stale(bool) wrapper still drives the badge for tests +
+        # bootstrap before any row is shown; it is ignored once a volume
+        # node has been set (MRML wins).
+        self._current_volume_node = None
+        self._current_is_stale = False
+
         self._status_badge = qt.QLabel("")
         self._status_badge.setAlignment(qt.Qt.AlignCenter)
-        # Initial badge state — "Not analyzed" so the user has feedback
-        # before any image is selected. show_result() will overwrite via
-        # _update_status_badge() once a row is shown.
-        self._update_status_badge({"filename": "", "error": None})
+        # Initial badge state — hidden until a row with an explicit signal
+        # (stale / error / manual_corrected) is shown. show_result() will
+        # overwrite via _refresh_status_badge() once a row is shown. The
+        # badge used to say "Not analyzed" as a default; that wording was
+        # removed because it conflated absence-of-data with
+        # absence-of-signal and caused the #67 inconsistency across scene
+        # save/reload.
+        if hasattr(self, "_status_badge"):
+            self._status_badge.setVisible(False)
 
         # Issue #11: "Show segmentation overlay" checkbox — when unchecked,
         # the user sees the bare original image with no mask/path/straight
@@ -328,13 +339,13 @@ class DetailTab(qt.QWidget):
         if hasattr(self, "_filename_label"):
             self._filename_label.setText(str(self._current_filename))
         _populate_measurements(getattr(self, "_measurements", []), result)
-        # #67 — guard the new sidebar widgets with hasattr so lifecycle tests
-        # that bypass __init__ via ``object.__new__`` (and only set up the
-        # original sidebar widgets) keep working.
-        if hasattr(self, "_update_status_badge"):
-            self._update_status_badge(result)
-        if hasattr(self, "_update_error_banner"):
-            self._update_error_banner(result)
+        # #67 — drive the badge / error banner / Recompute button from the
+        # row's MRML volume node (ADR 0001). Centralised in
+        # set_current_volume_node so widget.py and the manual-adjust paths
+        # share the same refresh entry point. _current_is_stale is cleared
+        # so the legacy bool fallback can't shadow a fresh MRML read.
+        if hasattr(self, "_status_badge"):
+            self.set_current_volume_node(result.get("_volume_node"))
 
         # Sync button state — only show after analysis (stubs have length=None)
         analyzed = result.get("length") is not None or result.get("mask") is not None
@@ -427,17 +438,20 @@ class DetailTab(qt.QWidget):
             self._filename_label.setText("")
         if hasattr(self, "_measurements"):
             _clear_measurements(self._measurements)
+        # #67 — clear the volume node + legacy bool override so the badge /
+        # error banner / Recompute button all start from a hidden state
+        # rather than inheriting the previous row's signals.
+        self._current_volume_node = None
         if hasattr(self, "_current_is_stale"):
             self._current_is_stale = False
         if hasattr(self, "_status_badge"):
-            self._update_status_badge({"filename": "", "error": None})
+            self._refresh_status_badge()
         if hasattr(self, "_error_banner"):
-            self._error_banner.setVisible(False)
+            self._refresh_error_banner()
         # #68 — hide the relocated Recompute button too so a fresh dataset
         # doesn't inherit a stale button state.
         if hasattr(self, "_btn_recompute"):
-            self._btn_recompute.setVisible(False)
-            self._btn_recompute.setEnabled(False)
+            self._refresh_recompute_button()
         # #11 — overlay toggle is a user preference, NOT per-row state, so
         # reset() leaves it untouched. The checkbox keeps its current
         # checked state across scene-close + reopen.
@@ -478,13 +492,7 @@ class DetailTab(qt.QWidget):
         self._recompute_callback = callback
         # Refresh the button's enabled/visible state under the new
         # callback, in case a stale row is currently displayed.
-        if hasattr(self, "_btn_recompute"):
-            show = (
-                self._current_is_stale
-                and self._recompute_callback is not None
-            )
-            self._btn_recompute.setVisible(show)
-            self._btn_recompute.setEnabled(show)
+        self._refresh_recompute_button()
 
     def _on_recompute_clicked(self) -> None:
         """Internal click handler — delegates to the registered callback.
@@ -574,92 +582,195 @@ class DetailTab(qt.QWidget):
             pass
 
     # ------------------------------------------------------------------
-    # Issue #67: stale setter + status badge + error banner
+    # Issue #67: MRML-driven status badge + error banner + Recompute button
     # ------------------------------------------------------------------
 
+    def set_current_volume_node(self, vol) -> None:
+        """Set the MRML volume node for the currently-shown row.
+
+        Re-derives the status badge, error banner, and Recompute button
+        visibility from the volume node's MRML attributes (ADR 0001).
+        This is the canonical refresh entry point — widget.py calls it
+        at every ``show_result`` site (gallery click, scene reload,
+        recompute, results-ready) so the sidebar stays consistent across
+        scene save/reload and across rows.
+
+        Priority (issue #67):
+          1. ``ZebrafishAnalysis.stale``           → "Stale — recompute needed"
+          2. ``ZebrafishAnalysis.error``           → "Error: {message}"
+          3. ``ZebrafishAnalysis.manualCorrected`` → "Manually corrected"
+          4. none of the above                     → badge hidden
+
+        The "Analyzed" / "Not analyzed" states were dropped: they
+        conflated absence-of-data with absence-of-signal and were the
+        cause of the #67 inconsistency across scene save/reload. The
+        badge now surfaces only when something specific needs the user's
+        attention.
+        """
+        self._current_volume_node = vol
+        # Clear the legacy bool override — once a volume node is set, MRML
+        # is the source of truth and the bool can't shadow it.
+        self._current_is_stale = False
+        self._refresh_status_badge()
+        self._refresh_error_banner()
+        self._refresh_recompute_button()
+
     def set_stale(self, is_stale: bool) -> None:
-        """Set whether the currently shown row's segmentation is stale.
+        """DEPRECATED — use :meth:`set_current_volume_node` so the badge
+        and Recompute button derive from MRML attributes (ADR 0001).
 
-        ``widget.py`` is the only caller — it computes staleness from
-        :func:`mrml.is_volume_node_stale` (which DetailTab never imports
-        directly to keep this class MRML-agnostic + unit-testable without
-        a running Slicer scene). Stores the flag; the badge refreshes
-        when ``show_result`` runs next, or on demand if a row is updated
-        mid-lifetime.
-
-        Issue #68 also drives the relocated "Recompute metrics" button's
-        visibility + enabled state — the button is only reachable when
-        the row is stale AND a recompute callback has been registered
-        (i.e. widget.py has wired up its click handler).
+        Kept as a backward-compatible wrapper for any caller that drives
+        the badge from a bool. When a volume node has been set, the bool
+        is ignored — the truth comes from MRML and we just re-derive.
+        When no volume node is set yet (legacy unit tests, bootstrap
+        before any row is shown), the bool is honoured.
         """
+        if getattr(self, "_current_volume_node", None) is not None:
+            # Volume node set → MRML wins, bool is ignored.
+            self._refresh_status_badge()
+            self._refresh_error_banner()
+            self._refresh_recompute_button()
+            return
+        # No volume node → honour the bool (legacy path).
         self._current_is_stale = bool(is_stale)
-        # Refresh the badge immediately if a row is currently visible.
-        if self._current_filename is not None and self._results:
-            self._update_status_badge(self._results[self._current_idx])
-            self._update_error_banner(self._results[self._current_idx])
-        # Toggle the Recompute button — visible only when both stale AND
-        # a callback is registered (a bare DetailTab in unit tests has no
-        # callback, so the button stays hidden even when set_stale(True)
-        # is called). setEnabled follows visibility so the user can't
-        # accidentally click a button that's been hidden.
-        if hasattr(self, "_btn_recompute"):
-            self._btn_recompute.setVisible(
-                self._current_is_stale and self._recompute_callback is not None
-            )
-            self._btn_recompute.setEnabled(
-                self._current_is_stale and self._recompute_callback is not None
-            )
+        self._refresh_status_badge()
+        self._refresh_recompute_button()
 
-    def _update_status_badge(self, result: dict) -> None:
-        """Recompute the status badge text + colour from ``result``.
+    def _refresh_status_badge(self) -> None:
+        """Recompute badge text + visibility from MRML (canonical).
 
-        Priority (issue #67 clarification, evaluated in this exact order):
-          1. ``self._current_is_stale`` → "Stale — recompute needed"
-          2. ``result.get("error")``   → "Error"
-          3. ``result.get("manual_corrected")`` → "Manually corrected"
-          4. ``result.get("length")`` or ``result.get("mask")`` non-None → "Analyzed"
-          5. otherwise → "Not analyzed"
+        Reads from ``self._current_volume_node`` when set, otherwise
+        falls back to ``self._current_is_stale`` (legacy bool used by
+        ``set_stale(bool)`` callers that haven't migrated to
+        ``set_current_volume_node`` yet + bootstrap before any row is
+        shown). When no signal is present the badge is hidden — the old
+        "Not analyzed" / "Analyzed" wording was removed in #67 because
+        it conflated absence-of-data with absence-of-signal and caused
+        the cross-reload inconsistency.
         """
-        # #67 — guard against stub objects in lifecycle tests that bypass
-        # __init__ and never set _status_badge. Default to "not stale" so
-        # the rest of the priority logic evaluates cleanly.
-        is_stale = getattr(self, "_current_is_stale", False)
-        if is_stale:
-            text = "Stale — recompute needed"
-        elif result.get("error"):
-            text = "Error"
-        elif result.get("manual_corrected"):
-            text = "Manually corrected"
-        elif (result.get("length") is not None
-              or result.get("mask") is not None):
-            text = "Analyzed"
-        else:
-            text = "Not analyzed"
+        if not hasattr(self, "_status_badge"):
+            return
+        vol = getattr(self, "_current_volume_node", None)
+        if vol is not None and hasattr(vol, "GetAttribute"):
+            from ZebrafishEmbryoAnalyzerLib.mrml import (
+                is_volume_node_stale,
+                is_volume_node_manual_corrected,
+            )
+            if is_volume_node_stale(vol):
+                self._apply_badge_text("Stale — recompute needed")
+                return
+            err = self._read_error_attr(vol)
+            if err:
+                self._apply_badge_text(f"Error: {err}")
+                return
+            if is_volume_node_manual_corrected(vol):
+                self._apply_badge_text("Manually corrected")
+                return
+            # No MRML signal — hide the badge.
+            self._status_badge.setVisible(False)
+            return
+        # No volume node — legacy bool fallback (tests + bootstrap).
+        if getattr(self, "_current_is_stale", False):
+            self._apply_badge_text("Stale — recompute needed")
+            return
+        self._status_badge.setVisible(False)
 
-        # Bold text in the theme's default colour — no coloured pill
-        # background so the badge reads as part of Slicer's native UI
-        # rather than a custom widget bolted on top of it.
-        if hasattr(self, "_status_badge"):
-            self._status_badge.setStyleSheet("font-weight: bold;")
-            self._status_badge.setText(text)
+    def _apply_badge_text(self, text: str) -> None:
+        """Set the badge text + bold style + visible in one go.
 
-    def _update_error_banner(self, result: dict) -> None:
-        """Show or hide the error banner based on the current result.
+        Centralised so the badge always reads as part of Slicer's native
+        UI (no coloured pill background) per the #67 design decision.
+        """
+        self._status_badge.setStyleSheet("font-weight: bold;")
+        self._status_badge.setText(text)
+        self._status_badge.setVisible(True)
 
-        Note: stale rows always have an error message string set by
+    def _read_error_attr(self, vol) -> str:
+        """Read the error attribute from a volume node.
+
+        Returns the message string, or ``""`` if the attribute is
+        missing/empty or the read raises. Defensive against stubs that
+        only implement a subset of the MRML node surface.
+        """
+        try:
+            err = vol.GetAttribute("ZebrafishAnalysis.error")
+        except Exception:
+            return ""
+        return str(err) if err else ""
+
+    def _refresh_error_banner(self) -> None:
+        """Show or hide the error banner from the current volume node.
+
+        Note: stale rows always have an error message set by
         :func:`mrml.mark_volume_node_stale` (see ``STALE_ERROR_MESSAGE``),
         so the banner naturally surfaces stale rows too — the badge and
-        the banner share the same source of truth (``result['error']``).
+        the banner share the same source of truth.
         """
-        # #67 — defensive for lifecycle tests that bypass __init__.
         if not hasattr(self, "_error_banner"):
             return
-        message = result.get("error") or ""
-        if message:
-            self._error_banner.setText(str(message))
+        vol = getattr(self, "_current_volume_node", None)
+        if vol is not None and hasattr(vol, "GetAttribute"):
+            err = self._read_error_attr(vol)
+        else:
+            # No volume node — banner stays hidden until one is set.
+            err = ""
+        if err:
+            self._error_banner.setText(err)
             self._error_banner.setVisible(True)
         else:
             self._error_banner.setVisible(False)
+
+    def _refresh_recompute_button(self) -> None:
+        """Show the Recompute button iff the current row is stale AND a
+        callback has been registered.
+
+        ``set_recompute_callback(None)`` hides the button even for stale
+        rows — used when widget.py's try/except around button creation
+        failed and the button should never be reachable.
+        """
+        if not hasattr(self, "_btn_recompute"):
+            return
+        show = self._compute_is_stale() and self._recompute_callback is not None
+        self._btn_recompute.setVisible(show)
+        self._btn_recompute.setEnabled(show)
+
+    def _compute_is_stale(self) -> bool:
+        """Single source of truth for "is the current row stale?".
+
+        Reads from MRML when a volume node is set; falls back to the
+        legacy ``_current_is_stale`` bool for un-migrated callers and
+        bootstrap before any row is shown.
+        """
+        vol = getattr(self, "_current_volume_node", None)
+        if vol is not None and hasattr(vol, "GetAttribute"):
+            try:
+                from ZebrafishEmbryoAnalyzerLib.mrml import is_volume_node_stale
+                return bool(is_volume_node_stale(vol))
+            except Exception:
+                return False
+        return bool(getattr(self, "_current_is_stale", False))
+
+    # ------------------------------------------------------------------
+    # Legacy aliases — kept so any external caller still importing the
+    # pre-#67 method names keeps working. They forward to the new
+    # MRML-driven refreshers so behaviour stays consistent.
+    # ------------------------------------------------------------------
+
+    def _update_status_badge(self, result: dict) -> None:
+        """Legacy alias — calls :meth:`_refresh_status_badge`.
+
+        Accepts the pre-#67 ``result`` dict but ignores it: badge state
+        is now derived from ``self._current_volume_node`` instead.
+        """
+        self._refresh_status_badge()
+
+    def _update_error_banner(self, result: dict) -> None:
+        """Legacy alias — calls :meth:`_refresh_error_banner`.
+
+        Accepts the pre-#67 ``result`` dict but ignores it: banner state
+        is now derived from ``self._current_volume_node`` instead.
+        """
+        self._refresh_error_banner()
 
     # ------------------------------------------------------------------
     # Splitter width persistence
@@ -787,6 +898,13 @@ class DetailTab(qt.QWidget):
             return
         result = self._results[self._current_idx]
         self._logic.revert_manual_correction(result)
+        # Mirror the flag on the MRML volume node so it survives scene
+        # save/reload — previously it only lived in transient ``_results``.
+        try:
+            from ZebrafishEmbryoAnalyzerLib.mrml import set_volume_node_manual_corrected
+            set_volume_node_manual_corrected(result.get("_volume_node"), False)
+        except Exception:
+            pass
 
         self._cache.pop(self._current_idx, None)
 
@@ -797,8 +915,11 @@ class DetailTab(qt.QWidget):
         self._btn_revert_auto.setVisible(False)
         self._btn_manual_adjust.setText("✏ Manual Adjust")
         _populate_measurements(self._measurements, result)
-        self._update_status_badge(result)
-        self._update_error_banner(result)
+        # Re-derive badge + banner from MRML (the manual_corrected flag was
+        # just cleared on the volume node above; re-reading it now makes
+        # the badge disappear so the user sees the revert reflected).
+        if hasattr(self, "_status_badge"):
+            self.set_current_volume_node(result.get("_volume_node"))
         self._view.set_manual_mode(False)
         self._view.clear_dots()
 
@@ -834,6 +955,13 @@ class DetailTab(qt.QWidget):
         self._logic.apply_manual_correction(
             result, self._manual_points[0], self._manual_points[1], params
         )
+        # Mirror the flag on the MRML volume node so it survives scene
+        # save/reload — previously it only lived in transient ``_results``.
+        try:
+            from ZebrafishEmbryoAnalyzerLib.mrml import set_volume_node_manual_corrected
+            set_volume_node_manual_corrected(result.get("_volume_node"), True)
+        except Exception:
+            pass
 
         self._cache.pop(self._current_idx, None)
         self._manual_points = []
@@ -845,8 +973,12 @@ class DetailTab(qt.QWidget):
         self._btn_revert_auto.setVisible(True)
         self._btn_manual_adjust.setText("✏ Redo Manual")
         _populate_measurements(self._measurements, result)
-        self._update_status_badge(result)
-        self._update_error_banner(result)
+        # Re-derive badge + banner from MRML (the manual_corrected flag was
+        # just set on the volume node above; re-reading it now makes the
+        # badge flip to "Manually corrected" so the user sees the change
+        # without needing to navigate away and back).
+        if hasattr(self, "_status_badge"):
+            self.set_current_volume_node(result.get("_volume_node"))
 
         self._start_job(self._current_idx)
 

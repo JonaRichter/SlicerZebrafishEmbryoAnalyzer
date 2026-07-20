@@ -57,6 +57,16 @@ ATTR_SEG_MTIME = ATTR_PREFIX + "segMTime"
 # ``ZebrafishAnalysis.stale = "true"`` whenever the user edits a Body
 # mask in the Segment Editor. Cleared on successful recompute.
 ATTR_STALE = ATTR_PREFIX + "stale"
+# Free-form error message — set by ``mark_volume_node_stale`` with
+# ``STALE_ERROR_MESSAGE`` and by the analysis entry point on unrecoverable
+# inference failures. Read by the detail-tab error banner + status badge.
+ATTR_ERROR = ATTR_PREFIX + "error"
+# Set by ``apply_manual_correction`` / cleared by ``revert_manual_correction``
+# in detail_tab.py (the only writesite — logic.py stays Slicer-independent per
+# the project boundary rule). Stored on the volume node so the flag survives
+# scene save/reload — previously it only lived in the transient ``_results``
+# list, which is rebuilt from MRML state on reload and lost the flag.
+ATTR_MANUAL_CORRECTED = ATTR_PREFIX + "manualCorrected"
 
 # Markups colors mirror ``overlay.py`` so the real MRML nodes match the custom
 # Detail-tab overlay visually. Stored as RGB floats in [0, 1] — VTK's expected
@@ -295,6 +305,7 @@ def volume_node_to_result_dict(node):
         "eye_diameter": _nn(eye_diameter),
         "exclude": exclude_val,
         "error": error_val,
+        "manual_corrected": is_volume_node_manual_corrected(node),
         # No ``original`` — see docstring.
     }
 
@@ -467,7 +478,7 @@ def mark_volume_node_stale(volume_node):
     except Exception:
         pass
     try:
-        volume_node.SetAttribute(ATTR_PREFIX + "error", STALE_ERROR_MESSAGE)
+        volume_node.SetAttribute(ATTR_ERROR, STALE_ERROR_MESSAGE)
     except Exception:
         pass
 
@@ -496,6 +507,45 @@ def clear_volume_node_stale(volume_node):
         volume_node.RemoveAttribute(ATTR_STALE)
     except Exception:
         pass
+
+
+def set_volume_node_manual_corrected(volume_node, value: bool) -> None:
+    """Mark the volume node as manually corrected (``value=True``) or clear it.
+
+    Writes ``ZebrafishAnalysis.manualCorrected = "true"`` / removes the
+    attribute. Set by :meth:`DetailTab._apply_correction` after
+    ``logic.apply_manual_correction`` and cleared by ``_on_revert_auto_clicked``
+    after ``logic.revert_manual_correction``. Read by
+    :func:`is_volume_node_manual_corrected` (used by the detail-tab status
+    badge) and by :func:`volume_node_to_result_dict` so the flag round-trips
+    through scene save/reload.
+    """
+    if volume_node is None:
+        return
+    if value:
+        if not hasattr(volume_node, "SetAttribute"):
+            return
+        try:
+            volume_node.SetAttribute(ATTR_MANUAL_CORRECTED, "true")
+        except Exception:
+            pass
+    else:
+        if not hasattr(volume_node, "RemoveAttribute"):
+            return
+        try:
+            volume_node.RemoveAttribute(ATTR_MANUAL_CORRECTED)
+        except Exception:
+            pass
+
+
+def is_volume_node_manual_corrected(volume_node) -> bool:
+    """Return True if the volume node's ``ATTR_MANUAL_CORRECTED`` attribute is "true"."""
+    if volume_node is None or not hasattr(volume_node, "GetAttribute"):
+        return False
+    try:
+        return volume_node.GetAttribute(ATTR_MANUAL_CORRECTED) == "true"
+    except Exception:
+        return False
 
 
 def volume_nodes_to_results(volume_nodes):

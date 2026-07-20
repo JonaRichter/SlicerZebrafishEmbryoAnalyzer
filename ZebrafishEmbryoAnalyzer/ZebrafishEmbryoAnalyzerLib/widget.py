@@ -1826,39 +1826,53 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             pass
 
     def _refresh_detail_recompute_button(self):
-        """Enable / disable the detail-view "Recompute metrics" button
-        based on whether the currently shown row's segmentation is
-        marked stale.
+        """Re-derive the detail-view sidebar from the current row's MRML
+        volume node (issue #67).
 
-        Issue #68: the button now lives in DetailTab's sidebar (under
-        the Actions heading) instead of on the tab bar. This method
-        delegates the UI update to ``self._detail.set_stale(is_stale)``
-        so the badge AND the recompute button stay in sync. Kept as a
-        single source of truth (``is_volume_node_stale`` from MRML) on
-        the widget side — DetailTab remains MRML-agnostic.
+        Delegates to ``self._detail.set_current_volume_node(vol)`` so
+        the badge, error banner, and Recompute button visibility all
+        read from the same single source of truth (the volume node's
+        ``ZebrafishAnalysis.*`` attributes — ADR 0001). Pre-#67 this
+        method computed a bool from MRML and called ``set_stale``; that
+        path was dropped because the bool couldn't reflect the
+        error / manual_corrected signals and caused cross-reload
+        inconsistencies.
         """
-        is_stale = False
+        vol = None
         try:
             if 0 <= self._current_detail_idx < len(self._results):
                 vol = self._results[self._current_detail_idx].get("_volume_node")
+        except Exception:
+            vol = None
+        try:
+            detail = getattr(self, "_detail", None)
+            if detail is not None and hasattr(detail, "set_current_volume_node"):
+                detail.set_current_volume_node(vol)
+            elif detail is not None and hasattr(detail, "set_stale"):
+                # Back-compat: older DetailTab builds that don't yet
+                # expose ``set_current_volume_node``. Compute the bool
+                # from MRML the way the pre-#67 path did and let
+                # ``set_stale`` (now a deprecated wrapper) drive the
+                # button via its legacy override path.
                 is_stale = bool(
                     vol is not None
                     and getattr(
                         self._logic, "is_volume_node_stale", lambda _v: False
                     )(vol)
                 )
-        except Exception:
-            is_stale = False
-        try:
-            detail = getattr(self, "_detail", None)
-            if detail is not None and hasattr(detail, "set_stale"):
                 detail.set_stale(is_stale)
             else:
-                # Legacy fallback: poke the (now-removed) tab-bar button
-                # directly. Only reachable on older builds that haven't
-                # been recompiled against the DetailTab API yet.
+                # Last-resort fallback: poke the (now-removed) tab-bar
+                # button directly. Only reachable on older builds that
+                # haven't been recompiled against the DetailTab API yet.
                 btn = getattr(self, "_recompute_btn", None)
                 if btn is not None:
+                    is_stale = bool(
+                        vol is not None
+                        and getattr(
+                            self._logic, "is_volume_node_stale", lambda _v: False
+                        )(vol)
+                    )
                     btn.setEnabled(is_stale)
                     btn.setVisible(is_stale)
         except Exception:

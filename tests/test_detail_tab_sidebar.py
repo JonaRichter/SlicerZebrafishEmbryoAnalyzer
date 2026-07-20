@@ -304,6 +304,41 @@ def _make_tab(stubs):
     return dt, tab
 
 
+def _vol_node(stale=False, error=None, manual_corrected=False):
+    """Mock MRML volume node carrying the attributes read by #67.
+
+    Returns a MagicMock with a real ``GetAttribute`` dict so the
+    production code's ``vol.GetAttribute("ZebrafishAnalysis.<key>")``
+    calls return the expected string. Other methods/attributes fall
+    back to MagicMock delegation — the refreshers only touch
+    ``GetAttribute``.
+    """
+    attrs = {}
+    if stale:
+        attrs["ZebrafishAnalysis.stale"] = "true"
+    if error:
+        attrs["ZebrafishAnalysis.error"] = str(error)
+    if manual_corrected:
+        attrs["ZebrafishAnalysis.manualCorrected"] = "true"
+    node = MagicMock(name="MockVolumeNode")
+    node.GetAttribute = lambda name: attrs.get(name)
+    return node
+
+
+def _make_row(vol=None, filename="x.tif", **fields):
+    """Build a result dict for ``show_result`` that carries a volume node.
+
+    ``vol`` is wired in via ``_volume_node`` so the production code's
+    ``set_current_volume_node(result.get("_volume_node"))`` call inside
+    ``show_result`` picks it up. Extra ``fields`` overlay into the dict
+    — useful for tests that want a length/mask/error combo even though
+    the badge no longer reads them.
+    """
+    row = {"filename": filename, **fields}
+    row["_volume_node"] = vol
+    return row
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -709,37 +744,38 @@ def test_measurements_text_selectable_by_mouse(stubs):
             )
 
 
-def test_status_badge_default_state_is_not_analyzed(stubs):
-    """#67: a freshly-built DetailTab must show 'Not analyzed' so the
-    user has feedback before the first image is rendered."""
+def test_status_badge_default_state_is_hidden(stubs):
+    """#67 follow-up: a freshly-built DetailTab starts with the badge
+    HIDDEN — there is no row shown yet, so there is no signal to
+    surface. The pre-#67 default was "Not analyzed", but that wording
+    conflated absence-of-data with absence-of-signal and caused the
+    cross-reload inconsistency this refactor was meant to fix.
+    """
     dt, tab = _make_tab(stubs)
-    text = _latest_settext(tab._status_badge)
-    css = _latest_stylesheet(tab._status_badge)
-    assert text == "Not analyzed", (
-        f"Freshly-built DetailTab's status badge must read 'Not analyzed', got {text!r}"
-    )
-    assert css and "font-weight: bold" in css, (
-        "Status badge must be styled bold (font-weight: bold) so it stands out "
-        "from the surrounding sidebar text in Slicer's native theme."
+    visible_calls = tab._status_badge._calls.setVisible.call_args_list
+    assert visible_calls, "Status badge visibility must be set during __init__"
+    last_visible_arg = visible_calls[-1].args[0]
+    assert last_visible_arg is False, (
+        f"Freshly-built DetailTab's status badge must be hidden by default, "
+        f"got setVisible({last_visible_arg!r})"
     )
 
 
 def test_status_badge_priority_stale_beats_everything(stubs):
-    """#67 priority #1: stale wins over error, manual_corrected, analyzed."""
+    """#67 priority #1: stale wins over error and manual_corrected.
+
+    All three signals are present on the volume node (the legacy result
+    dict fields don't drive the badge anymore). The badge must surface
+    "Stale — recompute needed" because stale is the highest-priority
+    signal.
+    """
     dt, tab = _make_tab(stubs)
-    result = {
-        "filename": "x.tif",
-        "length": 100.0, "mask": MagicMock(),
-        "error": "boom",            # would also trigger 'Error'
-        "manual_corrected": True,   # would also trigger 'Manually corrected'
-    }
-    tab.show_result(0, [result])
-    # Now flip the stale flag — it should beat everything else.
-    tab.set_stale(True)
+    vol = _vol_node(stale=True, error="boom", manual_corrected=True)
+    tab.show_result(0, [_make_row(vol)])
     text = _latest_settext(tab._status_badge)
     css = _latest_stylesheet(tab._status_badge)
     assert text == "Stale — recompute needed", (
-        f"Stale must beat all other states per #67 priority #1, got {text!r}"
+        f"Stale must beat all other signals per #67 priority #1, got {text!r}"
     )
     assert css and "font-weight: bold" in css, (
         f"Stale badge must remain bold for visibility, got {css!r}"
@@ -747,70 +783,54 @@ def test_status_badge_priority_stale_beats_everything(stubs):
 
 
 def test_status_badge_priority_error_beats_manual(stubs):
-    """#67 priority #2: error beats manual_corrected + analyzed."""
+    """#67 priority #2: error beats manual_corrected.
+
+    Both signals are present on the volume node; error wins.
+    """
     dt, tab = _make_tab(stubs)
-    result = {
-        "filename": "x.tif",
-        "length": 100.0, "mask": MagicMock(),
-        "error": "timeout",
-        "manual_corrected": True,
-    }
-    tab.show_result(0, [result])
+    vol = _vol_node(error="timeout", manual_corrected=True)
+    tab.show_result(0, [_make_row(vol)])
     text = _latest_settext(tab._status_badge)
     css = _latest_stylesheet(tab._status_badge)
-    assert text == "Error", (
-        f"Error must beat manual_corrected + analyzed per #67 priority #2, got {text!r}"
+    assert text == "Error: timeout", (
+        f"Error must beat manual_corrected per #67 priority #2, got {text!r}"
     )
     assert css and "font-weight: bold" in css, (
         f"Error badge must remain bold for visibility, got {css!r}"
     )
 
 
-def test_status_badge_priority_manual_corrected_beats_analyzed(stubs):
-    """#67 priority #3: manual_corrected beats analyzed."""
+def test_status_badge_priority_manual_corrected_only(stubs):
+    """#67 priority #3: manual_corrected surfaces when no stale/error."""
     dt, tab = _make_tab(stubs)
-    result = {
-        "filename": "x.tif",
-        "length": 100.0, "mask": MagicMock(),
-        "manual_corrected": True,
-    }
-    tab.show_result(0, [result])
+    vol = _vol_node(manual_corrected=True)
+    tab.show_result(0, [_make_row(vol)])
     text = _latest_settext(tab._status_badge)
     css = _latest_stylesheet(tab._status_badge)
     assert text == "Manually corrected", (
-        f"Manual corrected must beat analyzed per #67 priority #3, got {text!r}"
+        f"Manual corrected must surface when no stale/error per #67 priority #3, got {text!r}"
     )
     assert css and "font-weight: bold" in css, (
         f"Manual badge must remain bold for visibility, got {css!r}"
     )
 
 
-def test_status_badge_priority_analyzed_when_length_or_mask_set(stubs):
-    """#67 priority #4: a row with length OR mask is 'Analyzed'."""
+def test_status_badge_hidden_when_no_signal(stubs):
+    """#67 follow-up: a row with no stale / no error / no manual_corrected
+    shows no badge at all. Pre-#67 this would have been "Analyzed" (when
+    length/mask were present) or "Not analyzed" (otherwise); both were
+    dropped because they conflated absence-of-data with absence-of-signal.
+    """
     dt, tab = _make_tab(stubs)
-
-    # Length-only case.
-    tab.show_result(0, [{"filename": "a.tif", "length": 100.0,
-                          "mask": None, "error": None, "manual_corrected": False}])
-    assert _latest_settext(tab._status_badge) == "Analyzed"
-
-    # Mask-only case (length=None but mask present).
-    tab.show_result(0, [{"filename": "b.tif", "length": None,
-                          "mask": MagicMock(), "error": None, "manual_corrected": False}])
-    assert _latest_settext(tab._status_badge) == "Analyzed"
-
-    css = _latest_stylesheet(tab._status_badge)
-    assert css and "font-weight: bold" in css, (
-        f"Analyzed badge must remain bold for visibility, got {css!r}"
+    vol = _vol_node()  # no signals at all
+    tab.show_result(0, [_make_row(vol)])
+    visible_calls = tab._status_badge._calls.setVisible.call_args_list
+    assert visible_calls
+    last_visible_arg = visible_calls[-1].args[0]
+    assert last_visible_arg is False, (
+        f"Badge must be hidden when no MRML signal is set, "
+        f"got setVisible({last_visible_arg!r})"
     )
-
-
-def test_status_badge_priority_not_analyzed_when_nothing_present(stubs):
-    """#67 priority #5: no length, no mask, no error, not corrected → 'Not analyzed'."""
-    dt, tab = _make_tab(stubs)
-    tab.show_result(0, [{"filename": "c.tif", "length": None,
-                          "mask": None, "error": None, "manual_corrected": False}])
-    assert _latest_settext(tab._status_badge) == "Not analyzed"
 
 
 def test_error_banner_hidden_when_no_error(stubs):
@@ -829,17 +849,20 @@ def test_error_banner_hidden_when_no_error(stubs):
 
 
 def test_error_banner_shown_when_error_set(stubs):
-    """#67 acceptance: when a row's error string is non-empty, the
-    banner appears with the error message as its text."""
+    """#67 acceptance: when the volume node's ``ZebrafishAnalysis.error``
+    attribute is non-empty, the banner appears with the error message
+    as its text. Pre-#67 the banner read ``result['error']``; the MRML
+    attribute is the canonical source now (ADR 0001).
+    """
     dt, tab = _make_tab(stubs)
-    tab.show_result(0, [{"filename": "bad.tif", "length": None,
-                          "mask": None, "error": "Inference failed: OOM",
-                          "manual_corrected": False}])
+    vol = _vol_node(error="Inference failed: OOM")
+    tab.show_result(0, [_make_row(vol)])
     visible_calls = tab._error_banner._calls.setVisible.call_args_list
     assert visible_calls
     last_visible_arg = visible_calls[-1].args[0]
     assert last_visible_arg is True, (
-        f"Error banner must be shown when result['error'] is set, got setVisible({last_visible_arg!r})"
+        f"Error banner must be shown when ZebrafishAnalysis.error is set, "
+        f"got setVisible({last_visible_arg!r})"
     )
     text = _latest_settext(tab._error_banner)
     assert text == "Inference failed: OOM", (
@@ -851,9 +874,8 @@ def test_error_banner_clears_when_subsequent_row_has_no_error(stubs):
     """#67 acceptance: navigating from an errored row to a clean one
     must hide the banner again (it isn't a sticky indicator)."""
     dt, tab = _make_tab(stubs)
-    tab.show_result(0, [{"filename": "bad.tif", "error": "boom"}])
-    tab.show_result(0, [{"filename": "ok.tif", "length": 100.0, "mask": MagicMock(),
-                          "error": None, "manual_corrected": False}])
+    tab.show_result(0, [_make_row(_vol_node(error="boom"))])
+    tab.show_result(0, [_make_row(_vol_node())])  # clean row
     visible_calls = tab._error_banner._calls.setVisible.call_args_list
     last_visible_arg = visible_calls[-1].args[0]
     assert last_visible_arg is False, (
@@ -862,49 +884,54 @@ def test_error_banner_clears_when_subsequent_row_has_no_error(stubs):
 
 
 def test_set_stale_default_is_false(stubs):
-    """#67: a freshly-built DetailTab must default to _current_is_stale=False
-    so a tab that has never received a stale notification isn't stale."""
+    """#67 follow-up: a freshly-built DetailTab defaults
+    ``_current_is_stale`` to False so a tab that has never received a
+    stale notification isn't stale. Kept as a legacy-bool attribute for
+    ``set_stale(bool)`` callers that haven't migrated to
+    ``set_current_volume_node`` yet.
+    """
     dt, tab = _make_tab(stubs)
     assert tab._current_is_stale is False, (
         f"Default _current_is_stale must be False, got {tab._current_is_stale!r}"
     )
 
 
-def test_set_stale_true_flips_badge_when_row_visible(stubs):
-    """#67 acceptance: set_stale(True) flips the badge to 'Stale — recompute needed'
-    immediately when a row is currently shown."""
+def test_set_current_volume_node_flips_badge_to_stale(stubs):
+    """#67 canonical path: ``set_current_volume_node(vol)`` with a
+    volume node whose ``ZebrafishAnalysis.stale`` attribute is "true"
+    flips the badge to 'Stale — recompute needed' immediately."""
     dt, tab = _make_tab(stubs)
-    tab.show_result(0, [{"filename": "x.tif", "length": 100.0,
-                          "mask": MagicMock(), "error": None,
-                          "manual_corrected": False}])
-    # Baseline: green Analyzed.
-    assert _latest_settext(tab._status_badge) == "Analyzed"
-    tab.set_stale(True)
+    tab.show_result(0, [_make_row(_vol_node())])  # baseline: hidden
+    visible_calls = tab._status_badge._calls.setVisible.call_args_list
+    assert visible_calls[-1].args[0] is False, (
+        "Badge must be hidden when no MRML signal is set"
+    )
+    # Now point at a stale volume node — badge must flip.
+    tab.set_current_volume_node(_vol_node(stale=True))
     assert _latest_settext(tab._status_badge) == "Stale — recompute needed", (
-        "set_stale(True) must immediately update the badge"
+        "set_current_volume_node(stale_vol) must immediately update the badge"
     )
-    assert tab._current_is_stale is True
 
 
-def test_set_stale_false_clears_stale_state_on_badge(stubs):
-    """#67: set_stale(False) restores the badge to the row's underlying state
-    (Analyzed, Error, etc.) once the segment is no longer stale."""
+def test_set_current_volume_node_clears_stale_state_on_badge(stubs):
+    """#67: pointing at a non-stale volume node after a stale one hides
+    the badge (no signal → hidden, not "Analyzed")."""
     dt, tab = _make_tab(stubs)
-    tab.show_result(0, [{"filename": "x.tif", "length": 100.0,
-                          "mask": MagicMock(), "error": None,
-                          "manual_corrected": False}])
-    tab.set_stale(True)
+    tab.set_current_volume_node(_vol_node(stale=True))
     assert _latest_settext(tab._status_badge) == "Stale — recompute needed"
-    tab.set_stale(False)
-    assert _latest_settext(tab._status_badge) == "Analyzed", (
-        "set_stale(False) must restore the badge to the row's underlying state"
+    tab.set_current_volume_node(_vol_node())
+    visible_calls = tab._status_badge._calls.setVisible.call_args_list
+    assert visible_calls[-1].args[0] is False, (
+        "set_current_volume_node(clean_vol) must hide the badge"
     )
-    assert tab._current_is_stale is False
 
 
 def test_set_stale_coerces_to_bool(stubs):
-    """#67: set_stale accepts truthy/falsy values; storage is bool-coerced
-    so downstream priority logic doesn't have to special-case 'truthy'."""
+    """#67 legacy: ``set_stale`` accepts truthy/falsy values; storage is
+    bool-coerced so downstream priority logic doesn't have to
+    special-case 'truthy'. Only honored when no volume node is set —
+    see ``test_set_stale_ignored_when_volume_node_set`` for the
+    volume-node case."""
     dt, tab = _make_tab(stubs)
     tab.set_stale(1)
     assert tab._current_is_stale is True
@@ -912,34 +939,64 @@ def test_set_stale_coerces_to_bool(stubs):
     assert tab._current_is_stale is False
 
 
+def test_set_stale_ignored_when_volume_node_set(stubs):
+    """#67 follow-up: when a volume node has been set, ``set_stale`` is
+    a no-op for the badge (the bool can't shadow MRML — the badge
+    re-derives from the volume node's ``ZebrafishAnalysis.stale``
+    attribute). This is the architectural guard that prevents the
+    pre-#67 cross-reload inconsistency.
+    """
+    dt, tab = _make_tab(stubs)
+    tab.set_current_volume_node(_vol_node())  # clean row, badge hidden
+    visible_calls = tab._status_badge._calls.setVisible.call_args_list
+    assert visible_calls[-1].args[0] is False, (
+        "Badge must be hidden when MRML volume node has no signal"
+    )
+    tab.set_stale(True)
+    # bool is ignored — badge stays hidden because MRML says not stale.
+    visible_calls = tab._status_badge._calls.setVisible.call_args_list
+    assert visible_calls[-1].args[0] is False, (
+        "set_stale(True) must NOT shadow MRML once a volume node is set; "
+        "the badge must keep reading from MRML only"
+    )
+
+
 def test_set_stale_is_noop_before_any_row_shown(stubs):
-    """#67: set_stale must not crash when called before show_result — there's
-    no current row to refresh yet."""
+    """#67 legacy: ``set_stale`` must not crash when called before
+    ``show_result`` — there's no current row to refresh yet. The badge
+    stays in its default hidden state."""
     dt, tab = _make_tab(stubs)
     # No show_result call yet.
     tab.set_stale(True)
     assert tab._current_is_stale is True
-    # The badge should not have been touched (no current result to update).
-    # Its text should still be the default "Not analyzed" from __init__.
-    assert _latest_settext(tab._status_badge) == "Not analyzed", (
-        "set_stale before show_result must not refresh the badge with junk"
+    visible_calls = tab._status_badge._calls.setVisible.call_args_list
+    # set_stale refreshed the badge via the legacy fallback path — the
+    # last visible-state value must be True (badge now showing "Stale").
+    assert visible_calls[-1].args[0] is True, (
+        "set_stale before show_result must still drive the badge via the "
+        "legacy fallback path so a bare DetailTab without a volume node "
+        "can be tested"
     )
 
 
 def test_reset_clears_stale_state_and_resets_badge(stubs):
-    """#67: DetailTab.reset() must restore the default non-stale state so a
-    fresh dataset doesn't inherit the previous row's staleness."""
+    """#67: ``DetailTab.reset()`` must restore the default non-stale
+    state so a fresh dataset doesn't inherit the previous row's
+    staleness. Volume node is cleared, badge is hidden."""
     dt, tab = _make_tab(stubs)
-    tab.show_result(0, [{"filename": "x.tif", "length": 100.0,
-                          "mask": MagicMock(), "error": None,
-                          "manual_corrected": False}])
-    tab.set_stale(True)
-    assert tab._current_is_stale is True
+    tab.show_result(0, [_make_row(_vol_node(stale=True))])
+    assert _latest_settext(tab._status_badge) == "Stale — recompute needed"
     tab.reset()
+    assert tab._current_volume_node is None, (
+        "reset() must clear the volume node reference"
+    )
     assert tab._current_is_stale is False, (
         "reset() must restore _current_is_stale to its default False"
     )
-    assert _latest_settext(tab._status_badge) == "Not analyzed"
+    visible_calls = tab._status_badge._calls.setVisible.call_args_list
+    assert visible_calls[-1].args[0] is False, (
+        "reset() must hide the status badge (no MRML signal after reset)"
+    )
     visible_calls = tab._error_banner._calls.setVisible.call_args_list
     assert visible_calls[-1].args[0] is False, (
         "reset() must hide the error banner"
@@ -1206,18 +1263,27 @@ def test_reset_hides_recompute_button(stubs):
 
 
 def test_recompute_button_click_handler_does_not_import_mrml(stubs):
-    """#68 architectural guard: DetailTab must never import MRML
-    (mrml.is_volume_node_stale lives on the widget's logic side).
-    Verify the production source has no ``from ZebrafishEmbryoAnalyzerLib
-    .mrml import`` at module level — the stale flag arrives via set_stale.
+    """#68 / #67 architectural guard: DetailTab must never import MRML
+    at module load time. Pre-#67 the module-level guard was needed
+    because the stale flag was passed in via ``set_stale(bool)`` from
+    the widget; post-#67 the badge/error banner/recompute button derive
+    directly from the volume node's MRML attributes (ADR 0001 — see
+    ``set_current_volume_node``), so the import now happens lazily
+    inside the refresh methods to keep the module loadable without
+    Slicer (the import itself goes via the production ``mrml`` module
+    and is exercised by the refreshers, not the top-level scope).
+
+    Verify the production source has no module-level ``from
+    ZebrafishEmbryoAnalyzerLib.mrml import``.
     """
     import re
     source = DETAIL_PATH.read_text(encoding="utf-8")
-    bad = re.search(r"^\s*from\s+ZebrafishEmbryoAnalyzerLib\.mrml\b",
+    bad = re.search(r"^from\s+ZebrafishEmbryoAnalyzerLib\.mrml\b",
                     source, flags=re.MULTILINE)
     assert not bad, (
-        "DetailTab must not import from ZebrafishEmbryoAnalyzerLib.mrml — "
-        "stale state arrives via set_stale() instead"
+        "DetailTab must not import from ZebrafishEmbryoAnalyzerLib.mrml "
+        "at module level — MRML helpers are imported lazily inside the "
+        "refresh methods so the module loads without a Slicer scene."
     )
 
 
@@ -1616,20 +1682,21 @@ def test_show_raw_image_preserves_current_filename(stubs):
 
 def test_show_raw_image_preserves_status_badge(stubs):
     """#69: the status badge must keep showing the current row's state
-    after a scalebar preview."""
+    after a scalebar preview. Uses a stale volume node so the badge
+    has something concrete to assert on (post-#67 the badge is hidden
+    when no signal is set — pre-#67 it would have shown "Analyzed" but
+    that wording was dropped in #67)."""
     import numpy as np
     dt, tab = _make_tab(stubs)
-    tab.show_result(0, [{"filename": "x.tif", "length": 100.0,
-                          "mask": MagicMock(), "error": None,
-                          "manual_corrected": False}])
-    # Baseline: badge reads "Analyzed".
+    tab.show_result(0, [_make_row(_vol_node(stale=True))])
+    # Baseline: badge reads "Stale — recompute needed".
     text_before = _latest_settext(tab._status_badge)
-    assert text_before == "Analyzed"
+    assert text_before == "Stale — recompute needed"
     tab.show_raw_image(np.zeros((4, 4, 3), dtype=np.uint8))
     text_after = _latest_settext(tab._status_badge)
-    assert text_after == "Analyzed", (
-        f"Status badge must remain 'Analyzed' after show_raw_image, "
-        f"got {text_after!r}"
+    assert text_after == "Stale — recompute needed", (
+        f"Status badge must remain 'Stale — recompute needed' after "
+        f"show_raw_image, got {text_after!r}"
     )
 
 
