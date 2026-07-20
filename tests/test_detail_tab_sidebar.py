@@ -718,8 +718,9 @@ def test_status_badge_default_state_is_not_analyzed(stubs):
     assert text == "Not analyzed", (
         f"Freshly-built DetailTab's status badge must read 'Not analyzed', got {text!r}"
     )
-    assert css and "background:" in css, (
-        "Status badge must apply a background colour (CSS background: ...)"
+    assert css and "font-weight: bold" in css, (
+        "Status badge must be styled bold (font-weight: bold) so it stands out "
+        "from the surrounding sidebar text in Slicer's native theme."
     )
 
 
@@ -740,8 +741,8 @@ def test_status_badge_priority_stale_beats_everything(stubs):
     assert text == "Stale — recompute needed", (
         f"Stale must beat all other states per #67 priority #1, got {text!r}"
     )
-    assert css and "255, 152, 0" in css, (
-        f"Stale badge colour must be amber (255, 152, 0), got {css!r}"
+    assert css and "font-weight: bold" in css, (
+        f"Stale badge must remain bold for visibility, got {css!r}"
     )
 
 
@@ -760,8 +761,8 @@ def test_status_badge_priority_error_beats_manual(stubs):
     assert text == "Error", (
         f"Error must beat manual_corrected + analyzed per #67 priority #2, got {text!r}"
     )
-    assert css and "244, 67, 54" in css, (
-        f"Error badge colour must be red (244, 67, 54), got {css!r}"
+    assert css and "font-weight: bold" in css, (
+        f"Error badge must remain bold for visibility, got {css!r}"
     )
 
 
@@ -779,8 +780,8 @@ def test_status_badge_priority_manual_corrected_beats_analyzed(stubs):
     assert text == "Manually corrected", (
         f"Manual corrected must beat analyzed per #67 priority #3, got {text!r}"
     )
-    assert css and "33, 150, 243" in css, (
-        f"Manual badge colour must be blue (33, 150, 243), got {css!r}"
+    assert css and "font-weight: bold" in css, (
+        f"Manual badge must remain bold for visibility, got {css!r}"
     )
 
 
@@ -799,8 +800,8 @@ def test_status_badge_priority_analyzed_when_length_or_mask_set(stubs):
     assert _latest_settext(tab._status_badge) == "Analyzed"
 
     css = _latest_stylesheet(tab._status_badge)
-    assert css and "76, 175, 80" in css, (
-        f"Analyzed badge colour must be green (76, 175, 80), got {css!r}"
+    assert css and "font-weight: bold" in css, (
+        f"Analyzed badge must remain bold for visibility, got {css!r}"
     )
 
 

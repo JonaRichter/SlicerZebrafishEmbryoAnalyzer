@@ -56,6 +56,8 @@ PARAM_DEFAULTS = {
 
 
 class ZebrafishEmbryoAnalyzerMainWidget:
+    _OUTER_SPLITTER_SETTINGS_KEY = "ZebrafishEmbryoAnalyzer/outerSplitterState"
+
     def __init__(self, parent_layout, logic):
         self._logic = logic
 
@@ -208,15 +210,32 @@ class ZebrafishEmbryoAnalyzerMainWidget:
     def _build_ui(self, layout):
         layout.setAlignment(qt.Qt.Alignment())  # clear AlignTop set by Slicer base class
 
-        splitter = qt.QSplitter(qt.Qt.Horizontal)
-        splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(4)
-        splitter.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Expanding)
-        layout.addWidget(splitter, 1)  # stretch=1 → fills all available vertical space
+        # Persist the outer (left/right) splitter width across Slicer
+        # restarts — mirrors the right sidebar splitter pattern from
+        # detail_tab.py::_restore_splitter_state. Key follows the
+        # same ZebrafishEmbryoAnalyzer/* convention.
+        self._outer_splitter = qt.QSplitter(qt.Qt.Horizontal)
+        self._outer_splitter.setChildrenCollapsible(False)
+        self._outer_splitter.setHandleWidth(4)
+        self._outer_splitter.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Expanding)
+        layout.addWidget(self._outer_splitter, 1)  # stretch=1 → fills all available vertical space
 
-        self._build_left_panel(splitter)
-        self._build_right_panel(splitter)
-        splitter.setStretchFactor(1, 1)
+        self._build_left_panel(self._outer_splitter)
+        self._build_right_panel(self._outer_splitter)
+        self._outer_splitter.setStretchFactor(1, 1)
+
+        # Persist every drag live (also wired to cleanup() as a belt-and-
+        # braces fallback) and restore any previously-saved width so the
+        # user's chosen left/right split survives a restart or module
+        # reload. Splitter state is a QByteArray that round-trips through
+        # QSettings without conversion.
+        try:
+            self._outer_splitter.splitterMoved.connect(
+                lambda *_: self._save_outer_splitter_state()
+            )
+        except Exception:
+            logging.exception("ZebrafishEmbryoAnalyzer: failed to wire outer splitterMoved")
+        self._restore_outer_splitter_state()
 
         # progress bar removed — run button serves as progress indicator
 
@@ -1856,6 +1875,14 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             self._active_runner = None
         self._results = []
         self._detail.cleanup()  # invalidates cache
+        # Flush the outer splitter's last drag to QSettings so a clean
+        # Slicer exit doesn't lose the user's chosen left/right split
+        # even if the splitterMoved signal never fired after the last
+        # drag (e.g. user dragged, then closed Slicer immediately).
+        try:
+            self._save_outer_splitter_state()
+        except Exception:
+            pass
 
     def _on_results_ready(self):
         self._detail.invalidate_cache()
@@ -1997,6 +2024,49 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         except Exception:
             logging.exception("ZebrafishEmbryoAnalyzer: exception in _on_results_ready")
             raise
+
+    # ------------------------------------------------------------------
+    # Outer-splitter width persistence (left Gallery / right Tabs).
+    # ------------------------------------------------------------------
+
+    def _save_outer_splitter_state(self):
+        """Persist the current outer-splitter sizes to QSettings.
+
+        Wired to ``splitterMoved`` so a SIGKILL of Slicer doesn't lose the
+        user's most recent drag, and also called from ``cleanup`` as a
+        belt-and-braces fallback for the same reason as
+        ``DetailTab.save_splitter_state``.
+        """
+        if not getattr(self, "_outer_splitter", None):
+            return
+        try:
+            settings = qt.QSettings()
+            settings.setValue(
+                self._OUTER_SPLITTER_SETTINGS_KEY, self._outer_splitter.saveState()
+            )
+        except Exception:
+            pass
+
+    def _restore_outer_splitter_state(self):
+        """Restore the outer-splitter's saved width from QSettings, if any.
+
+        Silently no-ops when no saved state exists yet (first run) or when
+        the stored value isn't a usable QByteArray (corrupted storage from
+        an older build) — the splitter falls back to its sizeHint() layout
+        in that case. Mirrors ``DetailTab._restore_splitter_state``.
+        """
+        try:
+            settings = qt.QSettings()
+            state = settings.value(self._OUTER_SPLITTER_SETTINGS_KEY)
+        except Exception:
+            return
+        if not state:
+            return
+        try:
+            self._outer_splitter.restoreState(state)
+        except Exception:
+            # Stale or invalid bytes — leave the splitter on its default sizeHint layout.
+            pass
 
     def _resolve_export_start_dir(self):
         settings = qt.QSettings()

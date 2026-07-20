@@ -35,6 +35,49 @@ def _build_rgb_array(result: dict, include_overlay: bool = True) -> np.ndarray:
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
+class _ElidedLabel(qt.QLabel):
+    """Single-line QLabel that elides with '…' at the right edge.
+
+    QLabel has no built-in single-line + auto-elide mode (the Qt.ElideRight
+    flag only exists for QLineEdit/QListView/QPainter), so we keep the
+    full text and re-render the elided form whenever the widget resizes
+    (e.g. user drags the sidebar splitter wider/narrower) or the text is
+    replaced via setText().
+    """
+    def __init__(self, text=""):
+        qt.QLabel.__init__(self, text)
+        self.setWordWrap(False)
+        self._full_text = text
+
+    def setText(self, text):
+        self._full_text = str(text) if text is not None else ""
+        try:
+            self._apply_elision()
+        except Exception:
+            # Unit-test stubs (tests/test_detail_tab_sidebar.py::_QLabel)
+            # only mock a small subset of QLabel's surface — they don't
+            # implement font() / width(), so QFontMetrics.elidedText would
+            # raise. Fall back to the raw text so the test path still
+            # receives the full filename it wants to inspect.
+            qt.QLabel.setText(self, self._full_text)
+
+    def _apply_elision(self):
+        fm = qt.QFontMetrics(self.font())
+        # width() can be 0 before the widget is shown — guard so Qt doesn't
+        # elide to empty for an unparented / not-yet-laid-out label.
+        w = max(self.width(), 1)
+        qt.QLabel.setText(
+            self, fm.elidedText(self._full_text, qt.Qt.ElideRight, w)
+        )
+
+    def resizeEvent(self, event):
+        qt.QLabel.resizeEvent(self, event)
+        try:
+            self._apply_elision()
+        except Exception:
+            pass
+
+
 class DetailTab(qt.QWidget):
     _SPLITTER_SETTINGS_KEY = "ZebrafishEmbryoAnalyzer/detailSplitterState"
     _OVERLAY_SETTINGS_KEY = "ZebrafishEmbryoAnalyzer/detailOverlayVisible"
@@ -74,7 +117,6 @@ class DetailTab(qt.QWidget):
         self._btn_revert_auto.setVisible(False)
         self._manual_status = qt.QLabel("")
         self._manual_status.setAlignment(qt.Qt.AlignCenter)
-        self._manual_status.setStyleSheet("font-size: 11px; color: #aaa; padding: 2px;")
         self._manual_status.setVisible(False)
 
         self._btn_manual_adjust.clicked.connect(self._on_manual_adjust_clicked)
@@ -89,7 +131,6 @@ class DetailTab(qt.QWidget):
         for btn in (self._btn_prev, self._btn_next):
             btn.setFixedWidth(48)
             btn.setFixedHeight(32)
-            btn.setStyleSheet("font-size: 16px;")
 
         self._btn_prev.clicked.connect(lambda: self._on_navigate and self._on_navigate(-1))
         self._btn_next.clicked.connect(lambda: self._on_navigate and self._on_navigate(1))
@@ -121,10 +162,7 @@ class DetailTab(qt.QWidget):
         # sidebar reads as three labelled regions (Status / Metrics /
         # Actions / Nav) rather than an undifferentiated stack.
         self._actions_heading = qt.QLabel("Actions")
-        self._actions_heading.setStyleSheet(
-            "font-size: 11px; font-weight: bold; color: #888;"
-            " padding-top: 4px;"
-        )
+        self._actions_heading.setStyleSheet("font-weight: bold;")
 
         # Default state — widget.py will overwrite via set_stale() right
         # after show_result() for each navigation. Tests that construct a
@@ -133,13 +171,14 @@ class DetailTab(qt.QWidget):
 
         # Issue #67: filename label + status badge live at the top of the
         # sidebar so the user always sees the current row's identity + state.
-        self._filename_label = qt.QLabel("")
-        self._filename_label.setWordWrap(True)
-        self._filename_label.setStyleSheet("font-weight: bold; font-size: 12px; padding: 2px;")
+        # _ElidedLabel keeps the filename on one line and clips with '…' at
+        # the right edge when the sidebar is narrower than the name — QLabel
+        # itself has no single-line + auto-elide mode.
+        self._filename_label = _ElidedLabel("")
+        self._filename_label.setStyleSheet("font-weight: bold;")
 
         self._status_badge = qt.QLabel("")
         self._status_badge.setAlignment(qt.Qt.AlignCenter)
-        self._status_badge.setMaximumHeight(24)
         # Initial badge state — "Not analyzed" so the user has feedback
         # before any image is selected. show_result() will overwrite via
         # _update_status_badge() once a row is shown.
@@ -157,29 +196,26 @@ class DetailTab(qt.QWidget):
         self._chk_overlay.blockSignals(False)
         self._chk_overlay.toggled.connect(self._on_overlay_toggled)
 
-        # Translucent error banner shown only when the current row has an error
-        # (or is stale — STALE_ERROR_MESSAGE rides the same channel, see
-        # mrml.py:440). Translucent so it reads correctly in both light and
-        # dark Slicer themes.
+        # Error banner shown only when the current row has an error (or is
+        # stale — STALE_ERROR_MESSAGE rides the same channel, see mrml.py:440).
+        # Bold text in the theme's default colour — no hard-coded background,
+        # so it reads correctly in both light and dark Slicer themes.
         self._error_banner = qt.QLabel("")
         self._error_banner.setWordWrap(True)
         self._error_banner.setVisible(False)
-        self._error_banner.setStyleSheet(
-            "font-size: 11px; padding: 6px; border-radius: 3px;"
-            " background: rgba(244, 67, 54, 180); color: white;"
-        )
+        self._error_banner.setStyleSheet("font-weight: bold;")
 
         # Issue #67: 5-row Measurements grid with `—` placeholders so the
         # sidebar height stays constant across images — never hide a row.
         # Tracked as a list of (field, value) pairs in display order to make
-        # populating them in show_result() a simple loop.
+        # populating them in show_result() a simple loop. No per-label
+        # setStyleSheet — labels take the theme's default muted colour
+        # automatically (Qt's QPalette.Mid/PlaceholderText role).
         self._measurements = []
         for _label_text in ("Length", "Curvature class", "Length/straight ratio",
                             "Eye area", "Eye diameter"):
             label = qt.QLabel(f"{_label_text}:")
-            label.setStyleSheet("font-size: 11px; color: #888;")
             value = qt.QLabel("—")
-            value.setStyleSheet("font-size: 12px;")
             value.setTextInteractionFlags(qt.Qt.TextSelectableByMouse)
             self._measurements.append((label, value))
 
@@ -590,27 +626,21 @@ class DetailTab(qt.QWidget):
         is_stale = getattr(self, "_current_is_stale", False)
         if is_stale:
             text = "Stale — recompute needed"
-            colour = "rgba(255, 152, 0, 200)"  # amber, translucent
         elif result.get("error"):
             text = "Error"
-            colour = "rgba(244, 67, 54, 200)"  # red, translucent
         elif result.get("manual_corrected"):
             text = "Manually corrected"
-            colour = "rgba(33, 150, 243, 200)"  # blue, translucent
         elif (result.get("length") is not None
               or result.get("mask") is not None):
             text = "Analyzed"
-            colour = "rgba(76, 175, 80, 200)"  # green, translucent
         else:
             text = "Not analyzed"
-            colour = "rgba(127, 127, 127, 180)"  # grey, translucent
 
-        # Translucent pill — keep the existing CSS structure; only swap colours.
+        # Bold text in the theme's default colour — no coloured pill
+        # background so the badge reads as part of Slicer's native UI
+        # rather than a custom widget bolted on top of it.
         if hasattr(self, "_status_badge"):
-            self._status_badge.setStyleSheet(
-                f"font-size: 11px; padding: 3px 6px; border-radius: 8px;"
-                f" background: {colour}; color: white;"
-            )
+            self._status_badge.setStyleSheet("font-weight: bold;")
             self._status_badge.setText(text)
 
     def _update_error_banner(self, result: dict) -> None:
