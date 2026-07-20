@@ -428,9 +428,12 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
         from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
         return analyse_images(normalized_paths, normalized_params, progress_callback)
 
-    def detect_scalebar(self, image_path, label_um=None):
+    def detect_scalebar(self, image_path, label_um=None, img_rgb=None):
+        # Issue #57: forward img_rgb so callers can supply an already-decoded
+        # RGB ndarray (reconstructed from the MRML volume after a scene
+        # reload) instead of forcing a re-read from a possibly-stale path.
         from ZebrafishEmbryoAnalyzerLib.logic import detect_scalebar
-        return detect_scalebar(image_path, label_um=label_um)
+        return detect_scalebar(image_path, label_um=label_um, img_rgb=img_rgb)
 
     def preload_models(self, params):
         from ZebrafishEmbryoAnalyzerLib.logic import preload_models

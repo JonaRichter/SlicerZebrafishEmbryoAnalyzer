@@ -821,7 +821,11 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         if not self._image_paths:
             self._scale_status.setText("Load images first.")
             return
-        result = self._logic.detect_scalebar(self._image_paths[0])
+        # Issue #57: pass the in-memory RGB array when available so detection
+        # still works after a scene reload where self._image_paths[0] is a
+        # bare filename without a backing file on disk.
+        original = self._results[0].get("original") if self._results else None
+        result = self._logic.detect_scalebar(self._image_paths[0], img_rgb=original)
         if result.get("bar_found"):
             um_per_px = result.get("scale_um_per_px")
             bar_px = result.get("bar_length_px")
@@ -860,7 +864,10 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         except ValueError:
             self._scale_status.setText("Invalid value — enter a number.")
             return
-        result = self._logic.detect_scalebar(self._image_paths[0], label_um=label_um)
+        # Issue #57: pass the in-memory RGB array (see _on_detect_scale for
+        # rationale — works identically on fresh load and scene reload).
+        original = self._results[0].get("original") if self._results else None
+        result = self._logic.detect_scalebar(self._image_paths[0], label_um=label_um, img_rgb=original)
         if result.get("success"):
             self._um_per_px.value = result["scale_um_per_px"]
             self._scale_status.setText(

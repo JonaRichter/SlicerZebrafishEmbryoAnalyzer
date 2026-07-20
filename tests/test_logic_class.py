@@ -133,6 +133,60 @@ def test_logic_detect_scalebar_delegates_to_lib():
     assert "OK" in r.stdout
 
 
+def test_logic_detect_scalebar_forwards_img_rgb_kwarg():
+    """Regression test for issue #57: the wrapper must accept img_rgb so
+    scene-reload callers can hand in the already-decoded RGB array instead
+    of forcing a re-read from a bare filename (issue #57).
+
+    Verifies three things at the wrapper boundary:
+      1. signature exposes img_rgb (default None)
+      2. the value is forwarded to ZebrafishEmbryoAnalyzerLib.logic.detect_scalebar
+      3. label_um and img_rgb compose correctly when passed together
+    """
+    r = _run("""
+        import inspect
+        from unittest.mock import patch
+        import numpy as np
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+
+        logic = ZebrafishEmbryoAnalyzerLogic()
+
+        sig = inspect.signature(logic.detect_scalebar)
+        assert "img_rgb" in sig.parameters, (
+            "wrapper must accept img_rgb kwarg for issue #57; signature was %s" % sig
+        )
+        assert sig.parameters["img_rgb"].default is None, (
+            "img_rgb must default to None so non-reload callers preserve the disk-read path; "
+            "signature was %s" % sig
+        )
+
+        img = np.zeros((64, 64, 3), dtype=np.uint8)
+        sentinel = {"bar_found": True, "scale_um_per_px": 22.99}
+
+        captured = {}
+        def fake_lib_detect(image_path, label_um=None, img_rgb=None):
+            captured["image_path"] = image_path
+            captured["label_um"] = label_um
+            captured["img_rgb"] = img_rgb
+            return sentinel
+
+        with patch("ZebrafishEmbryoAnalyzerLib.logic.detect_scalebar",
+                   side_effect=fake_lib_detect) as lib_mock:
+            result = logic.detect_scalebar("/nonexistent.png", label_um=500.0, img_rgb=img)
+
+        assert lib_mock.called
+        assert captured["image_path"] == "/nonexistent.png"
+        assert captured["label_um"] == 500.0
+        assert captured["img_rgb"] is img, (
+            "wrapper must forward img_rgb by identity (no copy / re-encode)"
+        )
+        assert result["scale_um_per_px"] == 22.99
+        print("OK")
+    """)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout
+
+
 def test_logic_preload_models_delegates_to_lib():
     """logic.preload_models must delegate to ZebrafishEmbryoAnalyzerLib.logic.preload_models."""
     r = _run("""
