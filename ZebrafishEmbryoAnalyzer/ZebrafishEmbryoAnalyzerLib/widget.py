@@ -1705,6 +1705,17 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         ``"dismiss"``. ``"dismiss"`` is treated like ``"no"`` but
         stops the prompt loop (lets a user "ask no to all" by closing
         one prompt with the close button).
+
+        Issue #56 follow-up: this prompt is now safe to answer "Yes" to
+        unconditionally. ``_recompute_for_volume_node`` →
+        ``apply_analysis_to_volume_node`` → ``_create_segmentation_for_volume``
+        reuses an existing segmentation node when one resolves for the
+        volume (the typical case after a Segment Editor edit), so the
+        recompute refreshes Body/Eye in place without stacking a
+        duplicate node. Volumes whose segmentation the user deleted in
+        the Data module are filtered out earlier in the loop via
+        ``Logic.volume_node_references_existing_seg`` and never reach
+        this prompt.
         """
         try:
             import qt
