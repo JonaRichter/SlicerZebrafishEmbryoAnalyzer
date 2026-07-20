@@ -472,12 +472,58 @@ def test_scene_end_import_invokes_rebuild_from_scene():
     # registration. We check both that the handler exists and that it
     # mentions rebuild_from_scene.
     assert "_on_scene_end_import" in src
-    # Find the handler definition and inspect the next ~30 lines.
+    # Find the handler definition and inspect the next ~40 lines.
+    # Issue #56 follow-up: the handler now scrubs stale flags BEFORE
+    # ``rebuild_from_scene`` (was: after), so the rebuild call may sit
+    # further into the body — keep the window generous.
     handler_idx = src.find("def _on_scene_end_import")
     assert handler_idx >= 0
-    snippet = src[handler_idx:handler_idx + 800]
+    snippet = src[handler_idx:handler_idx + 1500]
     assert "rebuild_from_scene" in snippet, (
         "_on_scene_end_import must call rebuild_from_scene"
+    )
+
+
+def test_scene_end_import_scrubs_stale_before_rebuild_from_scene():
+    """Issue #56 follow-up: ``_on_scene_end_import`` MUST clear the
+    stale flag / ``ZebrafishAnalysis.error`` attribute on every tracked
+    volume BEFORE ``rebuild_from_scene`` reads them.
+
+    Otherwise ``volume_node_to_result_dict`` sees the persisted
+    ``"Segmentation modified — recompute needed"`` string and the
+    post-rebuild QMessageBox fires one warning per row, plus
+    ``prompt_recompute_stale_images`` opens one popup per fish — the
+    very behaviour we are trying to suppress.
+
+    Source-level scan (same rationale as the test above).
+    """
+    src = open(
+        os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "ZebrafishEmbryoAnalyzer", "ZebrafishEmbryoAnalyzer.py",
+        )
+    ).read()
+    handler_idx = src.find("def _on_scene_end_import")
+    assert handler_idx >= 0
+    # Bound the inspection to the handler body: stop at the next method
+    # definition so the scan can't reach into the following method
+    # (``_clear_stale_flags_on_tracked_volumes``).
+    next_def_idx = src.find("\n    def ", handler_idx + 1)
+    body = src[handler_idx:next_def_idx if next_def_idx != -1 else len(src)]
+    # Match the actual call expressions, not bare names — the handler's
+    # explanatory comment mentions ``rebuild_from_scene`` several lines
+    # above the scrub call, so a bare-name scan would order them wrong.
+    scrub_idx = body.find("self._clear_stale_flags_on_tracked_volumes()")
+    rebuild_idx = body.find("self._main.rebuild_from_scene()")
+    assert scrub_idx >= 0, (
+        "_on_scene_end_import must call _clear_stale_flags_on_tracked_volumes()"
+    )
+    assert rebuild_idx >= 0, (
+        "_on_scene_end_import must call self._main.rebuild_from_scene()"
+    )
+    assert scrub_idx < rebuild_idx, (
+        "stale-flag scrub must run BEFORE rebuild_from_scene so the "
+        "rebuild reads a clean attribute set (issue #56 follow-up)"
     )
 
 

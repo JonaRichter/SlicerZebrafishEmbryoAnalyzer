@@ -433,25 +433,21 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
         # full-state reconstruction for scene reload. Runs only when the
         # new scene actually carries tracked volume nodes (i.e. a save of
         # our own scene); a fresh empty scene is a no-op.
-        if self._main is not None:
-            try:
-                self._main.rebuild_from_scene()
-            except Exception:
-                # Reload must never crash the module — log and continue.
-                logging.exception("ZebrafishEmbryoAnalyzer: scene-reload rebuild failed")
-        # Issue #56 follow-up: clear any stale flag / error side-effect
-        # that Slicer's own scene-deserialization pipeline may have set on
-        # the tracked volumes during import. The freshly-loaded seg
+        # Issue #56 follow-up: clear any stale flag / stale-error string
+        # that the previous session persisted on the tracked volume
+        # nodes. Slicer serialises per-node attributes with the scene,
+        # so a row the user once edited and never recomputed comes back
+        # with ``ZebrafishAnalysis.stale = "true"`` and the matching
+        # ``ZebrafishAnalysis.error`` attribute. The freshly-loaded seg
         # nodes have the same content the user saved — nothing has
         # actually been edited since the save, so a stale=true here is
-        # purely an artifact of Slicer firing ModifiedEvent on the seg
-        # node for display / representation-conversion reasons that have
-        # nothing to do with the user. Clearing here means
-        # ``volume_node_to_result_dict_with_validation`` does not surface
-        # a spurious "Segmentation modified — recompute needed" error
-        # row on reload, and ``prompt_recompute_stale_images`` does not
-        # queue a popup storm. Real Segment Editor edits after the
-        # reload still bump MTime and re-mark stale — the observer
+        # an artifact of the previous session, not a real new edit.
+        # Scrub BEFORE ``rebuild_from_scene`` runs, so the rebuild reads
+        # a clean attribute set and the post-rebuild "Some images could
+        # not be fully restored from the scene" QMessageBox stays
+        # silent; also keeps ``prompt_recompute_stale_images`` from
+        # queuing one popup per fish. Real Segment Editor edits after
+        # the reload still bump MTime and re-mark stale — the observer
         # installed below picks them up.
         try:
             self._clear_stale_flags_on_tracked_volumes()
@@ -459,6 +455,12 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
             logging.exception(
                 "ZebrafishEmbryoAnalyzer: stale-flag scrub after scene import failed"
             )
+        if self._main is not None:
+            try:
+                self._main.rebuild_from_scene()
+            except Exception:
+                # Reload must never crash the module — log and continue.
+                logging.exception("ZebrafishEmbryoAnalyzer: scene-reload rebuild failed")
         # Re-arm segmentation observers on the freshly imported scene.
         self.setup_segmentation_staleness_observers()
 
