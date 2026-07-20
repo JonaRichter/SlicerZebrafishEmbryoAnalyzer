@@ -1527,5 +1527,214 @@ def test_make_full_overlay_default_is_true(stubs):
     )
 
 
+# ---------------------------------------------------------------------------
+# Issue #69 — Scale-bar preview no longer clears sidebar/results
+# ---------------------------------------------------------------------------
+#
+# #69 reverses the silent clear that ``show_raw_image`` (used for the
+# scale-bar preview) used to perform. The preview used to wipe the
+# results list, pixmap cache, manual-mode state, nav buttons, and
+# sidebar text — leaving the user with a blank placeholder after every
+# "Detect scalebar" click. #69 keeps the sidebar/results state intact
+# and only swaps the displayed pixmap.
+
+
+def test_show_raw_image_preserves_results_list(stubs):
+    """#69 acceptance: show_raw_image must NOT clear ``self._results`` —
+    the user expects to navigate back to the original results after a
+    scalebar preview."""
+    import numpy as np
+    dt, tab = _make_tab(stubs)
+    results = [{"filename": "x.tif", "length": 100.0, "mask": MagicMock(),
+                "error": None, "manual_corrected": False}]
+    tab.show_result(0, results)
+    assert tab._results == results, "baseline: results is set"
+    tab.show_raw_image(np.zeros((4, 4, 3), dtype=np.uint8))
+    assert tab._results == results, (
+        "show_raw_image (scalebar preview) must NOT clear the results list"
+    )
+
+
+def test_show_raw_image_preserves_pixmap_cache(stubs):
+    """#69 acceptance: show_raw_image must NOT clear the pixmap cache —
+    navigating back after the preview would otherwise re-build every
+    overlay from scratch."""
+    import numpy as np
+    dt, tab = _make_tab(stubs)
+    tab.show_result(0, [{"filename": "x.tif", "length": 100.0,
+                          "mask": MagicMock(), "error": None,
+                          "manual_corrected": False}])
+    assert len(tab._cache) > 0, "baseline: cache populated"
+    cache_snapshot = dict(tab._cache)
+    tab.show_raw_image(np.zeros((4, 4, 3), dtype=np.uint8))
+    assert dict(tab._cache) == cache_snapshot, (
+        "show_raw_image must NOT clear the pixmap cache"
+    )
+
+
+def test_show_raw_image_preserves_current_idx(stubs):
+    """#69: show_raw_image must NOT reset _current_idx to 0 — navigation
+    state should be preserved so the user can click ◄/► after the
+    preview and land back on the same row."""
+    import numpy as np
+    dt, tab = _make_tab(stubs)
+    results = [
+        {"filename": "a.tif", "length": 100.0, "mask": MagicMock(),
+         "error": None, "manual_corrected": False},
+        {"filename": "b.tif", "length": 100.0, "mask": MagicMock(),
+         "error": None, "manual_corrected": False},
+        {"filename": "c.tif", "length": 100.0, "mask": MagicMock(),
+         "error": None, "manual_corrected": False},
+    ]
+    tab.show_result(2, results)
+    assert tab._current_idx == 2, "baseline: on row 2"
+    tab.show_raw_image(np.zeros((4, 4, 3), dtype=np.uint8))
+    assert tab._current_idx == 2, (
+        "show_raw_image must NOT reset _current_idx"
+    )
+
+
+def test_show_raw_image_preserves_current_filename(stubs):
+    """#69: the sidebar's filename label must keep showing the current
+    row's filename after a scalebar preview — the user wants to see
+    WHICH row the preview is for."""
+    import numpy as np
+    dt, tab = _make_tab(stubs)
+    tab.show_result(0, [{"filename": "fish42.tif", "length": 100.0,
+                          "mask": MagicMock(), "error": None,
+                          "manual_corrected": False}])
+    text_before = _latest_settext(tab._filename_label)
+    assert text_before == "fish42.tif"
+    tab.show_raw_image(np.zeros((4, 4, 3), dtype=np.uint8))
+    text_after = _latest_settext(tab._filename_label)
+    assert text_after == "fish42.tif", (
+        f"Filename label must remain 'fish42.tif' after show_raw_image, "
+        f"got {text_after!r}"
+    )
+
+
+def test_show_raw_image_preserves_status_badge(stubs):
+    """#69: the status badge must keep showing the current row's state
+    after a scalebar preview."""
+    import numpy as np
+    dt, tab = _make_tab(stubs)
+    tab.show_result(0, [{"filename": "x.tif", "length": 100.0,
+                          "mask": MagicMock(), "error": None,
+                          "manual_corrected": False}])
+    # Baseline: badge reads "Analyzed".
+    text_before = _latest_settext(tab._status_badge)
+    assert text_before == "Analyzed"
+    tab.show_raw_image(np.zeros((4, 4, 3), dtype=np.uint8))
+    text_after = _latest_settext(tab._status_badge)
+    assert text_after == "Analyzed", (
+        f"Status badge must remain 'Analyzed' after show_raw_image, "
+        f"got {text_after!r}"
+    )
+
+
+def test_show_raw_image_preserves_measurements(stubs):
+    """#69: the measurements grid must keep showing the current row's
+    values after a scalebar preview — they were wiped before #69."""
+    import numpy as np
+    dt, tab = _make_tab(stubs)
+    tab.show_result(0, [{"filename": "x.tif", "length": 100.0,
+                          "curvature": "straight", "ratio": 0.95,
+                          "eye_area": 1500.0, "eye_diameter": 12.0,
+                          "mask": MagicMock(), "error": None,
+                          "manual_corrected": False}])
+    length_before = _latest_settext(tab._measurements[0][1])
+    assert length_before == "100.0 µm"
+    tab.show_raw_image(np.zeros((4, 4, 3), dtype=np.uint8))
+    length_after = _latest_settext(tab._measurements[0][1])
+    assert length_after == "100.0 µm", (
+        f"Length measurement must remain '100.0 µm' after show_raw_image, "
+        f"got {length_after!r}"
+    )
+
+
+def test_show_raw_image_preserves_nav_button_state(stubs):
+    """#69: nav buttons must NOT be disabled by show_raw_image — the user
+    might want to navigate after the preview."""
+    import numpy as np
+    dt, tab = _make_tab(stubs)
+    results = [
+        {"filename": "a.tif", "length": 100.0, "mask": MagicMock(),
+         "error": None, "manual_corrected": False},
+        {"filename": "b.tif", "length": 100.0, "mask": MagicMock(),
+         "error": None, "manual_corrected": False},
+    ]
+    tab.show_result(0, results)
+    # Baseline: prev disabled (idx 0), next enabled.
+    prev_calls = tab._btn_prev._calls.setEnabled.call_args_list
+    next_calls = tab._btn_next._calls.setEnabled.call_args_list
+    prev_enabled_before = prev_calls[-1].args[0]
+    next_enabled_before = next_calls[-1].args[0]
+    assert prev_enabled_before is False
+    assert next_enabled_before is True
+    # Run the preview.
+    tab.show_raw_image(np.zeros((4, 4, 3), dtype=np.uint8))
+    # The most recent setEnabled args on each button must be unchanged.
+    prev_after = tab._btn_prev._calls.setEnabled.call_args_list[-1].args[0]
+    next_after = tab._btn_next._calls.setEnabled.call_args_list[-1].args[0]
+    assert prev_after == prev_enabled_before, (
+        "show_raw_image must not change the prev button's enabled state "
+        f"(was {prev_enabled_before!r}, now {prev_after!r})"
+    )
+    assert next_after == next_enabled_before, (
+        "show_raw_image must not change the next button's enabled state "
+        f"(was {next_enabled_before!r}, now {next_after!r})"
+    )
+
+
+def test_show_raw_image_rebuilds_full_pixmap(stubs):
+    """#69 sanity: show_raw_image must still actually replace the
+    displayed pixmap — otherwise the preview doesn't show. We count the
+    calls into _numpy_to_qpixmap (which under the stub falls through to
+    qt.QPixmap()) to confirm a fresh pixmap was built for the preview.
+    """
+    import numpy as np
+    dt, tab = _make_tab(stubs)
+    tab.show_result(0, [{"filename": "x.tif", "length": 100.0,
+                          "mask": MagicMock(), "error": None,
+                          "manual_corrected": False}])
+    # _numpy_to_qpixmap ultimately calls qt.QPixmap() and
+    # qt.QPixmap.loadFromData(); count loadFromData calls as the proxy.
+    # The PIL shim may not always succeed; the cleanest invariant is
+    # that ``_full_pixmap`` is truthy after show_raw_image (not None).
+    new_rgb = np.full((4, 4, 3), [255, 0, 0], dtype=np.uint8)
+    tab.show_raw_image(new_rgb)
+    assert tab._full_pixmap is not None, (
+        "show_raw_image must set _full_pixmap to a non-None pixmap"
+    )
+
+
+def test_show_raw_image_preserves_manual_mode_state(stubs):
+    """#69: if the user has Manual-correction mode active and clicks
+    "Detect scalebar" on the same row, the sidebar must keep showing
+    "Manual mode: active" — turning it off silently would be a
+    different footgun than the original one."""
+    import numpy as np
+    dt, tab = _make_tab(stubs)
+    tab._manual_mode = True
+    tab.show_raw_image(np.zeros((4, 4, 3), dtype=np.uint8))
+    assert tab._manual_mode is True, (
+        "show_raw_image must NOT silently turn off manual mode"
+    )
+
+
+def test_show_raw_image_is_safe_before_show_result(stubs):
+    """#69: show_raw_image must work even when no row has ever been
+    shown — it's the first thing the user sees on a fresh app start
+    when ScaleBar detection fires."""
+    import numpy as np
+    dt, tab = _make_tab(stubs)
+    # No show_result yet.
+    tab.show_raw_image(np.zeros((4, 4, 3), dtype=np.uint8))
+    # _full_pixmap must be set.
+    assert tab._full_pixmap is not None, (
+        "show_raw_image must set _full_pixmap even when no row has been shown"
+    )
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

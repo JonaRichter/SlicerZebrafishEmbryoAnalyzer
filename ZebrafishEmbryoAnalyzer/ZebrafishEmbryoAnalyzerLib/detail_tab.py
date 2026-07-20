@@ -335,31 +335,32 @@ class DetailTab(qt.QWidget):
         self._update_nav_state()
 
     def show_raw_image(self, rgb: np.ndarray, caption: str = "") -> None:
-        """Display an arbitrary RGB numpy array — used for scalebar preview."""
-        self._results = []
-        self._current_idx = 0
-        self._cache.clear()
+        """Display an arbitrary RGB numpy array — used for scalebar preview.
+
+        Issue #69: the scale-bar preview used to wipe the sidebar state
+        (filename, badge, measurements, results list, pixmap cache,
+        manual-mode state, nav buttons). That was a footgun — when the
+        user clicked "Detect scalebar" in the ScaleBar widget, the
+        Detail tab's right-hand sidebar would silently reset to a blank
+        placeholder, and the user would lose context (they couldn't see
+        which row was being previewed, and any unsaved manual correction
+        dots would disappear).
+
+        #69 keeps the sidebar/results state intact and only swaps the
+        displayed image. The next ``show_result`` call (from widget.py
+        on the next navigation, recompute, etc.) will rebuild the
+        sidebar for the actual current row.
+        """
+        # Don't blow away the sidebar / results / cache / nav state.
+        # We only swap the displayed pixmap.
         self._pending_reset_zoom = True  # preview always resets zoom to fit
-        self._manual_mode = False
-        self._manual_points = []
-        self._view.set_manual_mode(False)
-        self._view.clear_dots()
         self._full_pixmap = _numpy_to_qpixmap(rgb)
-        self._btn_prev.setEnabled(False)
-        self._btn_next.setEnabled(False)
-        self._nav_label.setText("")
-        # Issue #67/#69: the scale-bar preview should leave the sidebar
-        # showing whatever the current image's real state is (this issue
-        # silently clears it to a placeholder). #69 reverses this — for
-        # now, leave filename/badge/measurements untouched here so this
-        # commit is non-invasive; the caller will re-call show_result()
-        # afterwards in the normal flow.
-        if caption:
-            # No caption reaches the sidebar in #67; #69 confirms it's
-            # duplicated against the ScaleBar widget's status text and
-            # drops it. We accept the argument silently so existing callers
-            # don't break.
-            pass
+        # ``caption`` was previously used to clear the metrics label;
+        # #69 drops it silently since the ScaleBar widget already has
+        # its own status label next to the Detect button (avoid duplicating
+        # the same text into the sidebar). Accept the argument so existing
+        # callers don't break.
+        del caption
         qt.QTimer.singleShot(0, self._update_display)
 
     def invalidate_cache(self):
