@@ -21,16 +21,23 @@ def _numpy_to_qpixmap(rgb_array: np.ndarray) -> "qt.QPixmap":
     return pixmap
 
 
-def _build_rgb_array(result: dict) -> np.ndarray:
-    """Build the RGB overlay array synchronously on the main thread."""
+def _build_rgb_array(result: dict, include_overlay: bool = True) -> np.ndarray:
+    """Build the RGB overlay array synchronously on the main thread.
+
+    Issue #11: pass ``include_overlay=False`` to get the bare original
+    image (no mask, no path, no straight-line guide). Used by the
+    "Show segmentation overlay" checkbox in the sidebar — when the user
+    toggles it off, we rebuild each cached pixmap without the overlay.
+    """
     from ZebrafishEmbryoAnalyzerLib.overlay import make_full_overlay
     import cv2
-    bgr = make_full_overlay(result)
+    bgr = make_full_overlay(result, include_overlay=include_overlay)
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
 class DetailTab(qt.QWidget):
     _SPLITTER_SETTINGS_KEY = "ZebrafishEmbryoAnalyzer/detailSplitterState"
+    _OVERLAY_SETTINGS_KEY = "ZebrafishEmbryoAnalyzer/detailOverlayVisible"
 
     def __init__(self, on_navigate=None, on_back=None, logic=None, on_exclude_change=None):
         super().__init__()
@@ -45,6 +52,13 @@ class DetailTab(qt.QWidget):
         self._cache = {}          # index → QPixmap  (main thread only)
         self._pending_reset_zoom = True  # True=reset zoom on next pixmap update
         self.setFocusPolicy(qt.Qt.StrongFocus)
+
+        # Issue #11: overlay visibility state, persisted to QSettings so it
+        # survives restarts. Default True to match pre-#11 behaviour
+        # (segmentation overlay drawn by default). ``set_overlay_visible``
+        # flushes the entire pixmap cache on toggle because each cached
+        # pixmap is overlay-state-specific.
+        self._overlay_visible = self._load_overlay_visible()
 
         self._manual_mode = False
         self._manual_points = []   # list of (row, col) in original image space
@@ -131,6 +145,18 @@ class DetailTab(qt.QWidget):
         # _update_status_badge() once a row is shown.
         self._update_status_badge({"filename": "", "error": None})
 
+        # Issue #11: "Show segmentation overlay" checkbox — when unchecked,
+        # the user sees the bare original image with no mask/path/straight
+        # line drawn. State is persisted to QSettings (see
+        # _load_overlay_visible / _save_overlay_visible). blockSignals
+        # during the initial setChecked so the toggle handler doesn't fire
+        # during __init__ (it would clear the cache for nothing).
+        self._chk_overlay = qt.QCheckBox("Show segmentation overlay")
+        self._chk_overlay.blockSignals(True)
+        self._chk_overlay.setChecked(self._overlay_visible)
+        self._chk_overlay.blockSignals(False)
+        self._chk_overlay.toggled.connect(self._on_overlay_toggled)
+
         # Translucent error banner shown only when the current row has an error
         # (or is stale — STALE_ERROR_MESSAGE rides the same channel, see
         # mrml.py:440). Translucent so it reads correctly in both light and
@@ -200,6 +226,10 @@ class DetailTab(qt.QWidget):
         sidebar_layout.addLayout(top_row, 0)
         sidebar_layout.addWidget(self._error_banner, 0)
         sidebar_layout.addLayout(self._measurements_grid, 0)
+        # Issue #11: overlay toggle sits between the Measurements section
+        # and the Actions section — it controls how the displayed image
+        # is rendered (overlay on/off), not how the metadata is computed.
+        sidebar_layout.addWidget(self._chk_overlay, 0)
 
         # Issue #68: Actions group — Manual Adjust/Revert row, manual status
         # label, the Exclude checkbox, and the relocated Recompute metrics
@@ -282,9 +312,24 @@ class DetailTab(qt.QWidget):
         self._manual_status.setVisible(False)
 
         self._pending_reset_zoom = True  # navigation → always reset zoom
-        if index not in self._cache:
-            self._cache[index] = _numpy_to_qpixmap(_build_rgb_array(results[index]))
-        self._full_pixmap = self._cache[index]
+        # Issue #11: include_overlay tracks the user's "Show segmentation
+        # overlay" toggle. The cache is keyed by (index, include_overlay) so
+        # toggling doesn't return a stale pixmap from the other variant.
+        # ``getattr`` keeps lifecycle tests that bypass __init__ via
+        # ``object.__new__`` working — they pre-populate ``_cache[0]``
+        # with an integer key and rely on the lookup falling through.
+        overlay_visible = getattr(self, "_overlay_visible", True)
+        cache_key = (index, overlay_visible)
+        if cache_key in self._cache:
+            self._full_pixmap = self._cache[cache_key]
+        elif index in self._cache:
+            # Backwards-compat: legacy integer-keyed cache from before #11.
+            self._full_pixmap = self._cache[index]
+        else:
+            self._cache[cache_key] = _numpy_to_qpixmap(
+                _build_rgb_array(results[index], include_overlay=overlay_visible)
+            )
+            self._full_pixmap = self._cache[cache_key]
         qt.QTimer.singleShot(0, self._update_display)
 
         self._update_nav_state()
@@ -356,6 +401,9 @@ class DetailTab(qt.QWidget):
         if hasattr(self, "_btn_recompute"):
             self._btn_recompute.setVisible(False)
             self._btn_recompute.setEnabled(False)
+        # #11 — overlay toggle is a user preference, NOT per-row state, so
+        # reset() leaves it untouched. The checkbox keeps its current
+        # checked state across scene-close + reopen.
         self._nav_label.setText("")
         self._btn_prev.setEnabled(False)
         self._btn_next.setEnabled(False)
@@ -416,6 +464,76 @@ class DetailTab(qt.QWidget):
         except Exception:
             # Don't let a widget-side bug kill the UI thread — the caller
             # already logs exceptions internally.
+            pass
+
+    # ------------------------------------------------------------------
+    # Issue #11: segmentation overlay toggle + QSettings persistence
+    # ------------------------------------------------------------------
+
+    def set_overlay_visible(self, visible: bool) -> None:
+        """Programmatically show/hide the segmentation overlay.
+
+        Updates the checkbox state (without re-firing its signal — that
+        would cause an infinite loop), persists the choice to QSettings,
+        drops every cached pixmap so the next ``show_result`` rebuilds
+        the right variant, and refreshes the display if a row is currently
+        visible. ``widget.py`` rarely calls this directly; the checkbox's
+        own ``toggled`` signal drives it in the normal case.
+        """
+        visible = bool(visible)
+        if visible == self._overlay_visible:
+            return  # no-op, avoid pointless cache churn
+        self._overlay_visible = visible
+        # Sync the checkbox without re-emitting toggled().
+        if hasattr(self, "_chk_overlay"):
+            self._chk_overlay.blockSignals(True)
+            self._chk_overlay.setChecked(visible)
+            self._chk_overlay.blockSignals(False)
+        # Persist the user's choice.
+        self._save_overlay_visible(visible)
+        # Drop cached pixmaps — every key includes the overlay flag now,
+        # but clearing is cheaper than picking through both variants.
+        self._cache.clear()
+        # Refresh the currently displayed image, if any.
+        if (self._current_filename is not None
+                and 0 <= self._current_idx < len(self._results)):
+            self._start_job(self._current_idx)
+
+    def _on_overlay_toggled(self, checked: bool) -> None:
+        """Checkbox slot — defers to ``set_overlay_visible``."""
+        self.set_overlay_visible(checked)
+
+    def _load_overlay_visible(self) -> bool:
+        """Read the persisted overlay-visible preference from QSettings.
+
+        Defaults to True (overlay shown) on first run / corrupted value.
+        Wrapped in try/except so a stale bytes value from an older build
+        doesn't break the constructor.
+        """
+        try:
+            settings = qt.QSettings()
+            stored = settings.value(self._OVERLAY_SETTINGS_KEY)
+        except Exception:
+            return True
+        if stored is None:
+            return True
+        # QSettings returns strings for some backends; coerce defensively.
+        if isinstance(stored, bool):
+            return stored
+        if isinstance(stored, str):
+            return stored.strip().lower() not in ("false", "0", "no", "")
+        return bool(stored)
+
+    def _save_overlay_visible(self, visible: bool) -> None:
+        """Persist the overlay-visible preference to QSettings.
+
+        Best-effort — QSettings may not be available under every test rig,
+        so we swallow exceptions and let the next ``cleanup()`` re-attempt.
+        """
+        try:
+            settings = qt.QSettings()
+            settings.setValue(self._OVERLAY_SETTINGS_KEY, bool(visible))
+        except Exception:
             pass
 
     # ------------------------------------------------------------------
@@ -563,19 +681,35 @@ class DetailTab(qt.QWidget):
             self._nav_label.setText("")
 
     def _ensure_cached(self, index: int) -> None:
-        """Build and cache the pixmap for index synchronously if not yet cached."""
-        if index in self._cache:
+        """Build and cache the pixmap for index synchronously if not yet cached.
+
+        Issue #11: the cache key now includes the overlay-visibility flag so
+        toggling the overlay doesn't reuse the wrong variant.
+        """
+        cache_key = (index, getattr(self, "_overlay_visible", True))
+        if cache_key in self._cache:
             return
         if index < 0 or index >= len(self._results):
             return
-        self._cache[index] = _numpy_to_qpixmap(_build_rgb_array(self._results[index]))
+        self._cache[cache_key] = _numpy_to_qpixmap(
+            _build_rgb_array(self._results[index],
+                             include_overlay=self._overlay_visible)
+        )
 
     def _start_job(self, index: int) -> None:
         """Synchronously rebuild the overlay for index and update the display."""
-        self._cache.pop(index, None)
+        # Issue #11: drop BOTH overlay variants for this index — we want a
+        # clean rebuild regardless of which variant the toggle currently picks.
+        for key in list(self._cache.keys()):
+            if isinstance(key, tuple) and key[0] == index:
+                self._cache.pop(key, None)
+            elif key == index:
+                # Backwards-compat: legacy integer keys from before #11.
+                self._cache.pop(key, None)
         self._ensure_cached(index)
-        if index in self._cache:
-            self._full_pixmap = self._cache[index]
+        cache_key = (index, self._overlay_visible)
+        if cache_key in self._cache:
+            self._full_pixmap = self._cache[cache_key]
             qt.QTimer.singleShot(0, self._update_display)
 
     # ------------------------------------------------------------------

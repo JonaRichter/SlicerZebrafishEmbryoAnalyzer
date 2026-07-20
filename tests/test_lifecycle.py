@@ -829,14 +829,17 @@ def test_detail_tab_show_result_builds_selected_pixmap_only():
         d._current_filename = None
 
         import ZebrafishEmbryoAnalyzerLib.detail_tab as _dt
-        _dt._build_rgb_array = lambda result: result["rgb"]
+        _dt._build_rgb_array = lambda result, include_overlay=True: result["rgb"]
         fake_pixmap = MagicMock()
         _dt._numpy_to_qpixmap = lambda arr: fake_pixmap
 
         result = {"filename": "fish.png", "rgb": object(), "length": 1.0}
         d.show_result(0, [result])
 
-        assert d._cache[0] is fake_pixmap
+        # #11 — DetailTab now keys the cache by (index, overlay_visible).
+        # This test bypasses __init__ so overlay_visible defaults to True
+        # via getattr; the expected cache key is therefore (0, True).
+        assert d._cache[(0, True)] is fake_pixmap
         assert d._full_pixmap is fake_pixmap
         print("OK")
     """)

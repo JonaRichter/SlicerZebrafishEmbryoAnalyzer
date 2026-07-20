@@ -41,14 +41,27 @@ def _resize_to_fit(img: np.ndarray, max_side: int) -> np.ndarray:
     return cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
 
-def make_full_overlay(result: dict) -> np.ndarray:
-    """Return full-resolution BGR overlay array."""
+def make_full_overlay(result: dict, include_overlay: bool = True) -> np.ndarray:
+    """Return full-resolution BGR overlay array.
+
+    Issue #11: when ``include_overlay`` is False, return the bare original
+    image as BGR with no segmentation mask, eye mask, path polyline, or
+    straight-line guide drawn — the user wants to see the raw embryo
+    without any overlay. The function still returns BGR for symmetry with
+    the ``include_overlay=True`` path so callers can use the same
+    ``cv2.cvtColor(..., cv2.COLOR_BGR2RGB)`` afterwards.
+    """
     original = result.get("original")
     if original is None:
         return np.zeros((256, 256, 3), dtype=np.uint8)
 
     # original is stored as RGB in result dicts
     base = cv2.cvtColor(original, cv2.COLOR_RGB2BGR)
+
+    # Issue #11: skip every overlay draw step when the toggle is off.
+    if not include_overlay:
+        return base  # bare BGR
+
     h_base, w_base = base.shape[:2]
 
     mask = result.get("mask")
