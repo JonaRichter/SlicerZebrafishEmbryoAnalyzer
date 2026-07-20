@@ -435,6 +435,10 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
         from ZebrafishEmbryoAnalyzerLib.logic import detect_scalebar
         return detect_scalebar(image_path, label_um=label_um, img_rgb=img_rgb)
 
+    def calibrate_scalebar_from_endpoints(self, pt1, pt2, img_shape, label_um=None):
+        from ZebrafishEmbryoAnalyzerLib.logic import calibrate_scalebar_from_endpoints
+        return calibrate_scalebar_from_endpoints(pt1, pt2, img_shape, label_um=label_um)
+
     def preload_models(self, params):
         from ZebrafishEmbryoAnalyzerLib.logic import preload_models
         return preload_models(params)

@@ -180,6 +180,19 @@ def detect_scalebar(image_path: str, label_um: float | None = None,
     return _detect_scalebar(img_rgb, label_um=label_um)
 
 
+def calibrate_scalebar_from_endpoints(pt1, pt2, img_shape, label_um: float | None = None) -> dict:
+    """Issue #76: thin wrapper around the core two-point manual calibration,
+    mirroring :func:`detect_scalebar`'s wrapper role — keeps ``widget.py``
+    free of a direct ``ZebrafishEmbryoAnalyzerCore`` import.
+
+    ``pt1``/``pt2`` are ``(x, y)`` pixel coordinates; ``img_shape`` is
+    ``(height, width)``. Returns the dict produced by
+    ``ZebrafishEmbryoAnalyzerCore.scalebar.calibrate_from_endpoints``.
+    """
+    from ZebrafishEmbryoAnalyzerCore.scalebar import calibrate_from_endpoints
+    return calibrate_from_endpoints(pt1, pt2, img_shape, label_um=label_um)
+
+
 def analyse_images(image_paths: list, params: dict,
                    progress_callback=None,
                    per_image_callback=None) -> list:

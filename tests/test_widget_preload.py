@@ -609,3 +609,129 @@ def test_handle_runner_finished_stale_token_does_not_apply(widget_module):
     w._try_update_mrml_table.assert_not_called()
     assert w._results == []  # unchanged
     w._run_stack.setCurrentIndex.assert_called_with(0)
+
+
+# ---------------------------------------------------------------------------
+# Issue #76: manual two-point scale-bar calibration UI
+# ---------------------------------------------------------------------------
+
+def _make_manual_scale_widget(widget_module, original=None):
+    import numpy as np
+    w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
+    w._image_paths = ["fish_0.png"]
+    w._results = [{"filename": "fish_0.png", "original": original if original is not None else np.zeros((10, 10, 3))}]
+    w._detail = MagicMock()
+    w._detail._view = MagicMock()
+    w._tabs = MagicMock()
+    w._scale_status = MagicMock()
+    w._bar_um_edit = MagicMock()
+    w._um_per_px = MagicMock()
+    w._btn_apply_manual_scale = MagicMock()
+    w._scalebar_manual_points = []
+    w._logic = MagicMock()
+    return w
+
+
+def test_on_manual_scale_clicked_requires_loaded_images(widget_module):
+    w = _make_manual_scale_widget(widget_module)
+    w._image_paths = []
+    w._on_manual_scale_clicked()
+    w._scale_status.setText.assert_called_with("Load images first.")
+
+
+def test_on_manual_scale_clicked_arms_manual_mode(widget_module):
+    w = _make_manual_scale_widget(widget_module)
+    w._on_manual_scale_clicked()
+    assert w._scalebar_manual_points == []
+    w._btn_apply_manual_scale.setEnabled.assert_called_with(False)
+    w._detail.show_raw_image.assert_called_once()
+    w._detail._view.set_manual_mode.assert_called_with(True)
+    assert w._detail._view._tap_handler == w._on_scalebar_tap
+
+
+def test_on_scalebar_tap_first_tap_prompts_for_second(widget_module):
+    w = _make_manual_scale_widget(widget_module)
+    w._on_scalebar_tap(10, 20)
+    assert w._scalebar_manual_points == [(10, 20)]
+    w._detail._view.add_dot.assert_called_once()
+    w._btn_apply_manual_scale.setEnabled.assert_not_called()
+
+
+def test_on_scalebar_tap_second_tap_enables_apply_and_exits_manual_mode(widget_module):
+    w = _make_manual_scale_widget(widget_module)
+    w._on_scalebar_tap(10, 20)
+    w._on_scalebar_tap(30, 40)
+    assert w._scalebar_manual_points == [(10, 20), (30, 40)]
+    w._btn_apply_manual_scale.setEnabled.assert_called_with(True)
+    w._detail._view.set_manual_mode.assert_called_with(False)
+
+
+def test_on_scalebar_tap_ignores_extra_taps_after_two(widget_module):
+    w = _make_manual_scale_widget(widget_module)
+    w._on_scalebar_tap(10, 20)
+    w._on_scalebar_tap(30, 40)
+    w._on_scalebar_tap(50, 60)
+    assert w._scalebar_manual_points == [(10, 20), (30, 40)]
+
+
+def test_apply_manual_scale_requires_two_points(widget_module):
+    w = _make_manual_scale_widget(widget_module)
+    w._scalebar_manual_points = [(10, 20)]
+    w._on_apply_manual_scale_clicked()
+    w._logic.calibrate_scalebar_from_endpoints.assert_not_called()
+    w._scale_status.setText.assert_called_with(
+        "Click two points on the image first (Manual Scale Bar Entry)."
+    )
+
+
+def test_apply_manual_scale_rejects_empty_length(widget_module):
+    w = _make_manual_scale_widget(widget_module)
+    w._scalebar_manual_points = [(10, 20), (30, 40)]
+    w._bar_um_edit.text = "  "
+    w._on_apply_manual_scale_clicked()
+    w._logic.calibrate_scalebar_from_endpoints.assert_not_called()
+    w._scale_status.setText.assert_called_with("Enter the physical bar length (µm) first.")
+
+
+def test_apply_manual_scale_rejects_non_numeric_length(widget_module):
+    w = _make_manual_scale_widget(widget_module)
+    w._scalebar_manual_points = [(10, 20), (30, 40)]
+    w._bar_um_edit.text = "abc"
+    w._on_apply_manual_scale_clicked()
+    w._logic.calibrate_scalebar_from_endpoints.assert_not_called()
+    w._scale_status.setText.assert_called_with("Invalid value — enter a number.")
+
+
+def test_apply_manual_scale_rejects_zero_or_negative_length(widget_module):
+    w = _make_manual_scale_widget(widget_module)
+    w._scalebar_manual_points = [(10, 20), (30, 40)]
+    w._bar_um_edit.text = "0"
+    w._on_apply_manual_scale_clicked()
+    w._logic.calibrate_scalebar_from_endpoints.assert_not_called()
+    w._scale_status.setText.assert_called_with("Physical bar length must be greater than zero.")
+
+
+def test_apply_manual_scale_success_sets_um_per_px(widget_module):
+    w = _make_manual_scale_widget(widget_module)
+    w._scalebar_manual_points = [(10, 20), (10, 120)]  # (row, col) pairs
+    w._bar_um_edit.text = "500"
+    w._logic.calibrate_scalebar_from_endpoints.return_value = {
+        "success": True, "scale_um_per_px": 5.0,
+    }
+    w._on_apply_manual_scale_clicked()
+    # (row, col) -> core (x, y) = (col, row): pt1=(20,10), pt2=(120,10)
+    w._logic.calibrate_scalebar_from_endpoints.assert_called_once_with(
+        (20, 10), (120, 10), (10, 10), label_um=500.0
+    )
+    assert w._um_per_px.value == 5.0
+
+
+def test_apply_manual_scale_failure_shows_message(widget_module):
+    w = _make_manual_scale_widget(widget_module)
+    w._scalebar_manual_points = [(10, 20), (10, 21)]
+    w._bar_um_edit.text = "500"
+    w._logic.calibrate_scalebar_from_endpoints.return_value = {
+        "success": False, "message": "Endpoints are too close together.",
+    }
+    w._on_apply_manual_scale_clicked()
+    w._scale_status.setText.assert_called_with("Endpoints are too close together.")

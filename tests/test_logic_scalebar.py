@@ -141,3 +141,36 @@ def test_detect_scalebar_signature_accepts_img_rgb_kwarg():
         "img_rgb must default to None so the disk-read path stays the default "
         "behavior for callers that don't know about the new parameter"
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #76: manual two-point scale-bar calibration wrapper
+# ---------------------------------------------------------------------------
+
+def test_calibrate_scalebar_from_endpoints_delegates_to_core():
+    """logic.calibrate_scalebar_from_endpoints must be a thin wrapper around
+    ZebrafishEmbryoAnalyzerCore.scalebar.calibrate_from_endpoints — same
+    role as detect_scalebar's wrapper, keeping widget.py free of a direct
+    core import."""
+    from ZebrafishEmbryoAnalyzerLib.logic import calibrate_scalebar_from_endpoints
+
+    captured = {}
+
+    def fake_calibrate(pt1, pt2, img_shape, label_um=None):
+        captured["args"] = (pt1, pt2, img_shape, label_um)
+        return {"success": True, "scale_um_per_px": 2.5}
+
+    with patch("ZebrafishEmbryoAnalyzerCore.scalebar.calibrate_from_endpoints", fake_calibrate):
+        result = calibrate_scalebar_from_endpoints((10, 20), (110, 20), (200, 300), label_um=250.0)
+
+    assert captured["args"] == ((10, 20), (110, 20), (200, 300), 250.0)
+    assert result == {"success": True, "scale_um_per_px": 2.5}
+
+
+def test_calibrate_scalebar_from_endpoints_real_core_math():
+    """End-to-end (no mocking): 100px apart, 500um bar -> 5.0 um/px."""
+    from ZebrafishEmbryoAnalyzerLib.logic import calibrate_scalebar_from_endpoints
+
+    result = calibrate_scalebar_from_endpoints((0, 0), (100, 0), (200, 300), label_um=500.0)
+    assert result["success"] is True
+    assert result["scale_um_per_px"] == pytest.approx(5.0)

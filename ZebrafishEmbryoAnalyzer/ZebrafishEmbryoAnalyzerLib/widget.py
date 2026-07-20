@@ -348,6 +348,25 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         direct.addRow("µm per pixel:", self._um_per_px)
         sc_layout.addLayout(direct)
 
+        # Issue #76: manual two-point scale-bar calibration — the core math
+        # (ZebrafishEmbryoAnalyzerCore.scalebar.calibrate_from_endpoints)
+        # already existed; only this UI was missing. Reuses the same
+        # physical-length field (self._bar_um_edit) as the auto-detect flow
+        # above rather than duplicating the input.
+        sep2 = qt.QLabel("— or click two points on the first image —")
+        sep2.setStyleSheet("color: #888; font-size: 11px;")
+        sep2.setAlignment(qt.Qt.AlignCenter)
+        sc_layout.addWidget(sep2)
+
+        self._btn_manual_scale = qt.QPushButton("Manual Scale Bar Entry")
+        sc_layout.addWidget(self._btn_manual_scale)
+
+        self._btn_apply_manual_scale = qt.QPushButton("Apply Manual Points")
+        self._btn_apply_manual_scale.setEnabled(False)
+        sc_layout.addWidget(self._btn_apply_manual_scale)
+
+        self._scalebar_manual_points = []  # list of (row, col), up to 2
+
         vbox.addStretch(1)  # push run + export to bottom
 
         self._btn_run = qt.QPushButton("▶  Run Analysis")
@@ -457,6 +476,8 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._btn_files.clicked.connect(self._on_load_files)
         self._btn_detect_scale.clicked.connect(self._on_detect_scale)
         self._btn_apply_scale.clicked.connect(self._on_apply_scale)
+        self._btn_manual_scale.clicked.connect(self._on_manual_scale_clicked)
+        self._btn_apply_manual_scale.clicked.connect(self._on_apply_manual_scale_clicked)
         self._btn_run.clicked.connect(self._on_run)
         self._btn_stop.clicked.connect(self._cancel_workers)
         self._btn_excel.clicked.connect(self._on_export_excel)
@@ -567,8 +588,9 @@ class ZebrafishEmbryoAnalyzerMainWidget:
 
         self._results = stubs
         self._excluded = {}  # {filename: set(excluded_metric_keys)} (issue #74)
+        self._scalebar_manual_points = []  # issue #76
         self._detail.reset()
-        self._results_tab.populate([], set())
+        self._results_tab.populate([], {})
         self._gallery.populate(stubs)
         self._tabs.setCurrentIndex(0)
 
@@ -873,6 +895,83 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             self._scale_status.setText(
                 f"Applied: {result['scale_um_per_px']:.4f} µm/px"
             )
+
+    def _on_manual_scale_clicked(self):
+        """Issue #76: start manual two-point scale-bar calibration — load
+        the first image into the Detail tab's zoomable view and capture the
+        next two taps as START/END, reusing the same tap-and-dot mechanism
+        detail_tab.py already uses for manual head/tail correction
+        (ZoomableImageView.set_manual_mode/_tap_handler/add_dot)."""
+        if not self._image_paths:
+            self._scale_status.setText("Load images first.")
+            return
+        original = self._results[0].get("original") if self._results else None
+        if original is None:
+            self._scale_status.setText("First image not available for manual entry.")
+            return
+        self._scalebar_manual_points = []
+        self._btn_apply_manual_scale.setEnabled(False)
+        self._detail.show_raw_image(original, "Click the START point of the scale bar")
+        self._tabs.setCurrentIndex(1)
+        view = self._detail._view
+        view.clear_dots()
+        view.set_manual_mode(True)
+        view._tap_handler = self._on_scalebar_tap
+
+    def _on_scalebar_tap(self, row: int, col: int) -> None:
+        if len(self._scalebar_manual_points) >= 2:
+            return
+        self._scalebar_manual_points.append((row, col))
+        color = qt.QColor(0, 220, 0) if len(self._scalebar_manual_points) == 1 else qt.QColor(220, 0, 0)
+        self._detail._view.add_dot(row, col, color)
+        if len(self._scalebar_manual_points) == 1:
+            # Note: must not call show_raw_image() again here — it clears
+            # dots/manual-mode as part of its own reset, which would erase
+            # the dot just drawn. The left-panel status label is the only
+            # live prompt update between the two taps.
+            self._scale_status.setText("Click the END point of the scale bar.")
+        else:
+            self._scale_status.setText(
+                "Two points set. Enter the physical length (µm) and click Apply Manual Points."
+            )
+            self._btn_apply_manual_scale.setEnabled(True)
+            self._detail._view.set_manual_mode(False)
+
+    def _on_apply_manual_scale_clicked(self):
+        if len(self._scalebar_manual_points) != 2:
+            self._scale_status.setText(
+                "Click two points on the image first (Manual Scale Bar Entry)."
+            )
+            return
+        text = self._bar_um_edit.text.strip()
+        if not text:
+            self._scale_status.setText("Enter the physical bar length (µm) first.")
+            return
+        try:
+            label_um = float(text)
+        except ValueError:
+            self._scale_status.setText("Invalid value — enter a number.")
+            return
+        if label_um <= 0:
+            self._scale_status.setText("Physical bar length must be greater than zero.")
+            return
+        original = self._results[0].get("original") if self._results else None
+        if original is None:
+            self._scale_status.setText("First image not available for manual entry.")
+            return
+        (r1, c1), (r2, c2) = self._scalebar_manual_points
+        pt1, pt2 = (c1, r1), (c2, r2)  # core expects (x, y) = (col, row)
+        img_shape = original.shape[:2]
+        result = self._logic.calibrate_scalebar_from_endpoints(pt1, pt2, img_shape, label_um=label_um)
+        if result.get("success"):
+            self._um_per_px.value = result["scale_um_per_px"]
+            self._scale_status.setText(
+                f"Applied (manual): {result['scale_um_per_px']:.4f} µm/px"
+            )
+            self._scale_status.setStyleSheet("color: #4CAF50;")
+        else:
+            self._scale_status.setText(result.get("message") or "Could not calibrate from the selected points.")
+            self._scale_status.setStyleSheet("color: #F44336;")
 
     def _on_run(self):
         self._run_token += 1
@@ -1510,6 +1609,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._results = []
         self._image_paths = []
         self._excluded = {}  # {filename: set(excluded_metric_keys)} (issue #74)
+        self._scalebar_manual_points = []  # issue #76
         self._detail.reset()
         self._queue_list.clear()
         self._gallery.populate([])
