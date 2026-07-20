@@ -85,10 +85,50 @@ class DetailTab(qt.QWidget):
         self._chk_exclude.setEnabled(False)
         self._chk_exclude.toggled.connect(self._on_exclude_toggled)
 
-        # Metrics label
-        self._metrics_label = qt.QLabel("")
-        self._metrics_label.setWordWrap(True)
-        self._metrics_label.setStyleSheet("font-size: 12px; padding: 4px;")
+        # Default state — widget.py will overwrite via set_stale() right
+        # after show_result() for each navigation. Tests that construct a
+        # bare DetailTab() without MRML state stay covered by this default.
+        self._current_is_stale = False
+
+        # Issue #67: filename label + status badge live at the top of the
+        # sidebar so the user always sees the current row's identity + state.
+        self._filename_label = qt.QLabel("")
+        self._filename_label.setWordWrap(True)
+        self._filename_label.setStyleSheet("font-weight: bold; font-size: 12px; padding: 2px;")
+
+        self._status_badge = qt.QLabel("")
+        self._status_badge.setAlignment(qt.Qt.AlignCenter)
+        self._status_badge.setMaximumHeight(24)
+        # Initial badge state — "Not analyzed" so the user has feedback
+        # before any image is selected. show_result() will overwrite via
+        # _update_status_badge() once a row is shown.
+        self._update_status_badge({"filename": "", "error": None})
+
+        # Translucent error banner shown only when the current row has an error
+        # (or is stale — STALE_ERROR_MESSAGE rides the same channel, see
+        # mrml.py:440). Translucent so it reads correctly in both light and
+        # dark Slicer themes.
+        self._error_banner = qt.QLabel("")
+        self._error_banner.setWordWrap(True)
+        self._error_banner.setVisible(False)
+        self._error_banner.setStyleSheet(
+            "font-size: 11px; padding: 6px; border-radius: 3px;"
+            " background: rgba(244, 67, 54, 180); color: white;"
+        )
+
+        # Issue #67: 5-row Measurements grid with `—` placeholders so the
+        # sidebar height stays constant across images — never hide a row.
+        # Tracked as a list of (field, value) pairs in display order to make
+        # populating them in show_result() a simple loop.
+        self._measurements = []
+        for _label_text in ("Length", "Curvature class", "Length/straight ratio",
+                            "Eye area", "Eye diameter"):
+            label = qt.QLabel(f"{_label_text}:")
+            label.setStyleSheet("font-size: 11px; color: #888;")
+            value = qt.QLabel("—")
+            value.setStyleSheet("font-size: 12px;")
+            value.setTextInteractionFlags(qt.Qt.TextSelectableByMouse)
+            self._measurements.append((label, value))
 
         _nav_row = qt.QHBoxLayout()
         _nav_row.addStretch(1)
@@ -109,18 +149,37 @@ class DetailTab(qt.QWidget):
         self._manual_row_widget.setLayout(_manual_row)
         self._manual_row_widget.setVisible(False)
 
-        # Sidebar: every control that used to live below the image goes here.
-        # Issue #66: sub-issues #67/#68/#11/#69 will further split this into
-        # Measurements / Actions / Nav sections; for now the order is the
-        # existing vertical stack moved verbatim so nothing is lost.
+        # Issue #67: 5-row Measurements grid — label/value pairs, never hidden,
+        # so the sidebar height is constant as the user navigates between
+        # images that lack different metric fields.
+        self._measurements_grid = qt.QGridLayout()
+        self._measurements_grid.setHorizontalSpacing(12)
+        self._measurements_grid.setVerticalSpacing(4)
+        for _row_i, (_lbl, _val) in enumerate(self._measurements):
+            self._measurements_grid.addWidget(_lbl, _row_i, 0)
+            self._measurements_grid.addWidget(_val, _row_i, 1)
+
+        # Issue #67 header — "#67 will further split this" is the issue's own wording;
+        # #68 will label the manual/exclude block as "Actions" with visual headings.
         self._sidebar = qt.QWidget()
         sidebar_layout = qt.QVBoxLayout(self._sidebar)
         sidebar_layout.setContentsMargins(8, 8, 8, 8)
         sidebar_layout.setSpacing(8)
+
+        # Top of the sidebar: filename + status badge (one row, badge right-aligned)
+        top_row = qt.QHBoxLayout()
+        top_row.addWidget(self._filename_label, 1)
+        top_row.addWidget(self._status_badge, 0, qt.Qt.AlignVCenter)
+        sidebar_layout.addLayout(top_row, 0)
+        sidebar_layout.addWidget(self._error_banner, 0)
+        sidebar_layout.addLayout(self._measurements_grid, 0)
+
+        # Pre-Actions grouping: Manual Adjust row + status, Exclude checkbox.
+        # #68 wraps these under an "Actions" heading without changing widgets.
         sidebar_layout.addWidget(self._manual_row_widget, 0)
         sidebar_layout.addWidget(self._manual_status, 0)
         sidebar_layout.addWidget(self._chk_exclude, 0)
-        sidebar_layout.addWidget(self._metrics_label, 0)
+
         sidebar_layout.addStretch(1)
         sidebar_layout.addLayout(self._nav_row_layout, 0)
         self._sidebar.setMinimumWidth(220)
@@ -167,7 +226,16 @@ class DetailTab(qt.QWidget):
         self._current_filename = result["filename"]
         self._chk_exclude.setEnabled(True)
 
-        self._metrics_label.setText(_format_metrics(result))
+        if hasattr(self, "_filename_label"):
+            self._filename_label.setText(str(self._current_filename))
+        _populate_measurements(getattr(self, "_measurements", []), result)
+        # #67 — guard the new sidebar widgets with hasattr so lifecycle tests
+        # that bypass __init__ via ``object.__new__`` (and only set up the
+        # original sidebar widgets) keep working.
+        if hasattr(self, "_update_status_badge"):
+            self._update_status_badge(result)
+        if hasattr(self, "_update_error_banner"):
+            self._update_error_banner(result)
 
         # Sync button state — only show after analysis (stubs have length=None)
         analyzed = result.get("length") is not None or result.get("mask") is not None
@@ -199,10 +267,21 @@ class DetailTab(qt.QWidget):
         self._view.set_manual_mode(False)
         self._view.clear_dots()
         self._full_pixmap = _numpy_to_qpixmap(rgb)
-        self._metrics_label.setText(caption)
         self._btn_prev.setEnabled(False)
         self._btn_next.setEnabled(False)
         self._nav_label.setText("")
+        # Issue #67/#69: the scale-bar preview should leave the sidebar
+        # showing whatever the current image's real state is (this issue
+        # silently clears it to a placeholder). #69 reverses this — for
+        # now, leave filename/badge/measurements untouched here so this
+        # commit is non-invasive; the caller will re-call show_result()
+        # afterwards in the normal flow.
+        if caption:
+            # No caption reaches the sidebar in #67; #69 confirms it's
+            # duplicated against the ScaleBar widget's status text and
+            # drops it. We accept the argument silently so existing callers
+            # don't break.
+            pass
         qt.QTimer.singleShot(0, self._update_display)
 
     def invalidate_cache(self):
@@ -226,7 +305,19 @@ class DetailTab(qt.QWidget):
         self._manual_points = []
         self._view.show_placeholder("Select an image from the Gallery.")
         self._view.set_manual_mode(False)
-        self._metrics_label.setText("")
+        # #67 — guard each new sidebar widget with getattr so existing
+        # lifecycle tests that bypass __init__ via ``object.__new__``
+        # (and only set up the original sidebar widgets) keep working.
+        if hasattr(self, "_filename_label"):
+            self._filename_label.setText("")
+        if hasattr(self, "_measurements"):
+            _clear_measurements(self._measurements)
+        if hasattr(self, "_current_is_stale"):
+            self._current_is_stale = False
+        if hasattr(self, "_status_badge"):
+            self._update_status_badge({"filename": "", "error": None})
+        if hasattr(self, "_error_banner"):
+            self._error_banner.setVisible(False)
         self._nav_label.setText("")
         self._btn_prev.setEnabled(False)
         self._btn_next.setEnabled(False)
@@ -245,6 +336,87 @@ class DetailTab(qt.QWidget):
     def _on_exclude_toggled(self, checked: bool) -> None:
         if self._current_filename and self._on_exclude_change:
             self._on_exclude_change(self._current_filename, checked)
+
+    # ------------------------------------------------------------------
+    # Issue #67: stale setter + status badge + error banner
+    # ------------------------------------------------------------------
+
+    def set_stale(self, is_stale: bool) -> None:
+        """Set whether the currently shown row's segmentation is stale.
+
+        ``widget.py`` is the only caller — it computes staleness from
+        :func:`mrml.is_volume_node_stale` (which DetailTab never imports
+        directly to keep this class MRML-agnostic + unit-testable without
+        a running Slicer scene). Stores the flag; the badge refreshes
+        when ``show_result`` runs next, or on demand if a row is updated
+        mid-lifetime.
+
+        Sub-issue #68 will extend this method to also drive the relocated
+        "Recompute metrics" button's visibility — until then, the badge
+        is the only consumer.
+        """
+        self._current_is_stale = bool(is_stale)
+        # Refresh the badge immediately if a row is currently visible.
+        if self._current_filename is not None and self._results:
+            self._update_status_badge(self._results[self._current_idx])
+            self._update_error_banner(self._results[self._current_idx])
+
+    def _update_status_badge(self, result: dict) -> None:
+        """Recompute the status badge text + colour from ``result``.
+
+        Priority (issue #67 clarification, evaluated in this exact order):
+          1. ``self._current_is_stale`` → "Stale — recompute needed"
+          2. ``result.get("error")``   → "Error"
+          3. ``result.get("manual_corrected")`` → "Manually corrected"
+          4. ``result.get("length")`` or ``result.get("mask")`` non-None → "Analyzed"
+          5. otherwise → "Not analyzed"
+        """
+        # #67 — guard against stub objects in lifecycle tests that bypass
+        # __init__ and never set _status_badge. Default to "not stale" so
+        # the rest of the priority logic evaluates cleanly.
+        is_stale = getattr(self, "_current_is_stale", False)
+        if is_stale:
+            text = "Stale — recompute needed"
+            colour = "rgba(255, 152, 0, 200)"  # amber, translucent
+        elif result.get("error"):
+            text = "Error"
+            colour = "rgba(244, 67, 54, 200)"  # red, translucent
+        elif result.get("manual_corrected"):
+            text = "Manually corrected"
+            colour = "rgba(33, 150, 243, 200)"  # blue, translucent
+        elif (result.get("length") is not None
+              or result.get("mask") is not None):
+            text = "Analyzed"
+            colour = "rgba(76, 175, 80, 200)"  # green, translucent
+        else:
+            text = "Not analyzed"
+            colour = "rgba(127, 127, 127, 180)"  # grey, translucent
+
+        # Translucent pill — keep the existing CSS structure; only swap colours.
+        if hasattr(self, "_status_badge"):
+            self._status_badge.setStyleSheet(
+                f"font-size: 11px; padding: 3px 6px; border-radius: 8px;"
+                f" background: {colour}; color: white;"
+            )
+            self._status_badge.setText(text)
+
+    def _update_error_banner(self, result: dict) -> None:
+        """Show or hide the error banner based on the current result.
+
+        Note: stale rows always have an error message string set by
+        :func:`mrml.mark_volume_node_stale` (see ``STALE_ERROR_MESSAGE``),
+        so the banner naturally surfaces stale rows too — the badge and
+        the banner share the same source of truth (``result['error']``).
+        """
+        # #67 — defensive for lifecycle tests that bypass __init__.
+        if not hasattr(self, "_error_banner"):
+            return
+        message = result.get("error") or ""
+        if message:
+            self._error_banner.setText(str(message))
+            self._error_banner.setVisible(True)
+        else:
+            self._error_banner.setVisible(False)
 
     # ------------------------------------------------------------------
     # Splitter width persistence
@@ -365,7 +537,9 @@ class DetailTab(qt.QWidget):
         self._manual_status.setVisible(True)
         self._btn_revert_auto.setVisible(False)
         self._btn_manual_adjust.setText("✏ Manual Adjust")
-        self._metrics_label.setText(_format_metrics(result))
+        _populate_measurements(self._measurements, result)
+        self._update_status_badge(result)
+        self._update_error_banner(result)
         self._view.set_manual_mode(False)
         self._view.clear_dots()
 
@@ -411,17 +585,50 @@ class DetailTab(qt.QWidget):
         self._manual_status.setText("Manual correction applied.")
         self._btn_revert_auto.setVisible(True)
         self._btn_manual_adjust.setText("✏ Redo Manual")
-        self._metrics_label.setText(_format_metrics(result))
+        _populate_measurements(self._measurements, result)
+        self._update_status_badge(result)
+        self._update_error_banner(result)
 
         self._start_job(self._current_idx)
 
 
-def _format_metrics(r: dict) -> str:
-    if r.get("error"):
-        return f"<b>{r['filename']}</b>  ERROR: {r['error']}"
-    parts = [f"<b>{r['filename']}</b>"]
-    if r.get("length")    is not None: parts.append(f"Length: {r['length']:.1f} µm")
-    if r.get("curvature") is not None: parts.append(f"Class: {r['curvature']}")
-    if r.get("ratio")     is not None: parts.append(f"Ratio: {r['ratio']:.3f}")
-    if r.get("eye_area")  is not None: parts.append(f"Eye area: {r['eye_area']:.1f} µm²")
-    return "  |  ".join(parts)
+# ---------------------------------------------------------------------------
+# Issue #67: Measurements helpers
+# ---------------------------------------------------------------------------
+
+# Display order matches self._measurements (built in __init__).
+_MEASUREMENT_FORMATS = [
+    # key, format callable (value) -> display string. None value → "—".
+    ("length",        lambda v: f"{v:.1f} µm"),
+    ("curvature",     lambda v: str(v)),
+    ("ratio",         lambda v: f"{v:.3f}"),
+    ("eye_area",      lambda v: f"{v:.1f} µm²"),
+    ("eye_diameter",  lambda v: f"{v:.1f} µm"),
+]
+
+
+def _populate_measurements(rows, result: dict) -> None:
+    """Update each (label, value) pair in ``rows`` from the result dict.
+
+    Missing fields render as ``—`` per issue #67 — rows are never hidden
+    so the sidebar height stays constant across navigations.
+    """
+    for row_i, (_lbl, val_widget) in enumerate(rows):
+        key, formatter = _MEASUREMENT_FORMATS[row_i]
+        value = result.get(key)
+        if value is None:
+            val_widget.setText("—")
+        else:
+            try:
+                val_widget.setText(formatter(value))
+            except Exception:
+                # Defensive: a malformed numeric (e.g. from a half-built
+                # result dict) shouldn't crash the show_result path —
+                # fall back to the raw repr.
+                val_widget.setText(repr(value))
+
+
+def _clear_measurements(rows) -> None:
+    """Reset every value cell to ``—``. Used by :meth:`DetailTab.reset`."""
+    for _lbl, val_widget in rows:
+        val_widget.setText("—")

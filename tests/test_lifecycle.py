@@ -688,7 +688,12 @@ def test_detail_tab_reset_shows_placeholder():
 
 
 def test_detail_tab_reset_clears_texts_and_labels():
-    """DetailTab.reset() must clear metrics_label and nav_label."""
+    """DetailTab.reset() must clear the measurements grid and nav_label.
+
+    #67 replaced the single ``_metrics_label`` with a 5-row measurements
+    grid (list of (label, value) widget pairs). reset() must reset every
+    value cell to the em-dash placeholder '—'.
+    """
     r = _run_detail("""
         from unittest.mock import MagicMock
         from ZebrafishEmbryoAnalyzerLib.detail_tab import DetailTab
@@ -701,9 +706,10 @@ def test_detail_tab_reset_clears_texts_and_labels():
         d._manual_mode = False
         d._manual_points = []
         d._view = MagicMock()
-        metrics = MagicMock()
+        # #67 — replace _metrics_label with the new measurements grid.
+        value1, value2 = MagicMock(), MagicMock()
+        d._measurements = [(MagicMock(), value1), (MagicMock(), value2)]
         nav = MagicMock()
-        d._metrics_label = metrics
         d._nav_label = nav
         d._btn_prev = MagicMock()
         d._btn_next = MagicMock()
@@ -714,7 +720,8 @@ def test_detail_tab_reset_clears_texts_and_labels():
 
         d.reset()
 
-        metrics.setText.assert_called_with("")
+        value1.setText.assert_called_with("—")
+        value2.setText.assert_called_with("—")
         nav.setText.assert_called_with("")
         print("OK")
     """)

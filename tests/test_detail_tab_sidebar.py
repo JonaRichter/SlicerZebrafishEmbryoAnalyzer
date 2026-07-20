@@ -80,6 +80,8 @@ class _QWidget(_Recorder):
     def setFocusPolicy(self, p): self._calls.setFocusPolicy(p)
     def setMinimumWidth(self, w): self._calls.setMinimumWidth(w)
     def setMinimumHeight(self, h): self._calls.setMinimumHeight(h)
+    def setMaximumHeight(self, h): self._calls.setMaximumHeight(h)
+    def setMaximumWidth(self, w): self._calls.setMaximumWidth(w)
     def setVisible(self, v): self._calls.setVisible(v)
     def setEnabled(self, e): self._calls.setEnabled(e)
     def setWordWrap(self, w): self._calls.setWordWrap(w)
@@ -90,6 +92,7 @@ class _QWidget(_Recorder):
     def setText(self, t): self._calls.setText(t)
     def setChecked(self, c): self._calls.setChecked(c)
     def setToolTip(self, t): self._calls.setToolTip(t)
+    def setTextInteractionFlags(self, f): self._calls.setTextInteractionFlags(f)
     def blockSignals(self, b): self._calls.blockSignals(b)
     def isVisible(self): return self._calls.isVisible()
     def layout(self): return self._calls.layout()
@@ -134,8 +137,11 @@ class _QVBoxLayout(_Recorder):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def addWidget(self, w, stretch=0):
-        self._calls.addWidget(w, stretch)
+    def addWidget(self, w, stretch=0, *args, **kwargs):
+        # Capture extras so we can introspect alignments like
+        # ``sidebar_layout.addWidget(self._status_badge, 0, qt.Qt.AlignVCenter)``.
+        self._calls.addWidget(w, stretch, *args, **kwargs)
+        return w
 
     def addLayout(self, l, stretch=0):
         self._calls.addLayout(l, stretch)
@@ -154,11 +160,21 @@ class _Qt:
     Horizontal = 1
     AlignCenter = 0
     AlignTop = 32
+    AlignVCenter = 16
     AlignHCenter = 4
     StrongFocus = 1
     Key_Escape = 0x01000000  # 0x1b
     Key_Left = 0x01000012
     Key_Right = 0x01000014
+    # TextInteractionFlag values used by detail_tab.setTextInteractionFlags
+    # so users can copy measurement values out of the sidebar. We just need
+    # them present and distinct — production uses bitwise OR, not specific bits.
+    NoTextInteraction = 0
+    TextSelectableByMouse = 1
+    TextSelectableByKeyboard = 2
+    LinksAccessibleByMouse = 4
+    LinksAccessibleByKeyboard = 8
+    TextBrowserInteraction = 7
 
 
 class _QSettings:
@@ -236,8 +252,16 @@ def _install_qt_stub(monkeypatch):
 
     # overlay is imported lazily by _build_rgb_array.
     om = MagicMock(name="overlay")
-    om.make_full_overlay = MagicMock(return_value=MagicMock(name="full_overlay"))
+    # Return a real numpy array so cv2.cvtColor in _build_rgb_array is
+    # happy; the actual pixel values don't matter for these tests, only
+    # the fact that show_result() reaches the badge/banner refresh.
+    import numpy as _np
+    om.make_full_overlay = MagicMock(return_value=_np.zeros((4, 4, 3), dtype=_np.uint8))
     sys.modules["ZebrafishEmbryoAnalyzerLib.overlay"] = om
+    # cv2 stub: real module so cv2.cvtColor works against a real ndarray.
+    cv2_stub = MagicMock(name="cv2")
+    cv2_stub.cvtColor = lambda src, code: _np.asarray(src)
+    sys.modules["cv2"] = cv2_stub
 
     # PIL shim for _numpy_to_qpixmap.
     try:
@@ -344,14 +368,19 @@ def test_sidebar_has_minimum_width_in_spec_band(stubs):
 
 def test_sidebar_holds_every_pre_existing_control(stubs):
     """#66: nothing should be lost — the sidebar must host the existing
-    Manual Adjust row, status, Exclude, Metrics, and Nav row."""
+    Manual Adjust row, status, Exclude, Metrics, and Nav row.
+
+    #67 re-shaped the metrics area from a single ``_metrics_label`` to a
+    5-row grid + status badge + error banner, so this test now asserts on
+    those widget handles instead of the removed ``_metrics_label``.
+    """
     dt, tab = _make_tab(stubs)
 
     # Every QVBoxLayout created — the one for self (the tab) and the one for the sidebar.
-    # Find the one whose addWidget calls reference the manually-created widgets.
+    # Find the one whose addWidget/addLayout calls reference the manually-created widgets.
     candidates = list(_QVBoxLayout.all())
 
-    def _holds(layout, widget):
+    def _holds_widget(layout, widget):
         for c in layout._calls.addWidget.call_args_list:
             if c.args and c.args[0] is widget:
                 return True
@@ -359,15 +388,15 @@ def test_sidebar_holds_every_pre_existing_control(stubs):
 
     sidebar_layout = None
     for layout in candidates:
-        if (_holds(layout, tab._manual_row_widget)
-                and _holds(layout, tab._chk_exclude)
-                and _holds(layout, tab._metrics_label)):
+        if (_holds_widget(layout, tab._manual_row_widget)
+                and _holds_widget(layout, tab._chk_exclude)
+                and _holds_widget(layout, tab._error_banner)):
             sidebar_layout = layout
             break
 
     assert sidebar_layout is not None, (
         "Could not find the sidebar's QVBoxLayout — it must hold the manual row, "
-        "exclude checkbox, and metrics label."
+        "exclude checkbox, and error banner."
     )
 
     add_widgets = [c.args[0] for c in sidebar_layout._calls.addWidget.call_args_list]
@@ -380,13 +409,33 @@ def test_sidebar_holds_every_pre_existing_control(stubs):
     assert tab._chk_exclude in add_widgets, (
         "Exclude checkbox must live inside the sidebar"
     )
-    assert tab._metrics_label in add_widgets, (
-        "Metrics label must live inside the sidebar"
+    assert tab._error_banner in add_widgets, (
+        "Error banner must live inside the sidebar (#67)"
     )
     sidebar_layout._calls.addLayout.assert_called()
     layout_args = [c.args[0] for c in sidebar_layout._calls.addLayout.call_args_list]
     assert tab._nav_row_layout in layout_args, (
         "Nav row layout must live at the bottom of the sidebar"
+    )
+    assert tab._measurements_grid in layout_args, (
+        "Measurements grid layout must live inside the sidebar (#67)"
+    )
+
+    # Filename + status badge share a top HBox inside the sidebar — verify
+    # both widgets landed in *some* QHBoxLayout's addWidget list, and that
+    # layout is itself in the sidebar's addLayout list (#67).
+    hbox_layouts = list(_QHBoxLayout.all())
+    top_row = None
+    for hbox in hbox_layouts:
+        if (_holds_widget(hbox, tab._filename_label)
+                and _holds_widget(hbox, tab._status_badge)):
+            top_row = hbox
+            break
+    assert top_row is not None, (
+        "Filename label + status badge must share a top HBoxLayout (#67)"
+    )
+    assert top_row in layout_args, (
+        "Top row (filename + status badge) HBoxLayout must live inside the sidebar (#67)"
     )
 
 
@@ -520,6 +569,380 @@ def test_keypressevent_still_handles_escape_and_arrows(stubs):
             f"keyPressEvent must still reference qt.Qt.{token}; "
             f"removing it would violate #66's 'keyPressEvent must keep working exactly as today' clause."
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #67 — Measurements section, status badge, error banner
+# ---------------------------------------------------------------------------
+#
+# These tests cover the five acceptance criteria from issue #67:
+#
+#   1. Five-row Measurements section in the sidebar (always present, never
+#      hidden, missing values render as "—").
+#   2. Status badge above the metrics with priority order stale → error →
+#      manual_corrected → analyzed → not analyzed.
+#   3. Error banner above the metrics, shown only when ``result["error"]``
+#      is non-empty.
+#   4. ``set_stale(bool)`` setter so ``widget.py`` can flip the badge live.
+#   5. The default stale state is False (so freshly-built tabs don't appear
+#      stale before any MRML observation has run).
+
+
+def _latest_settext(widget, attr="_calls"):
+    """Return the last setText text passed to ``widget`` if any, else fall
+    back to the text passed at construction time (production uses
+    ``qt.QLabel("—")`` for measurement value initial state, so we need to
+    see constructor args too)."""
+    calls = getattr(widget, attr).setText.call_args_list
+    if calls:
+        args = calls[-1].args
+        if args:
+            return args[0]
+    ctor_calls = getattr(widget, attr).call_args_list
+    if ctor_calls and ctor_calls[0].args:
+        return ctor_calls[0].args[0]
+    return None
+
+
+def _latest_stylesheet(widget, attr="_calls"):
+    """Return the last setStyleSheet CSS passed to ``widget`` if any, else None."""
+    calls = getattr(widget, attr).setStyleSheet.call_args_list
+    if not calls:
+        return None
+    args = calls[-1].args
+    return args[0] if args else None
+
+
+def test_measurements_grid_has_five_rows(stubs):
+    """#67: the sidebar must host a 5-row Measurements section in the
+    canonical order: Length, Curvature class, Length/straight ratio,
+    Eye area, Eye diameter."""
+    dt, tab = _make_tab(stubs)
+    assert len(tab._measurements) == 5, (
+        f"DetailTab must keep exactly 5 measurement rows, got {len(tab._measurements)}"
+    )
+
+    def _label_text(widget):
+        text = _latest_settext(widget)
+        return text or ""
+
+    actual_labels = [_label_text(label) for label, _ in tab._measurements]
+    expected_labels = [
+        "Length:", "Curvature class:", "Length/straight ratio:",
+        "Eye area:", "Eye diameter:",
+    ]
+    assert actual_labels == expected_labels, (
+        f"Measurement labels must appear in canonical order, got {actual_labels}"
+    )
+
+
+def test_measurements_show_em_dash_when_field_missing(stubs):
+    """#67: missing values render as the em-dash placeholder '—', not
+    blank/empty, so the sidebar's vertical footprint stays constant as
+    the user navigates between images with different fields populated."""
+    dt, tab = _make_tab(stubs)
+
+    # Bare tab → all measurement values are at the "—" default.
+    for _label, value_widget in tab._measurements:
+        assert _latest_settext(value_widget) == "—", (
+            "Bare DetailTab must initialise every measurement value to '—'"
+        )
+
+    # show_result with a row that has no fields at all → still all "—".
+    empty_row = {
+        "filename": "blank.tif", "original": None, "mask": None,
+        "length": None, "curvature": None, "ratio": None,
+        "eye_area": None, "eye_diameter": None, "error": None,
+        "manual_corrected": False,
+    }
+    tab.show_result(0, [empty_row])
+    for _label, value_widget in tab._measurements:
+        assert _latest_settext(value_widget) == "—", (
+            "show_result with no fields must leave every measurement as '—'"
+        )
+
+
+def test_measurements_use_canonical_format_strings(stubs):
+    """#67: each measurement has a fixed display format — Length µm,
+    Curvature raw, Ratio 3 decimals, Eye area µm², Eye diameter µm."""
+    dt, tab = _make_tab(stubs)
+    row = {
+        "filename": "ok.tif", "original": MagicMock(), "mask": MagicMock(),
+        "length": 123.456, "curvature": "straight",
+        "ratio": 0.85, "eye_area": 1500.7, "eye_diameter": 12.34,
+        "error": None, "manual_corrected": False,
+    }
+    tab.show_result(0, [row])
+
+    expected_texts = [
+        "123.5 µm",    # length — 1 decimal, " µm"
+        "straight",    # curvature — str() of the raw value
+        "0.850",       # ratio — 3 decimals
+        "1500.7 µm²",  # eye area — 1 decimal + " µm²"
+        "12.3 µm",     # eye diameter — 1 decimal + " µm"
+    ]
+    for (label_widget, value_widget), expected in zip(tab._measurements, expected_texts):
+        actual = _latest_settext(value_widget)
+        assert actual == expected, (
+            f"Measurement value for {label_widget!r} must be {expected!r}, "
+            f"got {actual!r}"
+        )
+
+
+def test_measurements_text_selectable_by_mouse(stubs):
+    """#67 acceptance: the user must be able to copy measurement values
+    out of the sidebar, which means setTextInteractionFlags must have
+    enabled mouse-driven selection on every value label."""
+    dt, tab = _make_tab(stubs)
+    for label, value in tab._measurements:
+        flags = value._calls.setTextInteractionFlags.call_args_list
+        assert flags, (
+            f"setTextInteractionFlags must be called on {label!r}'s value widget"
+        )
+        # Every call must include the mouse-selection flag (bit OR'd into
+        # the flag set). Our stub uses TextSelectableByMouse=1.
+        for call in flags:
+            arg = call.args[0]
+            assert arg & _Qt.TextSelectableByMouse, (
+                f"setTextInteractionFlags must include TextSelectableByMouse "
+                f"so users can copy values, got flags={arg!r}"
+            )
+
+
+def test_status_badge_default_state_is_not_analyzed(stubs):
+    """#67: a freshly-built DetailTab must show 'Not analyzed' so the
+    user has feedback before the first image is rendered."""
+    dt, tab = _make_tab(stubs)
+    text = _latest_settext(tab._status_badge)
+    css = _latest_stylesheet(tab._status_badge)
+    assert text == "Not analyzed", (
+        f"Freshly-built DetailTab's status badge must read 'Not analyzed', got {text!r}"
+    )
+    assert css and "background:" in css, (
+        "Status badge must apply a background colour (CSS background: ...)"
+    )
+
+
+def test_status_badge_priority_stale_beats_everything(stubs):
+    """#67 priority #1: stale wins over error, manual_corrected, analyzed."""
+    dt, tab = _make_tab(stubs)
+    result = {
+        "filename": "x.tif",
+        "length": 100.0, "mask": MagicMock(),
+        "error": "boom",            # would also trigger 'Error'
+        "manual_corrected": True,   # would also trigger 'Manually corrected'
+    }
+    tab.show_result(0, [result])
+    # Now flip the stale flag — it should beat everything else.
+    tab.set_stale(True)
+    text = _latest_settext(tab._status_badge)
+    css = _latest_stylesheet(tab._status_badge)
+    assert text == "Stale — recompute needed", (
+        f"Stale must beat all other states per #67 priority #1, got {text!r}"
+    )
+    assert css and "255, 152, 0" in css, (
+        f"Stale badge colour must be amber (255, 152, 0), got {css!r}"
+    )
+
+
+def test_status_badge_priority_error_beats_manual(stubs):
+    """#67 priority #2: error beats manual_corrected + analyzed."""
+    dt, tab = _make_tab(stubs)
+    result = {
+        "filename": "x.tif",
+        "length": 100.0, "mask": MagicMock(),
+        "error": "timeout",
+        "manual_corrected": True,
+    }
+    tab.show_result(0, [result])
+    text = _latest_settext(tab._status_badge)
+    css = _latest_stylesheet(tab._status_badge)
+    assert text == "Error", (
+        f"Error must beat manual_corrected + analyzed per #67 priority #2, got {text!r}"
+    )
+    assert css and "244, 67, 54" in css, (
+        f"Error badge colour must be red (244, 67, 54), got {css!r}"
+    )
+
+
+def test_status_badge_priority_manual_corrected_beats_analyzed(stubs):
+    """#67 priority #3: manual_corrected beats analyzed."""
+    dt, tab = _make_tab(stubs)
+    result = {
+        "filename": "x.tif",
+        "length": 100.0, "mask": MagicMock(),
+        "manual_corrected": True,
+    }
+    tab.show_result(0, [result])
+    text = _latest_settext(tab._status_badge)
+    css = _latest_stylesheet(tab._status_badge)
+    assert text == "Manually corrected", (
+        f"Manual corrected must beat analyzed per #67 priority #3, got {text!r}"
+    )
+    assert css and "33, 150, 243" in css, (
+        f"Manual badge colour must be blue (33, 150, 243), got {css!r}"
+    )
+
+
+def test_status_badge_priority_analyzed_when_length_or_mask_set(stubs):
+    """#67 priority #4: a row with length OR mask is 'Analyzed'."""
+    dt, tab = _make_tab(stubs)
+
+    # Length-only case.
+    tab.show_result(0, [{"filename": "a.tif", "length": 100.0,
+                          "mask": None, "error": None, "manual_corrected": False}])
+    assert _latest_settext(tab._status_badge) == "Analyzed"
+
+    # Mask-only case (length=None but mask present).
+    tab.show_result(0, [{"filename": "b.tif", "length": None,
+                          "mask": MagicMock(), "error": None, "manual_corrected": False}])
+    assert _latest_settext(tab._status_badge) == "Analyzed"
+
+    css = _latest_stylesheet(tab._status_badge)
+    assert css and "76, 175, 80" in css, (
+        f"Analyzed badge colour must be green (76, 175, 80), got {css!r}"
+    )
+
+
+def test_status_badge_priority_not_analyzed_when_nothing_present(stubs):
+    """#67 priority #5: no length, no mask, no error, not corrected → 'Not analyzed'."""
+    dt, tab = _make_tab(stubs)
+    tab.show_result(0, [{"filename": "c.tif", "length": None,
+                          "mask": None, "error": None, "manual_corrected": False}])
+    assert _latest_settext(tab._status_badge) == "Not analyzed"
+
+
+def test_error_banner_hidden_when_no_error(stubs):
+    """#67 acceptance: the error banner stays hidden until a row with
+    an error is shown."""
+    dt, tab = _make_tab(stubs)
+    tab.show_result(0, [{"filename": "ok.tif", "length": 100.0, "mask": MagicMock(),
+                          "error": None, "manual_corrected": False}])
+    # The most recent setVisible(False) is the post-show_result state.
+    visible_calls = tab._error_banner._calls.setVisible.call_args_list
+    assert visible_calls, "Error banner visibility must be set during show_result"
+    last_visible_arg = visible_calls[-1].args[0]
+    assert last_visible_arg is False, (
+        f"Error banner must be hidden when result has no error, got setVisible({last_visible_arg!r})"
+    )
+
+
+def test_error_banner_shown_when_error_set(stubs):
+    """#67 acceptance: when a row's error string is non-empty, the
+    banner appears with the error message as its text."""
+    dt, tab = _make_tab(stubs)
+    tab.show_result(0, [{"filename": "bad.tif", "length": None,
+                          "mask": None, "error": "Inference failed: OOM",
+                          "manual_corrected": False}])
+    visible_calls = tab._error_banner._calls.setVisible.call_args_list
+    assert visible_calls
+    last_visible_arg = visible_calls[-1].args[0]
+    assert last_visible_arg is True, (
+        f"Error banner must be shown when result['error'] is set, got setVisible({last_visible_arg!r})"
+    )
+    text = _latest_settext(tab._error_banner)
+    assert text == "Inference failed: OOM", (
+        f"Error banner must display the exact error string, got {text!r}"
+    )
+
+
+def test_error_banner_clears_when_subsequent_row_has_no_error(stubs):
+    """#67 acceptance: navigating from an errored row to a clean one
+    must hide the banner again (it isn't a sticky indicator)."""
+    dt, tab = _make_tab(stubs)
+    tab.show_result(0, [{"filename": "bad.tif", "error": "boom"}])
+    tab.show_result(0, [{"filename": "ok.tif", "length": 100.0, "mask": MagicMock(),
+                          "error": None, "manual_corrected": False}])
+    visible_calls = tab._error_banner._calls.setVisible.call_args_list
+    last_visible_arg = visible_calls[-1].args[0]
+    assert last_visible_arg is False, (
+        "Error banner must hide again after navigating away from the errored row"
+    )
+
+
+def test_set_stale_default_is_false(stubs):
+    """#67: a freshly-built DetailTab must default to _current_is_stale=False
+    so a tab that has never received a stale notification isn't stale."""
+    dt, tab = _make_tab(stubs)
+    assert tab._current_is_stale is False, (
+        f"Default _current_is_stale must be False, got {tab._current_is_stale!r}"
+    )
+
+
+def test_set_stale_true_flips_badge_when_row_visible(stubs):
+    """#67 acceptance: set_stale(True) flips the badge to 'Stale — recompute needed'
+    immediately when a row is currently shown."""
+    dt, tab = _make_tab(stubs)
+    tab.show_result(0, [{"filename": "x.tif", "length": 100.0,
+                          "mask": MagicMock(), "error": None,
+                          "manual_corrected": False}])
+    # Baseline: green Analyzed.
+    assert _latest_settext(tab._status_badge) == "Analyzed"
+    tab.set_stale(True)
+    assert _latest_settext(tab._status_badge) == "Stale — recompute needed", (
+        "set_stale(True) must immediately update the badge"
+    )
+    assert tab._current_is_stale is True
+
+
+def test_set_stale_false_clears_stale_state_on_badge(stubs):
+    """#67: set_stale(False) restores the badge to the row's underlying state
+    (Analyzed, Error, etc.) once the segment is no longer stale."""
+    dt, tab = _make_tab(stubs)
+    tab.show_result(0, [{"filename": "x.tif", "length": 100.0,
+                          "mask": MagicMock(), "error": None,
+                          "manual_corrected": False}])
+    tab.set_stale(True)
+    assert _latest_settext(tab._status_badge) == "Stale — recompute needed"
+    tab.set_stale(False)
+    assert _latest_settext(tab._status_badge) == "Analyzed", (
+        "set_stale(False) must restore the badge to the row's underlying state"
+    )
+    assert tab._current_is_stale is False
+
+
+def test_set_stale_coerces_to_bool(stubs):
+    """#67: set_stale accepts truthy/falsy values; storage is bool-coerced
+    so downstream priority logic doesn't have to special-case 'truthy'."""
+    dt, tab = _make_tab(stubs)
+    tab.set_stale(1)
+    assert tab._current_is_stale is True
+    tab.set_stale(0)
+    assert tab._current_is_stale is False
+
+
+def test_set_stale_is_noop_before_any_row_shown(stubs):
+    """#67: set_stale must not crash when called before show_result — there's
+    no current row to refresh yet."""
+    dt, tab = _make_tab(stubs)
+    # No show_result call yet.
+    tab.set_stale(True)
+    assert tab._current_is_stale is True
+    # The badge should not have been touched (no current result to update).
+    # Its text should still be the default "Not analyzed" from __init__.
+    assert _latest_settext(tab._status_badge) == "Not analyzed", (
+        "set_stale before show_result must not refresh the badge with junk"
+    )
+
+
+def test_reset_clears_stale_state_and_resets_badge(stubs):
+    """#67: DetailTab.reset() must restore the default non-stale state so a
+    fresh dataset doesn't inherit the previous row's staleness."""
+    dt, tab = _make_tab(stubs)
+    tab.show_result(0, [{"filename": "x.tif", "length": 100.0,
+                          "mask": MagicMock(), "error": None,
+                          "manual_corrected": False}])
+    tab.set_stale(True)
+    assert tab._current_is_stale is True
+    tab.reset()
+    assert tab._current_is_stale is False, (
+        "reset() must restore _current_is_stale to its default False"
+    )
+    assert _latest_settext(tab._status_badge) == "Not analyzed"
+    visible_calls = tab._error_banner._calls.setVisible.call_args_list
+    assert visible_calls[-1].args[0] is False, (
+        "reset() must hide the error banner"
+    )
 
 
 if __name__ == "__main__":
