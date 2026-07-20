@@ -273,6 +273,7 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
                 list_tracked_volume_nodes,
                 ROLE_ZEBRAFISH_SEGMENTATION,
                 mark_volume_node_stale,
+                clear_volume_node_stale,
             )
         except Exception:
             return
@@ -308,7 +309,35 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
             if seg_node is None:
                 continue
 
-            def _on_seg_modified(_caller=None, _event=None, _vol=vol):
+            # Issue #56 follow-up: the seg node's ModifiedEvent also fires
+            # during node teardown (Data-module delete). Marking the
+            # volume stale in that case prompts the user to recompute on
+            # the next module enter, which resurrects the segmentation
+            # they just removed. Capture the seg id so the observer can
+            # distinguish "edit in place" (still in scene) from "deleted"
+            # (no longer in scene) — only the former counts as an external
+            # edit that needs the recompute prompt.
+            def _on_seg_modified(_caller=None, _event=None, _vol=vol, _seg_id=seg_id, _scene=scene):
+                try:
+                    current = _scene.GetNodeByID(_seg_id)
+                except Exception:
+                    current = None
+                if current is None:
+                    # Seg was deleted from the scene — Data module is
+                    # ground truth. Clear any stale flag and the
+                    # auto-exclude / error side-effects that the stale
+                    # path set, so a future module enter does not offer
+                    # to recompute and silently recreate the segmentation.
+                    try:
+                        clear_volume_node_stale(_vol)
+                    except Exception:
+                        pass
+                    try:
+                        _vol.SetAttribute("ZebrafishAnalysis.exclude", "false")
+                        _vol.SetAttribute("ZebrafishAnalysis.error", "")
+                    except Exception:
+                        pass
+                    return
                 mark_volume_node_stale(_vol)
 
             tag = None
@@ -610,6 +639,55 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
             return False
         try:
             return bool(is_volume_node_stale(volume_node))
+        except Exception:
+            return False
+
+    def clear_stale_flag_for_volume_node(self, volume_node):
+        """Issue #56 follow-up: clear a single volume node's stale flag.
+
+        Used by ``prompt_recompute_stale_images`` when the segmentation
+        node a stale volume was once linked to has been removed from the
+        scene (e.g. the user deleted it in the Data module). Clearing
+        the flag without recreating anything honours "Data module is
+        ground truth" — the gallery row stays visible without the
+        "Segmentation modified — recompute needed" error, and a later
+        enter() will not re-prompt.
+
+        Best-effort: returns silently on any error so a transient scene
+        glitch cannot break the recompute-prompt loop.
+        """
+        try:
+            from ZebrafishEmbryoAnalyzerLib.mrml import clear_volume_node_stale
+        except Exception:
+            return
+        try:
+            clear_volume_node_stale(volume_node)
+        except Exception:
+            pass
+
+    def volume_node_references_existing_seg(self, volume_node):
+        """Issue #56 follow-up: return True if ``volume_node`` has a
+        ``ROLE_ZEBRAFISH_SEGMENTATION`` reference whose target
+        segmentation node is still in the scene.
+
+        Used by the recompute-prompt loop to silently drop any
+        tracked volume whose segmentation the user deleted in the
+        Data module — honouring the deletion rather than offering to
+        recompute (which would resurrect the segmentation).
+
+        Returns ``False`` for any error condition so callers can use
+        this as a guard without try/except.
+        """
+        if volume_node is None or not hasattr(volume_node, "GetNodeReferenceID"):
+            return False
+        try:
+            import slicer
+            from ZebrafishEmbryoAnalyzerLib.mrml import ROLE_ZEBRAFISH_SEGMENTATION
+            scene = getattr(slicer, "mrmlScene", None)
+            seg_id = volume_node.GetNodeReferenceID(ROLE_ZEBRAFISH_SEGMENTATION)
+            if not seg_id or scene is None:
+                return False
+            return scene.GetNodeByID(seg_id) is not None
         except Exception:
             return False
 

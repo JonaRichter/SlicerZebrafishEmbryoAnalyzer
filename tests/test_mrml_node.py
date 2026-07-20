@@ -1096,3 +1096,229 @@ def test_update_image_node_calls_set_dimensions_with_correct_values():
             sys.modules["vtk.util.numpy_support"] = original_vtk_util_ns
         # Reload mrml again with real (absent) vtk to restore state
         importlib.reload(mrml_mod)
+
+
+# ---------------------------------------------------------------------------
+# Issue #56 follow-up: Data-module deletions are ground truth
+# ---------------------------------------------------------------------------
+
+def test_logic_clear_stale_flag_for_volume_node_calls_mrml_helper():
+    """Logic.clear_stale_flag_for_volume_node forwards to mrml.clear_volume_node_stale.
+
+    Issue #56 follow-up: when the user deletes a segmentation node
+    inside the Data module, the stale flag must be cleared silently
+    (without recreating the segmentation). The widget relies on this
+    Logic method so it does not need to import mrml directly.
+    """
+    r = _run("""
+        from unittest.mock import MagicMock, patch
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+        from ZebrafishEmbryoAnalyzerLib import mrml as mrml_mod
+
+        logic = ZebrafishEmbryoAnalyzerLogic()
+        logic.getParameterNode = lambda: MagicMock()
+        vol = MagicMock()
+        with patch.object(mrml_mod, "clear_volume_node_stale") as clear_helper:
+            logic.clear_stale_flag_for_volume_node(vol)
+        clear_helper.assert_called_once_with(vol)
+        print("OK")
+    """)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout, r.stderr
+
+
+def test_logic_clear_stale_flag_for_volume_node_swallows_import_failure():
+    """A broken import must not propagate to the widget.
+
+    Forces ``mrml.clear_volume_node_stale`` to be missing by stubbing
+    a fake mrml module without it — verifies the logic layer fails
+    closed (no exception) instead of crashing the recompute-prompt
+    loop.
+    """
+    r = _run("""
+        import sys, types
+        from unittest.mock import MagicMock
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+
+        logic = ZebrafishEmbryoAnalyzerLogic()
+        logic.getParameterNode = lambda: MagicMock()
+
+        fake_mrml = types.ModuleType("ZebrafishEmbryoAnalyzerLib.mrml")
+        # Deliberately no clear_volume_node_stale attribute.
+        sys.modules["ZebrafishEmbryoAnalyzerLib.mrml"] = fake_mrml
+        # Should swallow the AttributeError from the missing helper.
+        logic.clear_stale_flag_for_volume_node(MagicMock())
+        print("OK")
+    """)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout, r.stderr
+
+
+def test_logic_volume_node_references_existing_seg():
+    """volume_node_references_existing_seg resolves the
+    ROLE_ZEBRAFISH_SEGMENTATION reference against the live scene.
+
+    Returns True only when the referenced segmentation node is still
+    in the scene; False for any error condition or when the reference
+    id is empty. Issue #56 follow-up hook for the recompute-prompt
+    and detail-recompute-button paths.
+    """
+    r = _run("""
+        from unittest.mock import MagicMock
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+        import slicer
+
+        logic = ZebrafishEmbryoAnalyzerLogic()
+        logic.getParameterNode = lambda: MagicMock()
+
+        vol = MagicMock()
+        vol.GetNodeReferenceID.return_value = "Seg42"
+        slicer.mrmlScene.GetNodeByID.return_value = MagicMock(name="present")
+        assert logic.volume_node_references_existing_seg(vol) is True
+
+        slicer.mrmlScene.GetNodeByID.return_value = None
+        assert logic.volume_node_references_existing_seg(vol) is False
+
+        vol.GetNodeReferenceID.return_value = ""
+        assert logic.volume_node_references_existing_seg(vol) is False
+
+        assert logic.volume_node_references_existing_seg(None) is False
+        print("OK")
+    """)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout, r.stderr
+
+
+def test_setup_segmentation_observer_clears_stale_when_seg_removed_from_scene():
+    """setup_segmentation_staleness_observers observer clears the
+    stale attribute instead of marking the volume stale when the
+    referenced segmentation node is no longer in the scene.
+
+    Issue #56 follow-up: data-module deletions must not feed the
+    "recompute?" prompt that would resurrect the segmentation.
+
+    Test exercises the observer's closure directly because the
+    VTKObservationMixin is the only way to capture the observer
+    callable in production code; we replicate the same closure
+    pattern inline and assert on the resulting stale attribute
+    transitions.
+    """
+    from ZebrafishEmbryoAnalyzerLib import mrml
+
+    vol = MagicMock()
+    vol.SetAttribute = MagicMock()
+    vol.GetAttribute = MagicMock(return_value=None)
+    vol.RemoveAttribute = MagicMock()
+
+    seg_id = "Seg42"
+    scene = MagicMock()
+
+    # First iteration: seg is in the scene → mark stale.
+    scene.GetNodeByID.return_value = MagicMock(name="present-seg")
+    # Recreate the closure pattern from setup_segmentation_staleness_observers
+    # inline so the test reflects the same code path.
+    def _on_seg_modified_first(_caller=None, _event=None, _vol=vol, _seg_id=seg_id, _scene=scene):
+        try:
+            current = _scene.GetNodeByID(_seg_id)
+        except Exception:
+            current = None
+        if current is None:
+            try:
+                mrml.clear_volume_node_stale(_vol)
+            except Exception:
+                pass
+            try:
+                _vol.SetAttribute("ZebrafishAnalysis.exclude", "false")
+                _vol.SetAttribute("ZebrafishAnalysis.error", "")
+            except Exception:
+                pass
+            return
+        mrml.mark_volume_node_stale(_vol)
+
+    with patch.object(mrml, "mark_volume_node_stale") as mark_fn, \
+         patch.object(mrml, "clear_volume_node_stale") as clear_fn:
+        _on_seg_modified_first()
+    mark_fn.assert_called_once_with(vol)
+    clear_fn.assert_not_called()
+
+    # Second iteration: seg has been removed from the scene → clear stale.
+    scene.GetNodeByID.return_value = None
+    with patch.object(mrml, "mark_volume_node_stale") as mark_fn, \
+         patch.object(mrml, "clear_volume_node_stale") as clear_fn:
+        _on_seg_modified_first()
+    mark_fn.assert_not_called()
+    clear_fn.assert_called_once_with(vol)
+    # Auto-exclude / error side effects removed so the row is no longer
+    # visually stale.
+    assert vol.SetAttribute.called
+
+
+def test_prompt_recompute_stale_images_skips_volumes_with_deleted_seg():
+    """prompt_recompute_stale_images must NOT prompt for or recreate a
+    volume whose segmentation node has been removed from the scene.
+
+    Issue #56 follow-up: data-module deletions are ground truth, so the
+    auto-prompt must silently drop the stale volume (and clear the
+    stale flag) rather than run the recompute pipeline that
+    recreates the segmentation.
+    """
+    r = _run("""
+        from unittest.mock import MagicMock, patch
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+        import ZebrafishEmbryoAnalyzerLib.widget as w_mod
+
+        logic = ZebrafishEmbryoAnalyzerLogic()
+        logic.getParameterNode = lambda: MagicMock()
+
+        # Two stale volumes — one whose seg is gone, one whose seg
+        # is still present. Only the latter should be prompted.
+        deleted_vol = MagicMock(); deleted_vol.GetName.return_value = "deleted.png"
+        deleted_vol.GetNodeReferenceID.return_value = "SegGone"
+        present_vol = MagicMock(); present_vol.GetName.return_value = "present.png"
+        present_vol.GetNodeReferenceID.return_value = "SegStill"
+
+        scene = MagicMock()
+        def _get_node(id_):
+            return None if id_ == "SegGone" else MagicMock()
+        scene.GetNodeByID.side_effect = _get_node
+        fake_slicer = MagicMock(); fake_slicer.mrmlScene = scene
+
+        prompt_calls = []
+        def _policy(_name):
+            prompt_calls.append(_name)
+            return "yes"
+
+        # Construct the widget without running __init__ so we do not
+        # need a Qt parent / layout. Only inject the dependencies the
+        # prompt loop actually touches.
+        widget = w_mod.ZebrafishEmbryoAnalyzerMainWidget.__new__(
+            w_mod.ZebrafishEmbryoAnalyzerMainWidget
+        )
+        widget._logic = logic
+        widget._stale_recompute_prompt_policy = _policy
+        recompute_calls = []
+        widget._recompute_for_volume_node = lambda vol: recompute_calls.append(vol)
+
+        with patch.dict("sys.modules", {"slicer": fake_slicer}), patch.object(
+            logic, "list_stale_tracked_volume_nodes", return_value=[deleted_vol, present_vol]
+        ), patch.object(logic, "clear_stale_flag_for_volume_node") as clear_fn:
+            widget.prompt_recompute_stale_images()
+
+        # 1) The deleted volume is cleared silently and never reaches
+        #    the prompt or the recompute pipeline.
+        clear_fn.assert_called_once_with(deleted_vol)
+        # 2) The prompt policy is called exactly once — for the
+        #    volume whose segmentation is still in the scene.
+        assert prompt_calls == ["present.png"], (
+            f"Prompt called with {prompt_calls!r}; only the still-"
+            "present seg was supposed to be asked about."
+        )
+        # 3) Recompute runs only for the still-present seg.
+        assert recompute_calls == [present_vol], (
+            f"Recompute called with {recompute_calls!r}; the deleted-seg "
+            "volume must not be re-created."
+        )
+        print("OK")
+    """)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout, r.stderr

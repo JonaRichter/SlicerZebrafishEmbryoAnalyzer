@@ -1638,6 +1638,13 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         so the per-image decision logic is unit-testable without a Qt
         message box. This method only handles the UI loop and the
         recompute call.
+
+        Issue #56 follow-up: drops any volume whose segmentation node
+        no longer exists in the scene — the Data module is treated as
+        ground truth, so a deletion there is respected and never
+        resurrected by a recompute answer here. The stale flag is
+        cleared in that case so a later enter() is silent instead of
+        re-prompting.
         """
         if not getattr(self, "_logic", None):
             return
@@ -1651,7 +1658,32 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         if not stale_nodes:
             return
 
+        seg_still_present = getattr(
+            self._logic, "volume_node_references_existing_seg", lambda _v: True
+        )
+
         for vol in stale_nodes:
+            # Honour "Data module is ground truth": if the user deleted
+            # the segmentation in the Data module, drop the stale flag
+            # silently instead of asking the user a question whose
+            # default-Yes would resurrect the segmentation.
+            if not seg_still_present(vol):
+                try:
+                    getattr(
+                        self._logic, "clear_stale_flag_for_volume_node", lambda _v: None
+                    )(vol)
+                except Exception:
+                    pass
+                try:
+                    vol.RemoveAttribute("ZebrafishAnalysis.exclude")
+                except Exception:
+                    pass
+                try:
+                    vol.SetAttribute("ZebrafishAnalysis.error", "")
+                except Exception:
+                    pass
+                continue
+
             name = ""
             try:
                 name = vol.GetName() if hasattr(vol, "GetName") else ""
@@ -1800,6 +1832,12 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         based on whether the currently shown row's segmentation is
         marked stale. No-op when the button has not been created yet
         (older builds / tests without the widget fully set up).
+
+        Issue #56 follow-up: also hides the button when the row's
+        segmentation node no longer exists in the scene — the user
+        deleted it from the Data module and clicking "Recompute" here
+        would resurrect it, defeating their delete. Honour the deletion
+        silently.
         """
         btn = getattr(self, "_recompute_btn", None)
         if btn is None:
@@ -1808,12 +1846,21 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         try:
             if 0 <= self._current_detail_idx < len(self._results):
                 vol = self._results[self._current_detail_idx].get("_volume_node")
-                is_stale = bool(
-                    vol is not None
-                    and getattr(
-                        self._logic, "is_volume_node_stale", lambda _v: False
-                    )(vol)
-                )
+                if vol is not None:
+                    is_stale = bool(
+                        getattr(self._logic, "is_volume_node_stale", lambda _v: False)(vol)
+                    )
+                    if is_stale:
+                        # Suppress the button when the seg node the stale
+                        # flag points at has been removed — Data-module
+                        # delete is ground truth and a manual "Recompute"
+                        # click here would resurrect the segmentation.
+                        seg_present = getattr(
+                            self._logic,
+                            "volume_node_references_existing_seg",
+                            lambda _v: True,
+                        )(vol)
+                        is_stale = bool(seg_present)
         except Exception:
             is_stale = False
         try:
