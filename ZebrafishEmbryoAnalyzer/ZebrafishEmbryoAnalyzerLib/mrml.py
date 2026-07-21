@@ -1983,6 +1983,15 @@ def _extract_segment_mask(seg_node, segment_name):
     The returned array keeps the segmentation's stored geometry — the
     overlay code resizes to the original image dimensions internally, so
     any (H, W) is acceptable as long as it carries the body's footprint.
+
+    Orientation: ``_make_oriented_image`` stores the mask as
+    ``flipud(fliplr(...))`` to match VTK's bottom-left origin and Slicer's
+    radiological convention, so the array coming back out of
+    ``arrayFromSegment`` is rotated 180 degrees relative to the image the
+    overlay draws on. Undo it here — the same inverse
+    :func:`volume_node_to_pixels` applies to the image itself. Without
+    this the restored mask lands mirrored about the image centre instead
+    of on the fish.
     """
     if seg_node is None or not segment_name:
         return None
@@ -2014,7 +2023,8 @@ def _extract_segment_mask(seg_node, segment_name):
         # collapse to a single 2-D mask.
         while arr.ndim > 2:
             arr = arr[0]
-        return (arr > 0).astype(np.uint8)
+        mask = (arr > 0).astype(np.uint8)
+        return np.ascontiguousarray(np.flipud(np.fliplr(mask)))
     except Exception:
         return None
 

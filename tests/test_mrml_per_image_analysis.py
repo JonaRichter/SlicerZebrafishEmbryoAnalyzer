@@ -2471,6 +2471,43 @@ def test_extract_segment_mask_returns_uint8_for_body_segment():
     assert int(mask.sum()) == int((labelmap > 0).sum())
 
 
+def test_extract_segment_mask_undoes_the_stored_180_degree_rotation():
+    """The stored labelmap is flipud+fliplr of the image-space mask
+    (``_make_oriented_image``), so extraction must rotate it back or the
+    restored overlay lands mirrored about the image centre instead of on
+    the fish.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import _extract_segment_mask
+
+    seg = _FakeSegWithLabelmap()
+    seg.GetSegmentation().AddEmptySegment("Body", "Body", [0.0, 1.0, 0.0])
+    # Asymmetric in both axes, so a missing flip on either one shows up.
+    stored = np.array(
+        [
+            [0, 0, 0, 0, 0],
+            [0, 0, 0, 1, 1],
+            [0, 0, 0, 0, 1],
+        ],
+        dtype=np.uint8,
+    )
+    seg.SetSegmentLabelmap("Body", stored)
+
+    util, saved = _stub_slicer_array_from_segment(seg, "Body", stored)
+    try:
+        mask = _extract_segment_mask(seg, "Body")
+    finally:
+        if saved is not None:
+            util.arrayFromSegment = saved
+        else:
+            try:
+                del util.arrayFromSegment
+            except AttributeError:
+                pass
+
+    assert mask is not None
+    assert np.array_equal(mask, np.flipud(np.fliplr(stored)))
+
+
 def test_extract_segment_mask_returns_none_for_missing_segment():
     from ZebrafishEmbryoAnalyzerLib.mrml import _extract_segment_mask
 
