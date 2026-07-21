@@ -118,6 +118,11 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
         )
         self.addObserver(
             slicer.mrmlScene,
+            slicer.mrmlScene.StartImportEvent,
+            self._on_scene_start_import,
+        )
+        self.addObserver(
+            slicer.mrmlScene,
             slicer.mrmlScene.EndImportEvent,
             self._on_scene_end_import,
         )
@@ -425,6 +430,43 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
             if tag is not None:
                 self._stale_observer_tags.append(tag)
 
+    def _on_scene_start_import(self, caller=None, event=None):
+        """Record which images are tracked *before* an import begins.
+
+        Loading a scene on top of an open session keeps both sets of volume
+        nodes, but the parameter node is a singleton — the imported copy
+        overwrites the reference list, so once EndImportEvent fires there is
+        no way left to tell which nodes were already here. Capturing the
+        order now lets :func:`mrml.reconcile_tracked_volume_nodes` keep the
+        existing images in front of the imported batch (issue #36).
+
+        Best-effort: on any failure the snapshot is dropped and the merge
+        falls back to reference order, which still restores every image —
+        only the ordering between the two batches becomes arbitrary.
+        """
+        if not hasattr(self, "logic"):
+            return
+        try:
+            import slicer
+            from ZebrafishEmbryoAnalyzerLib.mrml import list_tracked_volume_nodes
+
+            param_node = self.getParameterNode()
+            scene = getattr(slicer, "mrmlScene", None)
+            ids = []
+            for node in list_tracked_volume_nodes(param_node, scene):
+                nid = node.GetID() if hasattr(node, "GetID") else ""
+                if nid:
+                    ids.append(nid)
+            self.logic.pre_import_tracked_ids = ids
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: pre-import snapshot of tracked images failed"
+            )
+            try:
+                self.logic.pre_import_tracked_ids = None
+            except Exception:
+                pass
+
     def _on_scene_end_import(self, caller=None, event=None):
         # Pick up parameter node values from the newly loaded scene.
         self.initializeParameterNode()
@@ -515,6 +557,12 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
     function in ZebrafishEmbryoAnalyzerLib.logic so the widget never imports that
     module directly.  ZebrafishEmbryoAnalyzerCore remains Slicer-independent.
     """
+
+    # Ordered tracked-node IDs as they were just before a scene import, set
+    # by the widget's StartImportEvent handler and consumed once by
+    # ``rebuild_results_from_scene`` (issue #36). ``None`` means "no import
+    # observed", which is the normal state outside a merge.
+    pre_import_tracked_ids = None
 
     def dependency_status(self) -> dict:
         """Return availability of optional ML/vision dependencies.
@@ -720,6 +768,7 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
                 volume_node_to_pixels,
                 _populate_row_overlays_from_scene,
                 clear_stale_marking,
+                reconcile_tracked_volume_nodes,
             )
         except Exception:
             return []
@@ -728,6 +777,24 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
         if param_node is None:
             return []
         scene = getattr(slicer, "mrmlScene", None)
+        # Issue #36: a scene loaded on top of an open session leaves the
+        # previous batch's volume nodes in the scene but wipes them from the
+        # parameter node's reference list (singleton copy). Re-register them
+        # before reading the list, so a merge behaves the way the Data module
+        # already does — both batches present. Runs at the same choke point
+        # as the stale scrub below, which is what makes it cover the
+        # EndImportEvent path and the enter() path alike.
+        try:
+            reconcile_tracked_volume_nodes(
+                param_node, scene, self.pre_import_tracked_ids
+            )
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: reconciling tracked volume nodes failed"
+            )
+        finally:
+            # One-shot: the snapshot describes exactly one import.
+            self.pre_import_tracked_ids = None
         nodes = list_tracked_volume_nodes(param_node, scene)
         results = []
         for node in nodes:

@@ -56,6 +56,11 @@ ATTR_SEG_MTIME = ATTR_PREFIX + "segMTime"
 # mask in the Segment Editor. Cleared on successful recompute.
 ATTR_STALE = ATTR_PREFIX + "stale"
 
+# Issue #38: batch position, stamped on every image node at eager-creation
+# time. Doubles as this module's ownership marker on a volume node — issue
+# #36 uses it to find our images in a scene that also holds foreign volumes.
+ATTR_LOAD_ORDER = ATTR_PREFIX + "loadOrder"
+
 # Markups colors mirror ``overlay.py`` so the real MRML nodes match the custom
 # Detail-tab overlay visually. Stored as RGB floats in [0, 1] — VTK's expected
 # range for ``vtkMRMLDisplayNode.SetColor``.
@@ -665,13 +670,138 @@ def list_tracked_volume_nodes(param_node, scene):
 
     def _load_order_key(node):
         try:
-            raw = node.GetAttribute("ZebrafishAnalysis.loadOrder")
+            raw = node.GetAttribute(ATTR_LOAD_ORDER)
             return (0, int(raw)) if raw is not None else (1, 0)
         except Exception:
             return (1, 0)
 
     out.sort(key=_load_order_key)
     return out
+
+
+def find_zebrafish_volume_nodes_in_scene(scene):
+    """Return every volume node in ``scene`` that this module created, in
+    scene enumeration order.
+
+    Discovery is by :data:`ATTR_LOAD_ORDER`, stamped on each image node at
+    eager-creation time (issue #38). Unlike the parameter node's reference
+    list this survives a scene *merge*: the parameter node is a singleton, so
+    importing a second saved scene copies the imported one onto the existing
+    node and replaces the reference list wholesale, while the volume nodes of
+    both scenes remain in the scene side by side (issue #36).
+
+    Foreign volumes (a CT the user loaded separately, another module's
+    output) never carry the attribute and are skipped.
+
+    Never raises — a scene stub without the class-enumeration API yields an
+    empty list.
+    """
+    if scene is None:
+        return []
+    try:
+        count = int(scene.GetNumberOfNodesByClass("vtkMRMLVolumeNode"))
+    except Exception:
+        return []
+    out = []
+    for i in range(count):
+        try:
+            node = scene.GetNthNodeByClass(i, "vtkMRMLVolumeNode")
+        except Exception:
+            continue
+        if node is None:
+            continue
+        try:
+            if node.GetAttribute(ATTR_LOAD_ORDER) is None:
+                continue
+        except Exception:
+            continue
+        out.append(node)
+    return out
+
+
+def reconcile_tracked_volume_nodes(param_node, scene, known_ids=None):
+    """Re-register Zebrafish volume nodes present in ``scene`` but missing
+    from ``param_node``'s :data:`ROLE_ZEBRAFISH_IMAGES` list.
+
+    Loading a scene on top of an open session is additive in Slicer: the
+    imported volume nodes join the ones already there. The parameter node is
+    the exception — being a singleton, MRML copies the imported node onto the
+    existing one, which replaces the reference list instead of extending it.
+    The previous session's images then still exist in full (segmentations,
+    metrics, markups) but nothing references them, so the module shows only
+    the imported batch while the Data module shows both (issue #36).
+
+    ``known_ids`` is the ordered list of tracked node IDs captured *before*
+    the import (the widget's ``StartImportEvent`` handler). Nodes listed
+    there keep their position at the front, so existing images stay put and
+    the imported batch appends — matching what the Data module does. Without
+    a snapshot (the merge happened before the module was ever opened, so no
+    observer was armed) the current references come first and the orphans
+    are appended.
+
+    :data:`ATTR_LOAD_ORDER` is renumbered across the whole union afterwards,
+    because each scene numbers its own images from zero and
+    :func:`list_tracked_volume_nodes` sorts on that attribute — leaving the
+    duplicates in place would interleave the two batches.
+
+    Returns the list of node IDs newly registered — empty in the normal
+    non-merge case, where the references already cover every discovered
+    node. Never raises.
+    """
+    if param_node is None or scene is None:
+        return []
+
+    tracked_ids = _node_reference_ids(param_node, ROLE_ZEBRAFISH_IMAGES)
+    discovered = {}
+    for node in find_zebrafish_volume_nodes_in_scene(scene):
+        try:
+            nid = node.GetID()
+        except Exception:
+            continue
+        if nid:
+            discovered[nid] = node
+
+    tracked_set = set(tracked_ids)
+    if not [nid for nid in discovered if nid not in tracked_set]:
+        return []
+
+    def _resolve(nid):
+        node = discovered.get(nid)
+        if node is not None:
+            return node
+        try:
+            return scene.GetNodeByID(nid)
+        except Exception:
+            return None
+
+    ordered = []
+    seen = set()
+    for nid in list(known_ids or []) + tracked_ids + list(discovered):
+        if not nid or nid in seen:
+            continue
+        if _resolve(nid) is None:
+            continue
+        seen.add(nid)
+        ordered.append(nid)
+
+    added = []
+    for nid in ordered:
+        if nid in tracked_set:
+            continue
+        try:
+            param_node.AddNodeReferenceID(ROLE_ZEBRAFISH_IMAGES, nid)
+        except Exception:
+            continue
+        added.append(nid)
+
+    for position, nid in enumerate(ordered):
+        node = _resolve(nid)
+        try:
+            node.SetAttribute(ATTR_LOAD_ORDER, str(position))
+        except Exception:
+            pass
+
+    return added
 
 
 def find_tracked_volume_node_by_filename(param_node, scene, filename):
@@ -1045,7 +1175,7 @@ def create_image_volume_node(image_rgb, um_per_px, name_hint, param_node, scene)
     # comes back reordered.
     try:
         load_order = param_node.GetNumberOfNodeReferences(ROLE_ZEBRAFISH_IMAGES)
-        node.SetAttribute("ZebrafishAnalysis.loadOrder", str(load_order))
+        node.SetAttribute(ATTR_LOAD_ORDER, str(load_order))
     except Exception:
         pass
     param_node.AddNodeReferenceID(ROLE_ZEBRAFISH_IMAGES, node.GetID())
