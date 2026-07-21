@@ -837,13 +837,23 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
         thumbnail and detail tab stop drawing a segmentation that was
         removed in the Data module — honouring "Data module is ground
         truth" visually, not just textually.
+
+        Keyed on ``error`` alone. It used to also fire on ``exclude``, which
+        conflated "this fish is out of the statistics" with "this fish's mask
+        is gone" and silently discarded a perfectly good segmentation.
         """
         if not rows:
             return
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            if not (row.get("error") or row.get("exclude")):
+            # Only rows whose segmentation is genuinely gone. A hand-excluded
+            # fish means "leave this out of the statistics", not "its mask is
+            # invalid" — dropping its overlay inputs destroyed a segmentation
+            # the user could still see and judge, and after a reload left them
+            # unable to tell why they had excluded it. The dangling-segmentation
+            # case this exists for always carries an error string.
+            if not row.get("error"):
                 continue
             for _key in (
                 "mask", "eye_mask", "path_points", "straight_line_points",

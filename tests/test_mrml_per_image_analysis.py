@@ -2248,11 +2248,18 @@ def test_logic_scrub_excluded_row_overlays_drops_cached_inputs():
     logic.scrub_excluded_row_overlays(rows_misc)
 
 
-def test_logic_scrub_excluded_row_overlays_handles_exclude_without_error():
-    """Even when only ``exclude`` is truthy (no ``error`` message), the
-    overlay inputs must still be scrubbed — e.g. a future "user
-    unchecked this row manually" path uses ``exclude=True`` without
-    setting ``error``."""
+def test_logic_scrub_excluded_row_overlays_keeps_a_hand_excluded_mask():
+    """A row excluded by hand carries ``exclude=True`` and no ``error``, and
+    its overlay inputs must survive.
+
+    This test previously asserted the opposite, on the speculative grounds
+    that "a future user-unchecked-this-row path uses exclude=True without
+    setting error". That path now exists, and scrubbing there destroyed a
+    perfectly good segmentation: after a reload the user could no longer see
+    what they had excluded, let alone why. Excluding a fish means leaving it
+    out of the statistics, not declaring its mask invalid — the
+    dangling-segmentation case this function exists for always sets an error.
+    """
     import types
     sys.modules.setdefault("vtk", types.ModuleType("vtk"))
     sys.modules.setdefault("vtkmodules", types.ModuleType("vtkmodules"))
@@ -2293,18 +2300,29 @@ def test_logic_scrub_excluded_row_overlays_handles_exclude_without_error():
     from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
     logic = ZebrafishEmbryoAnalyzerLogic.__new__(ZebrafishEmbryoAnalyzerLogic)
 
-    row = {
+    hand_excluded = {
         "filename":  "manual-exclude.png",
+        "mask":      "should-stay",
+        "eye_mask":  "should-stay",
+        "path_points": "should-stay",
+        "straight_line_points": "should-stay",
+        "error":     "",
+        "exclude":   True,
+    }
+    dangling = {
+        "filename":  "seg-deleted.png",
         "mask":      "should-go",
         "eye_mask":  "should-go",
         "path_points": "should-go",
         "straight_line_points": "should-go",
-        "error":     "",
+        "error":     "Segmentation node missing",
         "exclude":   True,
     }
-    logic.scrub_excluded_row_overlays([row])
+    logic.scrub_excluded_row_overlays([hand_excluded, dangling])
+
     for _key in ("mask", "eye_mask", "path_points", "straight_line_points"):
-        assert _key not in row, _key
+        assert _key in hand_excluded, f"{_key} was dropped from a hand-excluded row"
+        assert _key not in dangling, f"{_key} survived on a dangling-segmentation row"
 
 
 # ---------------------------------------------------------------------------
