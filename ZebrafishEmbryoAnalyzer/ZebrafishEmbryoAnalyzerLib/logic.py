@@ -183,7 +183,8 @@ def detect_scalebar(image_path: str, label_um: float | None = None,
 def analyse_images(image_paths: list, params: dict,
                    progress_callback=None,
                    per_image_callback=None,
-                   preloaded_images: dict = None) -> list:
+                   preloaded_images: dict = None,
+                   preloaded_masks: dict = None) -> list:
     """
     Run segmentation + measurements on a list of image paths.
 
@@ -208,6 +209,14 @@ def analyse_images(image_paths: list, params: dict,
         still exist — the recompute-from-a-volume-node case (issue #82). Same
         opt-in shape as ``detect_scalebar``'s ``img_rgb``; paths not listed
         keep the normal read-from-disk behaviour.
+    preloaded_masks : dict[str, dict] | None
+        Maps an entry of ``image_paths`` to ``{"mask": ndarray, "eye_mask":
+        ndarray | None}``. When given, segmentation is **skipped entirely** and
+        those masks are measured as-is — the recompute-after-a-manual-edit case
+        (issue #84), where the user's mask is the ground truth and re-running
+        the model would throw their correction away. The dilated mask the
+        curvature classifier needs is derived from it with the same
+        ``fill_holes``/``grow_mask`` pair the segmentation stage uses.
     per_image_callback : callable(image_path, result_dict) | None
         Called once per image with the fully-populated result dict BEFORE
         progress_callback fires. Used by the MRML streaming layer
@@ -232,6 +241,7 @@ def analyse_images(image_paths: list, params: dict,
     import numpy as np  # deferred: only needed inside analyse_images
     _install_model_cache()
     from ZebrafishEmbryoAnalyzerCore.seg import segmentation_pipeline
+    from ZebrafishEmbryoAnalyzerCore.seg_helper import fill_holes, grow_mask
     from ZebrafishEmbryoAnalyzerCore.length import (
         load_model,
         tube_length_border2border,
@@ -298,7 +308,20 @@ def analyse_images(image_paths: list, params: dict,
 
         try:
             preloaded = (preloaded_images or {}).get(image_path)
-            if preloaded is not None:
+            supplied_masks = (preloaded_masks or {}).get(image_path)
+            if supplied_masks is not None:
+                # Measure-only: the caller already has the mask and it is
+                # authoritative — re-segmenting here would discard a manual
+                # correction, which is exactly what the recompute exists to
+                # honour (issue #84). No model inference runs on this path.
+                if preloaded is not None:
+                    orig_bgr = cv2.cvtColor(preloaded, cv2.COLOR_RGB2BGR)
+                else:
+                    orig_bgr = cv2.imread(image_path)
+                mask = supplied_masks.get("mask")
+                eye = supplied_masks.get("eye_mask")
+                grown = grow_mask(fill_holes(mask)) if mask is not None else None
+            elif preloaded is not None:
                 # Pixels already in hand — hand them to the pipeline directly.
                 # Nothing is read from ``image_path``, which in this case is a
                 # display name rather than a file that has to exist (issue #82).
@@ -315,16 +338,17 @@ def analyse_images(image_paths: list, params: dict,
                     shutil.copy2(image_path, os.path.join(_tmp, os.path.basename(image_path)))
                     seg_result = segmentation_pipeline(_tmp, **_seg_kwargs)
 
-            if include_eyes and len(seg_result) == 4:
-                originals_bgr, masks, growns, eyes_list = seg_result
-            else:
-                originals_bgr, masks, growns = seg_result[:3]
-                eyes_list = [None]
+            if supplied_masks is None:
+                if include_eyes and len(seg_result) == 4:
+                    originals_bgr, masks, growns, eyes_list = seg_result
+                else:
+                    originals_bgr, masks, growns = seg_result[:3]
+                    eyes_list = [None]
 
-            orig_bgr = originals_bgr[0] if originals_bgr else None
-            mask    = masks[0]      if masks      else None
-            grown   = growns[0]     if growns     else None
-            eye     = eyes_list[0]  if eyes_list  else None
+                orig_bgr = originals_bgr[0] if originals_bgr else None
+                mask    = masks[0]      if masks      else None
+                grown   = growns[0]     if growns     else None
+                eye     = eyes_list[0]  if eyes_list  else None
 
             if orig_bgr is None:
                 r["error"] = "Could not read image."

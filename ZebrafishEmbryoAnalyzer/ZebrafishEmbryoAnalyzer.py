@@ -889,12 +889,13 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
         volume node and update its attributes + segmentation node.
 
         Synchronous on the Slicer main thread (no threading — same pattern as
-        the Run Analysis button). Reads the pixel data from the volume node and
-        passes it to ``analyse_images`` via ``preloaded_images``, so the
-        original file does not have to exist — the scene may have been saved on
-        another machine. Runs the same ``analyse_images`` →
-        ``apply_analysis_to_volume_node`` chain that #39 uses, then clears the
-        stale flag.
+        the Run Analysis button). Reads the pixel data *and the current masks*
+        from the volume node and passes both to ``analyse_images``, so no file
+        has to exist (the scene may have been saved on another machine) and no
+        segmentation model runs: the user's mask is measured as it stands
+        rather than replaced by a fresh one. Runs the same
+        ``apply_analysis_to_volume_node`` write-back that #39 uses, then clears
+        the stale flag.
 
         Returns the updated result dict (filename + new metric fields),
         or ``None`` if the recompute fails (e.g. model unavailable). The
@@ -907,6 +908,7 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
                 volume_node_to_pixels,
                 apply_analysis_to_volume_node,
                 clear_volume_node_stale,
+                read_segment_masks,
             )
         except Exception:
             return None
@@ -921,6 +923,13 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
         # "Could not read image.". The name below is only a label for the
         # result dict; no file is opened.
         name = volume_node.GetName() if hasattr(volume_node, "GetName") else "image"
+        # Issue #84: measure the mask the user has, do not produce a new one.
+        # A row is stale precisely because their edit is now the ground truth;
+        # re-running the segmentation model here overwrote that edit and gave
+        # them back the model's version of the fish.
+        masks = read_segment_masks(volume_node, slicer.mrmlScene)
+        if masks.get("mask") is None:
+            return None
         try:
             from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
             results = analyse_images(
@@ -930,6 +939,7 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
                     r, volume_node, slicer.mrmlScene, params.get("um_per_px", 22.99)
                 ),
                 preloaded_images={name: px},
+                preloaded_masks={name: masks},
             )
         except Exception:
             logging.exception(

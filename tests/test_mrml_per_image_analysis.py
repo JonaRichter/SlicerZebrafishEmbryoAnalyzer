@@ -2843,6 +2843,14 @@ def test_recompute_hands_pixels_to_analyse_images_instead_of_a_path():
     assert "preloaded_images=" in body, (
         "recompute must hand the pixels to analyse_images"
     )
+    # Issue #84: and the masks, so the analysis measures the user's edit
+    # instead of segmenting a replacement for it.
+    assert "preloaded_masks=" in body, (
+        "recompute must hand the existing masks to analyse_images"
+    )
+    assert "read_segment_masks(" in body, (
+        "recompute must read the masks off the volume node"
+    )
     assert '"__volume_node__"' not in src, (
         "the sentinel path must not come back — nothing consumes it"
     )

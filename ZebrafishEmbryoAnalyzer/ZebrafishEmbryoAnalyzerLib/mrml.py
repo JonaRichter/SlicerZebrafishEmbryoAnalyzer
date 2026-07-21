@@ -506,6 +506,39 @@ def mark_volume_node_stale(volume_node):
         pass
 
 
+def read_segment_masks(volume_node, scene):
+    """Return ``{"mask": body, "eye_mask": eye}`` from the volume's segmentation.
+
+    Issue #84: a recompute measures the mask the user actually has, so it needs
+    to read that mask back out. Values are 2-D uint8 arrays (0/1) at the
+    segmentation's stored resolution, already corrected for the 180-degree
+    storage rotation by :func:`_extract_segment_mask`.
+
+    Missing entries come back as ``None``: no segmentation attached, a segment
+    that does not exist, or no Slicer runtime. Callers must treat a ``None``
+    body mask as "nothing to measure" rather than as an empty mask, which
+    would silently produce zero-length results.
+    """
+    masks = {"mask": None, "eye_mask": None}
+    if volume_node is None or scene is None:
+        return masks
+    try:
+        seg_id = volume_node.GetNodeReferenceID(ROLE_ZEBRAFISH_SEGMENTATION)
+    except Exception:
+        return masks
+    if not seg_id:
+        return masks
+    try:
+        seg_node = scene.GetNodeByID(seg_id)
+    except Exception:
+        return masks
+    if seg_node is None:
+        return masks
+    masks["mask"] = _extract_segment_mask(seg_node, "Body")
+    masks["eye_mask"] = _extract_segment_mask(seg_node, "Eye")
+    return masks
+
+
 def segmentation_content_hash(seg_node):
     """Return a digest of every segment's voxel content, or ``""``.
 
