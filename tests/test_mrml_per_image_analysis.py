@@ -618,7 +618,6 @@ def test_per_image_writes_metric_attributes(
         ATTR_LENGTH,
         ATTR_PREFIX,
         ATTR_RATIO,
-        ATTR_SEG_MTIME,
         apply_analysis_to_volume_node,
     )
 
@@ -639,7 +638,6 @@ def test_per_image_writes_metric_attributes(
         assert volume_node.GetAttribute(name) == expected, (
             f"{name}: expected {expected!r}, got {volume_node.GetAttribute(name)!r}"
         )
-    assert ATTR_SEG_MTIME in volume_node._attrs
 
 
 def test_per_attribute_exclude_true_is_recorded(
@@ -655,27 +653,6 @@ def test_per_attribute_exclude_true_is_recorded(
     result["exclude"] = True
     apply_analysis_to_volume_node(result, volume_node, scene, 22.99)
     assert volume_node.GetAttribute(ATTR_EXCLUDE) == "true"
-
-
-# ---------------------------------------------------------------------------
-# Acceptance criterion 8 — segMTime round-trips segmentation node MTime
-# ---------------------------------------------------------------------------
-
-def test_attribute_segMTime_matches_segmentation_getmtime(
-    volume_node, scene, stub_update_segmentation_node, stub_slicer_import,
-):
-    """``ZebrafishAnalysis.segMTime`` must equal str(segNode.GetMTime())."""
-    from ZebrafishEmbryoAnalyzerLib.mrml import (
-        ATTR_SEG_MTIME,
-        apply_analysis_to_volume_node,
-    )
-
-    result = _make_full_result()
-    seg_node = apply_analysis_to_volume_node(result, volume_node, scene, 22.99)
-    assert seg_node is not None, "seg node must exist for this assertion"
-
-    expected = repr(float(seg_node.GetMTime()))
-    assert volume_node.GetAttribute(ATTR_SEG_MTIME) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -1016,7 +993,6 @@ def test_module_exports_attr_namespace_constants():
         "ATTR_EYE_AREA",
         "ATTR_EYE_DIAMETER",
         "ATTR_EXCLUDE",
-        "ATTR_SEG_MTIME",
     ):
         assert hasattr(mrml, name), f"mrml.py must expose {name}"
     # Namespacing invariant: every ATTR_* must start with ATTR_PREFIX.
@@ -1027,7 +1003,6 @@ def test_module_exports_attr_namespace_constants():
         "ATTR_EYE_AREA",
         "ATTR_EYE_DIAMETER",
         "ATTR_EXCLUDE",
-        "ATTR_SEG_MTIME",
     ):
         value = getattr(mrml, name)
         assert value.startswith(mrml.ATTR_PREFIX), (
@@ -1597,8 +1572,8 @@ def test_validate_volume_node_flags_dangling_seg_reference(
     )
 
 
-def test_logic_setup_segmentation_staleness_observers_delegates_to_widget():
-    """Issue #56 follow-up: ``Logic.setup_segmentation_staleness_observers``
+def test_logic_refresh_staleness_flags_delegates_to_widget():
+    """Issue #81: ``Logic.refresh_staleness_flags``
     must delegate to the widget's implementation (since the widget owns
     the ``VTKObservationMixin``). Without a back-pointer, the call is a
     silent no-op.
@@ -1669,19 +1644,19 @@ def test_logic_setup_segmentation_staleness_observers_delegates_to_widget():
 
         called = {"count": 0}
         class _FakeWidget:
-            def setup_segmentation_staleness_observers(self_inner):
+            def refresh_staleness_flags(self_inner):
                 called["count"] += 1
 
         logic = ZebrafishEmbryoAnalyzerLogic()
         # Without _widget_ref: silent no-op (must not raise).
-        logic.setup_segmentation_staleness_observers()
+        logic.refresh_staleness_flags()
         assert called["count"] == 0, called["count"]
 
         logic._widget_ref = _FakeWidget()
-        logic.setup_segmentation_staleness_observers()
+        logic.refresh_staleness_flags()
         assert called["count"] == 1, called["count"]
 
-        logic.setup_segmentation_staleness_observers()
+        logic.refresh_staleness_flags()
         assert called["count"] == 2, called["count"]
         print("OK")
     """)
@@ -1693,7 +1668,7 @@ def test_logic_setup_segmentation_staleness_observers_delegates_to_widget():
     assert "OK" in r.stdout
 
 
-def test_logic_setup_segmentation_staleness_observers_swallows_widget_errors():
+def test_logic_refresh_staleness_flags_swallows_widget_errors():
     """The Logic wrapper must never raise, even when the widget's
     implementation throws — callers in widget.py do not wrap their
     own try/except around this path.
@@ -1757,13 +1732,13 @@ def test_logic_setup_segmentation_staleness_observers_swallows_widget_errors():
         from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
 
         class _BoomWidget:
-            def setup_segmentation_staleness_observers(self_inner):
+            def refresh_staleness_flags(self_inner):
                 raise RuntimeError("scene not ready")
 
         logic = ZebrafishEmbryoAnalyzerLogic()
         logic._widget_ref = _BoomWidget()
         # Must not raise.
-        logic.setup_segmentation_staleness_observers()
+        logic.refresh_staleness_flags()
         print("OK")
     """)
     env = {**os.environ, "ZEA_DIR": _MODULE_DIR}
@@ -1776,7 +1751,7 @@ def test_logic_setup_segmentation_staleness_observers_swallows_widget_errors():
 
 def test_widget_setup_wires_logic_widget_ref():
     """Issue #56 follow-up: ``Widget.setup`` must hand itself to the logic
-    via ``_widget_ref`` so ``Logic.setup_segmentation_staleness_observers``
+    via ``_widget_ref`` so ``Logic.refresh_staleness_flags``
     can delegate back. Without this wiring the per-image ModifiedEvent
     observers are never installed after analysis completes.
     """
@@ -1802,7 +1777,7 @@ def test_widget_setup_wires_logic_widget_ref():
     )
 
 
-def test_widget_enter_calls_setup_segmentation_staleness_observers():
+def test_widget_enter_calls_refresh_staleness_flags():
     """Issue #56 follow-up: ``Widget.enter()`` must re-arm the per-image
     segmentation ModifiedEvent observers on every module entry. Without
     this, observers installed by ``_on_results_ready`` get torn down on
@@ -1821,8 +1796,8 @@ def test_widget_enter_calls_setup_segmentation_staleness_observers():
         r"def enter\(self\):.*?(?=\n    def )", src, flags=re.DOTALL,
     )
     assert enter_block is not None
-    assert "setup_segmentation_staleness_observers" in enter_block.group(0), (
-        "Widget.enter() must call setup_segmentation_staleness_observers "
+    assert "refresh_staleness_flags" in enter_block.group(0), (
+        "Widget.enter() must call refresh_staleness_flags "
         "so observers are live on every module re-entry"
     )
 
@@ -1980,7 +1955,7 @@ def test_logic_find_tracked_volume_node_for_row_prefers_stashed():
         # Real ``ZebrafishEmbryoAnalyzer`` imports vtk at module top; stub
         # the slicer/VTK-heavy transitive imports to bypass that without a
         # Slicer installation. Mirrors the pattern used elsewhere in this
-        # file (e.g. the setup_segmentation_staleness_observers tests).
+        # file (e.g. the refresh_staleness_flags tests).
         sys.modules.setdefault("vtk", types.ModuleType("vtk"))
         sys.modules.setdefault("vtkmodules", types.ModuleType("vtkmodules"))
         sys.modules.setdefault("vtkmodules.vtkCommonCore", types.ModuleType(
@@ -2273,11 +2248,18 @@ def test_logic_scrub_excluded_row_overlays_drops_cached_inputs():
     logic.scrub_excluded_row_overlays(rows_misc)
 
 
-def test_logic_scrub_excluded_row_overlays_handles_exclude_without_error():
-    """Even when only ``exclude`` is truthy (no ``error`` message), the
-    overlay inputs must still be scrubbed — e.g. a future "user
-    unchecked this row manually" path uses ``exclude=True`` without
-    setting ``error``."""
+def test_logic_scrub_excluded_row_overlays_keeps_a_hand_excluded_mask():
+    """A row excluded by hand carries ``exclude=True`` and no ``error``, and
+    its overlay inputs must survive.
+
+    This test previously asserted the opposite, on the speculative grounds
+    that "a future user-unchecked-this-row path uses exclude=True without
+    setting error". That path now exists, and scrubbing there destroyed a
+    perfectly good segmentation: after a reload the user could no longer see
+    what they had excluded, let alone why. Excluding a fish means leaving it
+    out of the statistics, not declaring its mask invalid — the
+    dangling-segmentation case this function exists for always sets an error.
+    """
     import types
     sys.modules.setdefault("vtk", types.ModuleType("vtk"))
     sys.modules.setdefault("vtkmodules", types.ModuleType("vtkmodules"))
@@ -2318,18 +2300,29 @@ def test_logic_scrub_excluded_row_overlays_handles_exclude_without_error():
     from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
     logic = ZebrafishEmbryoAnalyzerLogic.__new__(ZebrafishEmbryoAnalyzerLogic)
 
-    row = {
+    hand_excluded = {
         "filename":  "manual-exclude.png",
+        "mask":      "should-stay",
+        "eye_mask":  "should-stay",
+        "path_points": "should-stay",
+        "straight_line_points": "should-stay",
+        "error":     "",
+        "exclude":   True,
+    }
+    dangling = {
+        "filename":  "seg-deleted.png",
         "mask":      "should-go",
         "eye_mask":  "should-go",
         "path_points": "should-go",
         "straight_line_points": "should-go",
-        "error":     "",
+        "error":     "Segmentation node missing",
         "exclude":   True,
     }
-    logic.scrub_excluded_row_overlays([row])
+    logic.scrub_excluded_row_overlays([hand_excluded, dangling])
+
     for _key in ("mask", "eye_mask", "path_points", "straight_line_points"):
-        assert _key not in row, _key
+        assert _key in hand_excluded, f"{_key} was dropped from a hand-excluded row"
+        assert _key not in dangling, f"{_key} survived on a dangling-segmentation row"
 
 
 # ---------------------------------------------------------------------------
@@ -2843,3 +2836,211 @@ def test_populate_row_overlays_leaves_partial_scene_state_partial():
     assert "eye_mask" not in row  # Eye segment missing → no key
     assert "path_points" in row
     assert "straight_line_points" in row
+
+
+def test_recompute_hands_pixels_to_analyse_images_instead_of_a_path():
+    """Issue #82: ``recompute_metrics_for_volume_node`` must pass the pixel
+    data it reads, and no sentinel string may survive anywhere.
+
+    Source-level scan: exercising the method needs the Slicer runtime, and the
+    defect it guards against was precisely that the surrounding tests stubbed
+    ``analyse_images`` wholesale and never looked at what was handed to it.
+    """
+    src = open(
+        os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "ZebrafishEmbryoAnalyzer", "ZebrafishEmbryoAnalyzer.py",
+        )
+    ).read()
+
+    idx = src.find("def recompute_metrics_for_volume_node")
+    assert idx >= 0
+    end = src.find("\n    def ", idx + 1)
+    body = src[idx:end if end != -1 else len(src)]
+
+    assert "preloaded_images=" in body, (
+        "recompute must hand the pixels to analyse_images"
+    )
+    # Issue #84: and the masks, so the analysis measures the user's edit
+    # instead of segmenting a replacement for it.
+    assert "preloaded_masks=" in body, (
+        "recompute must hand the existing masks to analyse_images"
+    )
+    assert "read_segment_masks(" in body, (
+        "recompute must read the masks off the volume node"
+    )
+    # The widget replaces the whole row with the returned dict, so the overlay
+    # inputs must come back with it — otherwise a recompute drops the user's
+    # edited mask out of the gallery and Detail tab.
+    for key in ('"mask"', '"eye_mask"', '"path_points"', '"straight_line_points"'):
+        assert key in body, (
+            f"recompute result must carry {key} so the views keep the mask"
+        )
+    assert '"__volume_node__"' not in src, (
+        "the sentinel path must not come back — nothing consumes it"
+    )
+
+
+def _read_source(*parts):
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return open(os.path.join(root, *parts)).read()
+
+
+def test_recompute_params_only_imports_constants_that_exist():
+    """Issue #86: ``_recompute_params`` imported ``PARAM_THRESHOLD``, which does
+    not exist — the constant is ``PARAM_CONFIDENCE_THRESHOLD``.
+
+    The ImportError was swallowed by the function's blanket ``except``, so every
+    recompute silently ran on hard-coded defaults: 22.99 µm/px whatever the
+    calibration said, which was then written onto the volume node and left it
+    disagreeing with its own segmentation by a factor of nine.
+
+    A typo in that import list must fail here rather than degrade quietly.
+    """
+    import re
+
+    src = _read_source("ZebrafishEmbryoAnalyzer", "ZebrafishEmbryoAnalyzer.py")
+    idx = src.find("def _recompute_params")
+    assert idx >= 0
+    body = src[idx:src.find("\n    def ", idx + 1)]
+
+    imported = re.search(
+        r"from ZebrafishEmbryoAnalyzerLib\.widget import \(([^)]*)\)", body
+    )
+    assert imported, "_recompute_params must import its constants from widget"
+    names = [n.strip() for n in imported.group(1).split(",") if n.strip()]
+    assert names, "expected at least one imported name"
+
+    widget_src = _read_source(
+        "ZebrafishEmbryoAnalyzer", "ZebrafishEmbryoAnalyzerLib", "widget.py"
+    )
+    for name in names:
+        assert re.search(rf"^{re.escape(name)}\s*=", widget_src, re.M), (
+            f"_recompute_params imports {name}, which widget.py does not define"
+        )
+
+
+def test_recompute_params_uses_the_keys_analyse_images_reads():
+    """The recompute params must speak the same dict language as the Run path.
+
+    Four keys used to be spelled ``length_enabled`` and friends while
+    ``analyse_images`` reads ``length`` — so those settings were dropped even
+    when the import worked, and ``hitl`` was never passed at all.
+    """
+    import re
+
+    src = _read_source("ZebrafishEmbryoAnalyzer", "ZebrafishEmbryoAnalyzer.py")
+    idx = src.find("def _recompute_params")
+    body = src[idx:src.find("\n    def ", idx + 1)]
+    produced = set(re.findall(r'"([a-z_]+)":', body))
+
+    logic_src = _read_source(
+        "ZebrafishEmbryoAnalyzer", "ZebrafishEmbryoAnalyzerLib", "logic.py"
+    )
+    consumed = set(re.findall(r'params\.get\("([a-z_]+)"', logic_src))
+
+    missing = consumed - produced
+    assert not missing, (
+        f"analyse_images reads {sorted(missing)}, which _recompute_params never sets"
+    )
+
+
+def test_apply_results_stamps_the_row_to_node_link():
+    """The recompute finds the row to refresh by ``_volume_node_id``.
+
+    Only the scene-reload path used to set it, so after a fresh Run Analysis a
+    recompute updated the MRML nodes while the gallery, Detail tab and Results
+    table kept showing the pre-edit mask and the old numbers — silently, with
+    no error anywhere. This function had no test coverage at all, which is how
+    that survived.
+    """
+    import subprocess
+    import sys
+    import textwrap
+
+    code = textwrap.dedent("""
+        import os, sys, types
+        sys.path.insert(0, os.environ["ZEA_DIR"])
+        sys.modules["qt"]  = types.ModuleType("qt")
+        sys.modules["ctk"] = types.ModuleType("ctk")
+        from unittest.mock import MagicMock
+        _vtk = types.ModuleType("vtk")
+        _vtk.vtkCommand = types.SimpleNamespace(ModifiedEvent=33)
+        sys.modules["vtk"] = _vtk
+        sys.modules["slicer"] = MagicMock()
+
+        class _BaseWidget(object):
+            pass
+
+        class _VTKMixin(object):
+            def addObserver(self, *a, **kw): pass
+            def removeObservers(self, *a, **kw): pass
+            def removeObserver(self, *a, **kw): pass
+            def hasObserver(self, *a, **kw): return False
+
+        sys.modules["slicer.ScriptedLoadableModule"] = types.SimpleNamespace(
+            ScriptedLoadableModule=object,
+            ScriptedLoadableModuleWidget=_BaseWidget,
+            ScriptedLoadableModuleLogic=object,
+            ScriptedLoadableModuleTest=object,
+        )
+        sys.modules["slicer.util"] = types.SimpleNamespace(
+            VTKObservationMixin=_VTKMixin,
+        )
+        # Stub _evict_reload_modules's transitive imports to keep the
+        # test independent of the rest of the extension's startup sequence.
+        for name in (
+            "ZebrafishEmbryoAnalyzerLib.errors",
+            "ZebrafishEmbryoAnalyzerLib.model_manifest",
+            "ZebrafishEmbryoAnalyzerLib.model_downloader",
+            "ZebrafishEmbryoAnalyzerLib.inference_runner",
+            "ZebrafishEmbryoAnalyzerLib.inference_worker",
+            "ZebrafishEmbryoAnalyzerLib.mrml",
+            "ZebrafishEmbryoAnalyzerLib.widget",
+            "ZebrafishEmbryoAnalyzerLib.gallery_tab",
+            "ZebrafishEmbryoAnalyzerLib.detail_tab",
+            "ZebrafishEmbryoAnalyzerLib.results_tab",
+            "ZebrafishEmbryoAnalyzerLib.logic",
+            "ZebrafishEmbryoAnalyzerLib.overlay",
+            "ZebrafishEmbryoAnalyzerLib.export",
+            "ZebrafishEmbryoAnalyzerLib.dependency_installer",
+            "ZebrafishEmbryoAnalyzerLib.zoom_view",
+            "ZebrafishEmbryoAnalyzerCore.seg",
+            "ZebrafishEmbryoAnalyzerCore.seg_helper",
+            "ZebrafishEmbryoAnalyzerCore.length",
+            "ZebrafishEmbryoAnalyzerCore.manual",
+            "ZebrafishEmbryoAnalyzerCore.scalebar",
+        ):
+            sys.modules[name] = types.ModuleType(name)
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+
+        # The module import runs _evict_reload_modules(), which drops the
+        # stubs again — reinstall after importing, not before.
+        mrml_stub = types.ModuleType("ZebrafishEmbryoAnalyzerLib.mrml")
+        sys.modules["ZebrafishEmbryoAnalyzerLib.mrml"] = mrml_stub
+        node = MagicMock()
+        node.GetName.return_value = "fish_000001.png"
+        node.GetID.return_value = "vtkMRMLVectorVolumeNode7"
+        mrml_stub.list_tracked_volume_nodes = lambda *a, **kw: [node]
+        mrml_stub.apply_analysis_to_volume_node = lambda *a, **kw: None
+
+        logic = ZebrafishEmbryoAnalyzerLogic()
+        logic.getParameterNode = lambda: MagicMock()
+
+        rows = [{"filename": "fish_000001.png"}, {"filename": "not_tracked.png"}]
+        applied = logic.apply_results_to_tracked_volume_nodes(rows, 22.99)
+
+        assert applied == 1, applied
+        assert rows[0]["_volume_node_id"] == "vtkMRMLVectorVolumeNode7", rows[0]
+        assert rows[0]["_volume_node"] is node
+        # A row with no matching node stays untouched rather than being
+        # stamped with someone else's id.
+        assert "_volume_node_id" not in rows[1], rows[1]
+        print("OK")
+    """)
+    env = {**os.environ, "ZEA_DIR": _MODULE_DIR}
+    r = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, env=env,
+    )
+    assert r.returncode == 0, f"subprocess failed:\nSTDOUT:\n{r.stdout}\nSTDERR:\n{r.stderr}"
+    assert "OK" in r.stdout

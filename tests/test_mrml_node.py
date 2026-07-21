@@ -1189,70 +1189,6 @@ def test_logic_volume_node_references_existing_seg():
     assert "OK" in r.stdout, r.stderr
 
 
-def test_setup_segmentation_observer_clears_stale_when_seg_removed_from_scene():
-    """setup_segmentation_staleness_observers observer clears the
-    stale attribute instead of marking the volume stale when the
-    referenced segmentation node is no longer in the scene.
-
-    Issue #56 follow-up: data-module deletions must not feed the
-    "recompute?" prompt that would resurrect the segmentation.
-
-    Test exercises the observer's closure directly because the
-    VTKObservationMixin is the only way to capture the observer
-    callable in production code; we replicate the same closure
-    pattern inline and assert on the resulting stale attribute
-    transitions.
-    """
-    from ZebrafishEmbryoAnalyzerLib import mrml
-
-    vol = MagicMock()
-    vol.SetAttribute = MagicMock()
-    vol.GetAttribute = MagicMock(return_value=None)
-    vol.RemoveAttribute = MagicMock()
-
-    seg_id = "Seg42"
-    scene = MagicMock()
-
-    # First iteration: seg is in the scene → mark stale.
-    scene.GetNodeByID.return_value = MagicMock(name="present-seg")
-    # Recreate the closure pattern from setup_segmentation_staleness_observers
-    # inline so the test reflects the same code path.
-    def _on_seg_modified_first(_caller=None, _event=None, _vol=vol, _seg_id=seg_id, _scene=scene):
-        try:
-            current = _scene.GetNodeByID(_seg_id)
-        except Exception:
-            current = None
-        if current is None:
-            try:
-                mrml.clear_volume_node_stale(_vol)
-            except Exception:
-                pass
-            try:
-                _vol.SetAttribute("ZebrafishAnalysis.exclude", "false")
-                _vol.SetAttribute("ZebrafishAnalysis.error", "")
-            except Exception:
-                pass
-            return
-        mrml.mark_volume_node_stale(_vol)
-
-    with patch.object(mrml, "mark_volume_node_stale") as mark_fn, \
-         patch.object(mrml, "clear_volume_node_stale") as clear_fn:
-        _on_seg_modified_first()
-    mark_fn.assert_called_once_with(vol)
-    clear_fn.assert_not_called()
-
-    # Second iteration: seg has been removed from the scene → clear stale.
-    scene.GetNodeByID.return_value = None
-    with patch.object(mrml, "mark_volume_node_stale") as mark_fn, \
-         patch.object(mrml, "clear_volume_node_stale") as clear_fn:
-        _on_seg_modified_first()
-    mark_fn.assert_not_called()
-    clear_fn.assert_called_once_with(vol)
-    # Auto-exclude / error side effects removed so the row is no longer
-    # visually stale.
-    assert vol.SetAttribute.called
-
-
 def test_prompt_recompute_stale_images_skips_volumes_with_deleted_seg():
     """prompt_recompute_stale_images must NOT prompt for or recreate a
     volume whose segmentation node has been removed from the scene.
@@ -1284,8 +1220,10 @@ def test_prompt_recompute_stale_images_skips_volumes_with_deleted_seg():
         fake_slicer = MagicMock(); fake_slicer.mrmlScene = scene
 
         prompt_calls = []
-        def _policy(_name):
-            prompt_calls.append(_name)
+        def _policy(_names):
+            # Issue #83: one prompt for the whole batch, so the policy gets a
+            # list of filenames rather than a single name.
+            prompt_calls.append(list(_names))
             return "yes"
 
         # Construct the widget without running __init__ so we do not
@@ -1309,9 +1247,9 @@ def test_prompt_recompute_stale_images_skips_volumes_with_deleted_seg():
         clear_fn.assert_called_once_with(deleted_vol)
         # 2) The prompt policy is called exactly once — for the
         #    volume whose segmentation is still in the scene.
-        assert prompt_calls == ["present.png"], (
-            f"Prompt called with {prompt_calls!r}; only the still-"
-            "present seg was supposed to be asked about."
+        assert prompt_calls == [["present.png"]], (
+            f"Prompt called with {prompt_calls!r}; exactly one prompt naming "
+            "only the still-present seg was expected."
         )
         # 3) Recompute runs only for the still-present seg.
         assert recompute_calls == [present_vol], (
@@ -1322,3 +1260,135 @@ def test_prompt_recompute_stale_images_skips_volumes_with_deleted_seg():
     """)
     assert r.returncode == 0, r.stderr
     assert "OK" in r.stdout, r.stderr
+
+
+# ---------------------------------------------------------------------------
+# Issue #85 — segmentations must be nested under their volume in the Data tree
+# ---------------------------------------------------------------------------
+
+class _FakeSubjectHierarchy:
+    """Models the part of vtkMRMLSubjectHierarchyNode the reparenting uses.
+
+    Item ids are ints; 0 means "no item", which is what
+    ``GetItemByDataNode`` returns for a node the hierarchy has not picked up
+    yet — the case that used to make the reparent silently do nothing.
+    """
+
+    SCENE_ITEM = 1
+
+    def __init__(self, known=()):
+        self._items = {}
+        self._parents = {}
+        self._next = 100
+        for node in known:
+            self._add(node)
+
+    def _add(self, node):
+        self._next += 1
+        self._items[id(node)] = self._next
+        self._parents[self._next] = self.SCENE_ITEM
+        return self._next
+
+    def GetSceneItemID(self):
+        return self.SCENE_ITEM
+
+    def GetItemByDataNode(self, node):
+        return self._items.get(id(node), 0)
+
+    def CreateItem(self, parent_item, node):
+        item = self._add(node)
+        self._parents[item] = parent_item
+        return item
+
+    def GetItemParent(self, item):
+        return self._parents.get(item, 0)
+
+    def SetItemParent(self, item, parent_item):
+        self._parents[item] = parent_item
+
+
+def _reparent_with(sh, child, parent):
+    """Run the real helper against a fake hierarchy."""
+    from ZebrafishEmbryoAnalyzerLib import mrml
+
+    fake_slicer = MagicMock()
+    fake_slicer.vtkMRMLSubjectHierarchyNode.GetSubjectHierarchyNode.return_value = sh
+    with patch.dict("sys.modules", {"slicer": fake_slicer}):
+        mrml._reparent_in_subject_hierarchy(MagicMock(name="scene"), child, parent)
+
+
+def test_reparent_creates_the_item_when_the_hierarchy_has_not_seen_the_node():
+    """The defect behind #85: a freshly created segmentation has no Subject
+    Hierarchy item yet, so the old ``if parent_item and child_item`` guard
+    skipped it and the node stayed at the scene root — while the markups
+    created moments later, which the hierarchy had caught up with, nested
+    correctly.
+    """
+    volume, seg = MagicMock(name="volume"), MagicMock(name="seg")
+    sh = _FakeSubjectHierarchy(known=[volume])          # seg unknown on purpose
+    assert sh.GetItemByDataNode(seg) == 0
+
+    _reparent_with(sh, seg, volume)
+
+    seg_item = sh.GetItemByDataNode(seg)
+    assert seg_item, "an item must be created for the segmentation"
+    assert sh.GetItemParent(seg_item) == sh.GetItemByDataNode(volume)
+
+
+def test_reparent_nests_a_node_the_hierarchy_already_knows():
+    volume, seg = MagicMock(name="volume"), MagicMock(name="seg")
+    sh = _FakeSubjectHierarchy(known=[volume, seg])
+
+    _reparent_with(sh, seg, volume)
+
+    assert sh.GetItemParent(sh.GetItemByDataNode(seg)) == sh.GetItemByDataNode(volume)
+
+
+def test_reparent_leaves_a_node_the_user_filed_elsewhere_alone():
+    """Idempotent and non-destructive: re-running an analysis must not drag a
+    node back that the user deliberately moved somewhere else in the tree.
+    """
+    volume, seg, folder = MagicMock(), MagicMock(), MagicMock()
+    sh = _FakeSubjectHierarchy(known=[volume, seg, folder])
+    folder_item = sh.GetItemByDataNode(folder)
+    sh.SetItemParent(sh.GetItemByDataNode(seg), folder_item)
+
+    _reparent_with(sh, seg, volume)
+
+    assert sh.GetItemParent(sh.GetItemByDataNode(seg)) == folder_item
+
+
+def test_renest_segmentation_under_volume_repairs_a_root_parented_node():
+    """Issue #85: the Segment Editor leaves the segmentation it just edited at
+    the scene root. The module repairs that the next time it walks the node.
+    """
+    from ZebrafishEmbryoAnalyzerLib import mrml
+
+    volume, seg = MagicMock(name="volume"), MagicMock(name="seg")
+    volume.GetNodeReferenceID.return_value = "segNodeId"
+    scene = MagicMock(name="scene")
+    scene.GetNodeByID.return_value = seg
+    sh = _FakeSubjectHierarchy(known=[volume, seg])
+
+    fake_slicer = MagicMock()
+    fake_slicer.vtkMRMLSubjectHierarchyNode.GetSubjectHierarchyNode.return_value = sh
+    with patch.dict("sys.modules", {"slicer": fake_slicer}):
+        mrml.renest_segmentation_under_volume(volume, scene)
+
+    assert sh.GetItemParent(sh.GetItemByDataNode(seg)) == sh.GetItemByDataNode(volume)
+
+
+def test_renest_segmentation_is_a_noop_without_a_segmentation():
+    """A volume that never got a segmentation, or whose segmentation the user
+    deleted, must not raise or invent one.
+    """
+    from ZebrafishEmbryoAnalyzerLib import mrml
+
+    volume = MagicMock(name="volume")
+    volume.GetNodeReferenceID.return_value = ""
+    mrml.renest_segmentation_under_volume(volume, MagicMock(name="scene"))
+
+    volume.GetNodeReferenceID.return_value = "danglingId"
+    scene = MagicMock(name="scene")
+    scene.GetNodeByID.return_value = None
+    mrml.renest_segmentation_under_volume(volume, scene)   # must not raise

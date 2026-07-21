@@ -105,18 +105,12 @@ def _make_node_from_result(result, name=None):
     """Build a fake volume node carrying the same metric attributes that
     issue #39 would have written for ``result``.
     """
-    from ZebrafishEmbryoAnalyzerLib.mrml import (
-        ATTR_SEG_MTIME,
-    )
     node = _FakeVolumeNode(name=name or result.get("filename") or "fish.png")
     _write_metric_attributes(result, node)
     # Attach an error attribute if the result has one.
     err = result.get("error")
     if err:
         node.SetAttribute("ZebrafishAnalysis.error", str(err))
-    # segMTime is always written by issue #39; mimic it so the test looks
-    # realistic — ignored by the derivation.
-    node.SetAttribute(ATTR_SEG_MTIME, "0.0")
     return node
 
 

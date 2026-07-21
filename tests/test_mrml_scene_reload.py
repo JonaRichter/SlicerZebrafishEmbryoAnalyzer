@@ -359,56 +359,6 @@ def test_logic_rebuild_results_from_scene_walks_tracked_nodes():
     assert "OK" in r.stdout
 
 
-def test_logic_rebuild_results_from_scene_undoes_persisted_stale_marking():
-    """Regression (issue #56 follow-up): the shared rebuild path scrubs a
-    row that comes back from a saved scene carrying the stale marking, so
-    BOTH scene-reload entry points (EndImportEvent and the enter() /
-    try_rebuild_from_scene_if_empty path when the scene loaded before the
-    module was opened) get a clean row — no replayed recompute prompt, no
-    "could not be restored" warning, no overlay suppressed by exclude."""
-    r = _run_in_subprocess(r"""
-        from unittest.mock import MagicMock, patch
-        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
-        from ZebrafishEmbryoAnalyzerLib.mrml import (
-            STALE_ERROR_MESSAGE, ATTR_STALE, ATTR_EXCLUDE,
-        )
-
-        class Node:
-            def __init__(self, name, attrs):
-                self._n = name; self._a = dict(attrs)
-            def GetName(self): return self._n
-            def GetID(self): return "id_" + self._n
-            def GetAttribute(self, k): return self._a.get(k)
-            def SetAttribute(self, k, v): self._a[k] = v
-            def RemoveAttribute(self, k): self._a.pop(k, None)
-            def GetNodeReferenceID(self, role): return ""
-            def GetImageData(self): return None
-
-        node = Node("fish.jpg", {
-            ATTR_STALE: "true",
-            ATTR_EXCLUDE: "true",
-            "ZebrafishAnalysis.error": STALE_ERROR_MESSAGE,
-        })
-
-        logic = ZebrafishEmbryoAnalyzerLogic()
-        logic.getParameterNode = MagicMock(return_value=MagicMock())
-        import slicer
-        slicer.mrmlScene = MagicMock()
-        with patch("ZebrafishEmbryoAnalyzerLib.mrml.list_tracked_volume_nodes",
-                   return_value=[node]), \
-             patch("ZebrafishEmbryoAnalyzerLib.mrml.volume_node_to_pixels",
-                   return_value=None):
-            logic.rebuild_results_from_scene()
-
-        assert node.GetAttribute(ATTR_STALE) is None
-        assert node.GetAttribute("ZebrafishAnalysis.error") is None
-        assert node.GetAttribute(ATTR_EXCLUDE) == "false"
-        print("OK")
-    """)
-    assert r.returncode == 0, r.stderr
-    assert "OK" in r.stdout
-
-
 def test_logic_rebuild_results_from_scene_returns_empty_on_no_param_node():
     """No parameter node → empty list, no exception."""
     r = _run_in_subprocess(r"""
@@ -531,49 +481,6 @@ def test_scene_end_import_invokes_rebuild_from_scene():
     snippet = src[handler_idx:handler_idx + 1500]
     assert "rebuild_from_scene" in snippet, (
         "_on_scene_end_import must call rebuild_from_scene"
-    )
-
-
-def test_scene_end_import_scrubs_stale_before_rebuild_from_scene():
-    """Issue #56 follow-up: ``_on_scene_end_import`` MUST clear the
-    stale flag / ``ZebrafishAnalysis.error`` attribute on every tracked
-    volume BEFORE ``rebuild_from_scene`` reads them.
-
-    Otherwise ``volume_node_to_result_dict`` sees the persisted
-    ``"Segmentation modified — recompute needed"`` string and the
-    post-rebuild QMessageBox fires one warning per row, plus
-    ``prompt_recompute_stale_images`` opens one popup per fish — the
-    very behaviour we are trying to suppress.
-
-    Source-level scan (same rationale as the test above).
-    """
-    src = open(
-        os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "ZebrafishEmbryoAnalyzer", "ZebrafishEmbryoAnalyzer.py",
-        )
-    ).read()
-    handler_idx = src.find("def _on_scene_end_import")
-    assert handler_idx >= 0
-    # Bound the inspection to the handler body: stop at the next method
-    # definition so the scan can't reach into the following method
-    # (``_clear_stale_flags_on_tracked_volumes``).
-    next_def_idx = src.find("\n    def ", handler_idx + 1)
-    body = src[handler_idx:next_def_idx if next_def_idx != -1 else len(src)]
-    # Match the actual call expressions, not bare names — the handler's
-    # explanatory comment mentions ``rebuild_from_scene`` several lines
-    # above the scrub call, so a bare-name scan would order them wrong.
-    scrub_idx = body.find("self._clear_stale_flags_on_tracked_volumes()")
-    rebuild_idx = body.find("self._main.rebuild_from_scene()")
-    assert scrub_idx >= 0, (
-        "_on_scene_end_import must call _clear_stale_flags_on_tracked_volumes()"
-    )
-    assert rebuild_idx >= 0, (
-        "_on_scene_end_import must call self._main.rebuild_from_scene()"
-    )
-    assert scrub_idx < rebuild_idx, (
-        "stale-flag scrub must run BEFORE rebuild_from_scene so the "
-        "rebuild reads a clean attribute set (issue #56 follow-up)"
     )
 
 

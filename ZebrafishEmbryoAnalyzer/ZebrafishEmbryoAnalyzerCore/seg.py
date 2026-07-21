@@ -63,6 +63,7 @@ def segmentation_pipeline(
     folder_path=None,
     target_size=(256, 256),
     file_list=None,
+    preloaded_images=None,
     include_eyes=False,
     body_model_path=None,
     body_repo_id="markdanielarndt/Zebrafish_Segmentation",
@@ -83,8 +84,16 @@ def segmentation_pipeline(
     """
     Perform body segmentation on all images in the specified folder or file list.
 
-    Pass either `folder_path` (directory) or `file_list` (sorted list of absolute paths).
-    When `file_list` is provided it takes precedence and preserves the given order.
+    Pass one of `folder_path` (directory), `file_list` (sorted list of absolute
+    paths) or `preloaded_images` (list of already-decoded BGR ndarrays).
+    `preloaded_images` takes precedence, then `file_list`; both preserve the
+    given order.
+
+    `preloaded_images` exists for callers that already hold the pixels and have
+    no file to point at — the Slicer extension recomputes metrics straight from
+    a MRML volume node, whose image may never have been on this machine's disk
+    (issue #82). All three inputs converge on the same list of BGR arrays a few
+    lines below, so this adds an entry point rather than a second code path.
 
     Optional eye segmentation can be enabled by setting include_eyes=True.
     Optional edema segmentation can be enabled by setting include_edema=True.
@@ -95,7 +104,9 @@ def segmentation_pipeline(
         - if include_eyes=True and include_edema=True: (original_images, segmented_images, grown_images, eyes_images, edema_images)
     """
     import cv2
-    if file_list is not None:
+    if preloaded_images is not None:
+        images = list(preloaded_images)
+    elif file_list is not None:
         images = []
         for fp in file_list:
             img = cv2.imread(fp)

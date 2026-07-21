@@ -50,11 +50,17 @@ ATTR_RATIO = ATTR_PREFIX + "ratio"
 ATTR_EYE_AREA = ATTR_PREFIX + "eye_area"
 ATTR_EYE_DIAMETER = ATTR_PREFIX + "eye_diameter"
 ATTR_EXCLUDE = ATTR_PREFIX + "exclude"
-ATTR_SEG_MTIME = ATTR_PREFIX + "segMTime"
 # Issue #42: a segmentation node's ``ModifiedEvent`` observer sets
 # ``ZebrafishAnalysis.stale = "true"`` whenever the user edits a Body
 # mask in the Segment Editor. Cleared on successful recompute.
 ATTR_STALE = ATTR_PREFIX + "stale"
+
+# Issue #81: digest of the segmentation's voxel content at the moment the
+# metrics on this node were last computed. Staleness is "current content
+# differs from this", which is why a digest and not a timestamp: VTK MTimes
+# are per-process counters that restart on every Slicer launch, so nothing
+# derived from them can survive the save/reload cycle this attribute must.
+ATTR_SEG_HASH = ATTR_PREFIX + "segHash"
 
 # Issue #38: batch position, stamped on every image node at eager-creation
 # time. Doubles as this module's ownership marker on a volume node — issue
@@ -268,8 +274,6 @@ def volume_node_to_result_dict(node):
       gallery rebuilds must read it from the volume node directly via
       issue #41's reload path; this helper only covers the
       table-derivation contract.
-    * ``segMTime`` is intentionally not propagated to the result dict —
-      it is metadata for issue #5, not a metric.
     """
     length = _coerce_attr_float(node, ATTR_LENGTH)
     ratio = _coerce_attr_float(node, ATTR_RATIO)
@@ -460,46 +464,280 @@ def volume_node_to_result_dict_with_validation(node):
 #
 # A per-image segmentation node's ``ModifiedEvent`` triggers the cheap
 # bookkeeping in :func:`mark_volume_node_stale` so the volume node's
-# ``ZebrafishAnalysis.stale`` attribute is set immediately on every
-# brush stroke (synchronous, no recomputation). The user is then asked on
-# every module re-entry whether to recompute (policy in widget.py).
+# ``ZebrafishAnalysis.stale`` attribute is set as soon as an edit is
+# detected. The user is then asked once per module re-entry whether to
+# recompute (policy in widget.py).
 
-# Standard user-facing error message for stale rows; centralised here so
-# the wording stays consistent between the auto-exclude flow and the
-# detail-view helper text.
+# Issue #81: no longer written anywhere. Staleness used to be recorded by
+# putting this string into ``ZebrafishAnalysis.error`` and setting
+# ``exclude``; it is kept only to recognise rows saved by those older
+# versions, so :func:`clear_stale_marking` can repair them on load. Do not
+# reintroduce it as a way of marking a row — that coupling is what produced
+# the whole #65 defect series.
 STALE_ERROR_MESSAGE = "Segmentation modified — recompute needed"
 
 
 def mark_volume_node_stale(volume_node):
-    """Set the stale attribute and force ``exclude`` + a stable error message.
+    """Flag the row as stale. Writes :data:`ATTR_STALE` and nothing else.
 
-    Cheap — no recomputation, no model call. Safe to call from an
-    observer that fires many times per brush stroke (issue #42 explicit
-    requirement: the observer must not trigger a perceptible per-stroke
-    delay).
+    Issue #81: this used to set ``exclude=true`` and
+    ``error=STALE_ERROR_MESSAGE`` as well, borrowing two user-facing fields
+    to make staleness visible without adding a schema column. Both are
+    overloaded — ``exclude`` also means "the user excluded this fish" and
+    ``error`` also means "this image could not be processed" — and that
+    borrowing caused the entire scene-reload defect series in #65: the
+    reload surfaced staleness as "Some images could not be fully restored
+    from the scene", ``overlay.make_full_overlay`` returned the bare image
+    because the row read as excluded, and nothing could tell a stale row
+    apart from a genuinely broken or hand-excluded one.
 
-    The error message is set via ``ZebrafishAnalysis.error`` so it
-    surfaces in the existing error-row auto-exclude path that #41 uses
-    for scene-reload robustness — no new schema column.
+    Staleness is now its own state. It is surfaced by the recompute prompt
+    on module entry (one dialog for the whole batch since #83); the
+    Detail-tab badge from #67 becomes an additional indicator once that
+    work lands.
+
+    Cheap — no recomputation, no model call.
     """
     if volume_node is None or not hasattr(volume_node, "SetAttribute"):
         return
     try:
         volume_node.SetAttribute(ATTR_STALE, "true")
     except Exception:
+        pass
+
+
+def read_segment_masks(volume_node, scene):
+    """Return ``{"mask": body, "eye_mask": eye}`` from the volume's segmentation.
+
+    Issue #84: a recompute measures the mask the user actually has, so it needs
+    to read that mask back out. Values are 2-D uint8 arrays (0/1) at the
+    segmentation's stored resolution, already corrected for the 180-degree
+    storage rotation by :func:`_extract_segment_mask`.
+
+    Missing entries come back as ``None``: no segmentation attached, a segment
+    that does not exist, or no Slicer runtime. Callers must treat a ``None``
+    body mask as "nothing to measure" rather than as an empty mask, which
+    would silently produce zero-length results.
+    """
+    masks = {"mask": None, "eye_mask": None}
+    if volume_node is None or scene is None:
+        return masks
+    try:
+        seg_id = volume_node.GetNodeReferenceID(ROLE_ZEBRAFISH_SEGMENTATION)
+    except Exception:
+        return masks
+    if not seg_id:
+        return masks
+    try:
+        seg_node = scene.GetNodeByID(seg_id)
+    except Exception:
+        return masks
+    if seg_node is None:
+        return masks
+    masks["mask"] = _extract_segment_mask(seg_node, "Body")
+    masks["eye_mask"] = _extract_segment_mask(seg_node, "Eye")
+    return masks
+
+
+def segmentation_content_hash(seg_node):
+    """Return a digest of every segment's voxel content, or ``""``.
+
+    Issue #81: this is what staleness is decided on. Three earlier attempts
+    keyed on modification *times* — the node's, the segmentation's, the
+    labelmap's — and each one failed the same way: VTK timestamps record that
+    an object was *touched*, and Slicer touches segmentations constantly
+    without changing a voxel. Measured against a live scene, saving the scene
+    alone flipped all five images to stale; scene import and display-pipeline
+    work do the same. A digest of the voxels answers the question actually
+    being asked, and it is unaffected by conversion, serialisation and
+    display.
+
+    It also survives a save/reload, which no timestamp can: VTK MTimes are
+    per-process counters that start over on every launch.
+
+    Segment IDs are folded into the digest in sorted order, so adding or
+    removing a segment registers as a change, and the result does not depend
+    on the order Slicer happens to enumerate them in. Voxels are compared as
+    "set or not set" rather than by label value, so a relabelling that
+    preserves the mask does not read as an edit.
+
+    Returns ``""`` when nothing could be read (no Slicer runtime, no
+    segmentation, no labelmap yet). Callers must treat that as "unknown" and
+    never as "changed". Never raises.
+    """
+    if seg_node is None:
+        return ""
+    try:
+        import hashlib
+        import numpy as np
+        import slicer  # lazy: tests never import slicer
+    except Exception:
+        return ""
+    try:
+        segmentation = seg_node.GetSegmentation()
+        segment_ids = sorted(segmentation.GetSegmentIDs())
+    except Exception:
+        return ""
+    read_labelmap = getattr(
+        slicer.util, "arrayFromSegmentBinaryLabelmap", None
+    ) or getattr(slicer.util, "arrayFromSegment", None)
+    if read_labelmap is None:
+        return ""
+
+    digest = hashlib.blake2b(digest_size=16)
+    read_any = False
+    for segment_id in segment_ids:
+        try:
+            arr = read_labelmap(seg_node, segment_id)
+        except Exception:
+            continue
+        if arr is None:
+            continue
+        try:
+            occupied = np.ascontiguousarray(arr != 0)
+            digest.update(str(segment_id).encode("utf-8"))
+            digest.update(str(occupied.shape).encode("utf-8"))
+            digest.update(occupied.tobytes())
+            read_any = True
+        except Exception:
+            continue
+    return digest.hexdigest() if read_any else ""
+
+
+def record_segmentation_hash(volume_node, seg_node):
+    """Stamp the segmentation's current content digest onto ``volume_node``.
+
+    Called wherever metrics are written, so the attribute always means "the
+    content the current metric values were computed from". Silently does
+    nothing when the digest cannot be computed — a missing stamp makes
+    :func:`refresh_stale_flag` abstain rather than guess.
+    """
+    if volume_node is None or not hasattr(volume_node, "SetAttribute"):
         return
-    # The exclude + error set is what makes the row visibly stale in the
-    # gallery/results table. The user can still see the metric values
-    # (preserved per the "Existing metric values are not deleted, only
-    # flagged" decision).
+    content_hash = segmentation_content_hash(seg_node)
+    if not content_hash:
+        return
     try:
-        volume_node.SetAttribute(ATTR_EXCLUDE, "true")
+        volume_node.SetAttribute(ATTR_SEG_HASH, content_hash)
     except Exception:
         pass
+
+
+def clear_stale_marking(volume_node):
+    """Undo the marking that :func:`mark_volume_node_stale` writes.
+
+    Issue #81: unlike the blanket scrub this replaces, it runs only when
+    :func:`refresh_stale_flag` has established that the content matches the
+    recorded digest — i.e. only on proof that the row is not stale, never on
+    the mere suspicion that a flag might be left over.
+
+    Also repairs rows written before staleness was decoupled from the
+    user-facing fields: those carry ``exclude=true`` plus the stale error
+    string alongside the flag, which is what made a reloaded scene report
+    "could not be fully restored" and suppressed the overlay. The repair is
+    gated on that exact error signature, so a genuine user exclusion and an
+    unrelated error row (e.g. "Could not read image.") survive verbatim.
+    ``exclude`` is reset to ``"false"`` rather than removed, because
+    :func:`validate_volume_node`'s "was analysed" check keys on the
+    attribute's presence.
+
+    Returns True when a marking was undone. Never raises.
+    """
+    if volume_node is None or not hasattr(volume_node, "GetAttribute"):
+        return False
+
+    changed = False
     try:
-        volume_node.SetAttribute(ATTR_PREFIX + "error", STALE_ERROR_MESSAGE)
+        if volume_node.GetAttribute(ATTR_STALE) == "true":
+            changed = True
+            if hasattr(volume_node, "RemoveAttribute"):
+                volume_node.RemoveAttribute(ATTR_STALE)
     except Exception:
         pass
+
+    error_attr = ATTR_PREFIX + "error"
+    try:
+        legacy = volume_node.GetAttribute(error_attr) == STALE_ERROR_MESSAGE
+    except Exception:
+        legacy = False
+    if legacy:
+        changed = True
+        try:
+            if hasattr(volume_node, "RemoveAttribute"):
+                volume_node.RemoveAttribute(error_attr)
+        except Exception:
+            pass
+        try:
+            volume_node.SetAttribute(ATTR_EXCLUDE, "false")
+        except Exception:
+            pass
+    return changed
+
+
+def refresh_stale_flag(volume_node, scene):
+    """Bring ``volume_node``'s stale marking in line with its segmentation.
+
+    Compares the linked segmentation's current content digest against the one
+    recorded when the metrics were last computed, and marks or unmarks the row
+    accordingly. This replaces the event-driven detection entirely: no
+    observers, no baselines, no dependency on *when* it runs — which is what
+    made every earlier attempt fragile.
+
+    Abstains (returns the current flag unchanged) when either digest is
+    missing: an unanalysed row, a segmentation that was deleted, or a scene
+    written before this attribute existed. Guessing in those cases is what
+    produced the per-fish popup storm.
+
+    Returns True when the row is stale afterwards. Never raises.
+    """
+    if volume_node is None:
+        return False
+    try:
+        recorded = volume_node.GetAttribute(ATTR_SEG_HASH)
+    except Exception:
+        recorded = None
+    if not recorded:
+        return is_volume_node_stale(volume_node)
+
+    seg_node = None
+    try:
+        seg_id = volume_node.GetNodeReferenceID(ROLE_ZEBRAFISH_SEGMENTATION)
+        if seg_id and scene is not None:
+            seg_node = scene.GetNodeByID(seg_id)
+    except Exception:
+        seg_node = None
+    if seg_node is None:
+        return is_volume_node_stale(volume_node)
+
+    current = segmentation_content_hash(seg_node)
+    if not current:
+        return is_volume_node_stale(volume_node)
+
+    if current == recorded:
+        clear_stale_marking(volume_node)
+        return False
+    mark_volume_node_stale(volume_node)
+    return True
+
+
+def set_volume_node_exclude(volume_node, excluded):
+    """Persist the user's exclude decision on the volume node.
+
+    The exclude state used to live only in the widget's in-memory set, so a
+    fish excluded by hand came back included after save/reload — the decision
+    was never written anywhere the scene could carry.
+
+    Written as ``"true"`` / ``"false"`` rather than removed, because
+    :func:`validate_volume_node`'s "was analysed" check keys on the
+    attribute's presence. Returns True when it was written. Never raises.
+    """
+    if volume_node is None or not hasattr(volume_node, "SetAttribute"):
+        return False
+    try:
+        volume_node.SetAttribute(ATTR_EXCLUDE, "true" if excluded else "false")
+    except Exception:
+        return False
+    return True
 
 
 def is_volume_node_stale(volume_node):
@@ -526,54 +764,6 @@ def clear_volume_node_stale(volume_node):
         volume_node.RemoveAttribute(ATTR_STALE)
     except Exception:
         pass
-
-
-def clear_stale_marking(volume_node):
-    """Undo the full stale marking that :func:`mark_volume_node_stale` writes.
-
-    ``mark_volume_node_stale`` sets ``stale=true``, ``exclude=true`` and
-    ``error=STALE_ERROR_MESSAGE`` together, and Slicer serialises all three
-    into the saved scene. On reload the saved segmentation *is* the current
-    state (Data module is ground truth), so a row flagged stale in the
-    previous session must come back clean — otherwise the reload replays the
-    recompute prompt, the "could not be restored" warning, and
-    :func:`overlay.make_full_overlay` suppresses the overlay because the row
-    is excluded.
-
-    Only rows carrying the exact stale-error signature are touched, so a
-    genuine user exclusion (which never carries the stale error) and
-    unrelated error rows (e.g. "Could not read image.") are left verbatim.
-    ``exclude`` is reset to ``"false"`` rather than removed so
-    :func:`validate_volume_node`'s "was analysed" check — keyed on the
-    attribute's presence — still holds.
-
-    Returns True when a stale marking was undone, False otherwise. Never
-    raises: safe to call over every tracked node on the scene-reload path.
-    """
-    if volume_node is None or not hasattr(volume_node, "GetAttribute"):
-        return False
-    error_attr = ATTR_PREFIX + "error"
-    try:
-        if volume_node.GetAttribute(error_attr) != STALE_ERROR_MESSAGE:
-            return False
-    except Exception:
-        return False
-    try:
-        if hasattr(volume_node, "RemoveAttribute"):
-            volume_node.RemoveAttribute(ATTR_STALE)
-    except Exception:
-        pass
-    try:
-        if hasattr(volume_node, "RemoveAttribute"):
-            volume_node.RemoveAttribute(error_attr)
-    except Exception:
-        pass
-    try:
-        if hasattr(volume_node, "SetAttribute"):
-            volume_node.SetAttribute(ATTR_EXCLUDE, "false")
-    except Exception:
-        pass
-    return True
 
 
 def volume_nodes_to_results(volume_nodes):
@@ -1356,9 +1546,6 @@ def _write_metric_attributes(result, volume_node):
     * ``ZebrafishAnalysis.eye_diameter``  — float µm or ""
     * ``ZebrafishAnalysis.exclude``       — "true" / "false" (always present;
       defaults to "false" when the key is missing on the result dict)
-    * ``ZebrafishAnalysis.segMTime``      — float, segmentation node
-      ``GetMTime()`` at the moment the attributes were written; used by
-      sub-issue #5 to detect external edits.
 
     All attributes are written unconditionally so the reader can distinguish
     "the value is the empty string because length was disabled" from "the
@@ -1380,23 +1567,6 @@ def _write_metric_attributes(result, volume_node):
         ATTR_EYE_DIAMETER, _format_attr(result.get("eye_diameter"))
     )
     volume_node.SetAttribute(ATTR_EXCLUDE, "true" if exclude_val else "false")
-    # segMTime is supplied by the per-image helper once the segmentation node
-    # is created. The writer sets it via SetAttribute(ATTR_SEG_MTIME, ...)
-    # immediately after ``update_segmentation_node`` returns.
-
-
-def _seg_mtime(seg_node) -> str:
-    """Return ``GetMTime()`` as a string, or "" if unavailable.
-
-    Stored on the volume node so sub-issue #5 can compare against the current
-    segmentation node MTime and detect external Segment Editor edits.
-    """
-    if seg_node is None or not hasattr(seg_node, "GetMTime"):
-        return ""
-    try:
-        return repr(float(seg_node.GetMTime()))
-    except Exception:
-        return ""
 
 
 def _set_node_reference(volume_node, role, child_node):
@@ -1449,12 +1619,57 @@ def _reparent_in_subject_hierarchy(scene, child_node, parent_node):
         sh_node = slicer.vtkMRMLSubjectHierarchyNode.GetSubjectHierarchyNode(scene)
         if sh_node is None:
             return
+        scene_item = sh_node.GetSceneItemID()
         parent_item = sh_node.GetItemByDataNode(parent_node)
         child_item = sh_node.GetItemByDataNode(child_node)
-        if parent_item and child_item:
+        # Issue #85: a freshly added node does not necessarily have a Subject
+        # Hierarchy item yet — the plugin that owns it may not have run. The
+        # previous ``if parent_item and child_item`` then silently did nothing,
+        # which is why segmentations sat at the scene root while the markups
+        # created moments later were nested correctly. Create the item rather
+        # than skipping.
+        if not child_item:
+            child_item = sh_node.CreateItem(scene_item, child_node)
+        if not parent_item or not child_item:
+            return
+        # Only claim a node that is still at the scene root. Re-running an
+        # analysis must not drag a node the user deliberately filed somewhere
+        # else back under the volume — and this way the call is idempotent, so
+        # it is safe on the reuse paths too.
+        if sh_node.GetItemParent(child_item) == scene_item:
             sh_node.SetItemParent(child_item, parent_item)
     except Exception:
         pass
+
+
+def renest_segmentation_under_volume(volume_node, scene):
+    """Put the volume's segmentation back under it in the Data tree.
+
+    Issue #85: Slicer's Segment Editor re-homes a segmentation while it is
+    being edited — measured on a live scene, only the fish that had just been
+    edited showed ``SH-Parent = Scene`` while every other segmentation was
+    still nested. That is Slicer's own behaviour and cannot be prevented from
+    here, so the module repairs it the next time it looks at the node.
+
+    Delegates to :func:`_reparent_in_subject_hierarchy`, which only claims a
+    node still sitting at the scene root — so a segmentation the user
+    deliberately filed elsewhere stays where they put it. Never raises.
+    """
+    if volume_node is None or scene is None:
+        return
+    try:
+        seg_id = volume_node.GetNodeReferenceID(ROLE_ZEBRAFISH_SEGMENTATION)
+    except Exception:
+        return
+    if not seg_id:
+        return
+    try:
+        seg_node = scene.GetNodeByID(seg_id)
+    except Exception:
+        return
+    if seg_node is None:
+        return
+    _reparent_in_subject_hierarchy(scene, seg_node, volume_node)
 
 
 def _get_existing_seg_for_volume(volume_node, scene):
@@ -1529,8 +1744,8 @@ def _create_segmentation_for_volume(result, volume_node, scene, um_per_px):
         preserve_user_segments=not created_here,
     )
     _set_node_reference(volume_node, ROLE_ZEBRAFISH_SEGMENTATION, seg_node)
+    _reparent_in_subject_hierarchy(scene, seg_node, volume_node)
     if created_here:
-        _reparent_in_subject_hierarchy(scene, seg_node, volume_node)
         # Every per-image segmentation is created hidden — without this, a
         # multi-image batch shows every segmentation stacked on top of each
         # other in the slice view regardless of which volume is the current
@@ -1627,8 +1842,7 @@ def _create_markups_line_for_volume(result, volume_node, scene):
     _add_line_endpoints(line, sl_pts, result, volume_node)
     _lock_markups_node(line)
     _set_node_reference(volume_node, ROLE_ZEBRAFISH_MARKUPS_LINE, line)
-    if created_here:
-        _reparent_in_subject_hierarchy(scene, line, volume_node)
+    _reparent_in_subject_hierarchy(scene, line, volume_node)
     return line
 
 
@@ -1932,8 +2146,7 @@ def _create_markups_curve_for_volume(result, volume_node, scene):
     _add_curve_points(curve, path_pts, result)
     _lock_markups_node(curve)
     _set_node_reference(volume_node, ROLE_ZEBRAFISH_MARKUPS_CURVE, curve)
-    if created_here:
-        _reparent_in_subject_hierarchy(scene, curve, volume_node)
+    _reparent_in_subject_hierarchy(scene, curve, volume_node)
     return curve
 
 
@@ -2003,9 +2216,7 @@ def apply_analysis_to_volume_node(result, volume_node, scene, um_per_px):
     3. A ``vtkMRMLMarkupsCurveNode`` built from ``path_points``, attached
        via ``ROLE_ZEBRAFISH_MARKUPS_CURVE`` — only when ``path_points`` has
        at least two entries.
-    4. Metric attributes under the ``ZebrafishAnalysis.`` prefix, including
-       ``segMTime`` recorded right after step 1 (sub-issue #5 compares this
-       against the segmentation node's current MTime).
+    4. Metric attributes under the ``ZebrafishAnalysis.`` prefix.
 
     Must be called on the Slicer main thread; MRML / vtk objects live there.
     Returns ``None`` silently if ``volume_node`` or ``scene`` is ``None`` or
@@ -2063,13 +2274,17 @@ def apply_analysis_to_volume_node(result, volume_node, scene, um_per_px):
             "apply_analysis_to_volume_node: MarkupsCurveNode creation failed"
         )
 
-    # Attributes last so segMTime can be recorded after the segmentation node
-    # has actually been written (sub-issue #5 compares this MTime against the
-    # segmentation node's current GetMTime() to detect external edits).
+    # Attributes last, so a failure here cannot leave a half-written
+    # segmentation behind.
     try:
         _write_metric_attributes(result, volume_node)
+        # Issue #81: the metrics just written describe exactly this
+        # segmentation content, so stamp its digest now. Everything the user
+        # changes afterwards differs from it, which is the whole staleness
+        # test. Recorded after the segmentation is in the scene so the digest
+        # is read back through the same path that later checks it.
         if seg_node is not None:
-            volume_node.SetAttribute(ATTR_SEG_MTIME, _seg_mtime(seg_node))
+            record_segmentation_hash(volume_node, seg_node)
     except Exception:
         logging.exception(
             "apply_analysis_to_volume_node: attribute write failed"
