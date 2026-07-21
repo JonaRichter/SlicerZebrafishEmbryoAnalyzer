@@ -1322,6 +1322,19 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
                 continue
             try:
                 apply_analysis_to_volume_node(result, node, scene, um_per_px)
+                # Stamp the row-to-node link. ``_recompute_for_volume_node``
+                # finds the row to refresh by ``_volume_node_id``, and only the
+                # scene-reload path used to set it — so after a fresh Run
+                # Analysis a recompute updated the MRML side while the gallery,
+                # Detail tab and Results table kept showing the pre-edit mask
+                # and the old numbers, with no error anywhere.
+                try:
+                    result["_volume_node"] = node
+                    result["_volume_node_id"] = (
+                        node.GetID() if hasattr(node, "GetID") else ""
+                    )
+                except Exception:
+                    pass
                 applied += 1
             except Exception:
                 logging.exception(

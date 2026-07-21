@@ -2925,3 +2925,104 @@ def test_recompute_params_uses_the_keys_analyse_images_reads():
     assert not missing, (
         f"analyse_images reads {sorted(missing)}, which _recompute_params never sets"
     )
+
+
+def test_apply_results_stamps_the_row_to_node_link():
+    """The recompute finds the row to refresh by ``_volume_node_id``.
+
+    Only the scene-reload path used to set it, so after a fresh Run Analysis a
+    recompute updated the MRML nodes while the gallery, Detail tab and Results
+    table kept showing the pre-edit mask and the old numbers — silently, with
+    no error anywhere. This function had no test coverage at all, which is how
+    that survived.
+    """
+    import subprocess
+    import sys
+    import textwrap
+
+    code = textwrap.dedent("""
+        import os, sys, types
+        sys.path.insert(0, os.environ["ZEA_DIR"])
+        sys.modules["qt"]  = types.ModuleType("qt")
+        sys.modules["ctk"] = types.ModuleType("ctk")
+        from unittest.mock import MagicMock
+        _vtk = types.ModuleType("vtk")
+        _vtk.vtkCommand = types.SimpleNamespace(ModifiedEvent=33)
+        sys.modules["vtk"] = _vtk
+        sys.modules["slicer"] = MagicMock()
+
+        class _BaseWidget(object):
+            pass
+
+        class _VTKMixin(object):
+            def addObserver(self, *a, **kw): pass
+            def removeObservers(self, *a, **kw): pass
+            def removeObserver(self, *a, **kw): pass
+            def hasObserver(self, *a, **kw): return False
+
+        sys.modules["slicer.ScriptedLoadableModule"] = types.SimpleNamespace(
+            ScriptedLoadableModule=object,
+            ScriptedLoadableModuleWidget=_BaseWidget,
+            ScriptedLoadableModuleLogic=object,
+            ScriptedLoadableModuleTest=object,
+        )
+        sys.modules["slicer.util"] = types.SimpleNamespace(
+            VTKObservationMixin=_VTKMixin,
+        )
+        # Stub _evict_reload_modules's transitive imports to keep the
+        # test independent of the rest of the extension's startup sequence.
+        for name in (
+            "ZebrafishEmbryoAnalyzerLib.errors",
+            "ZebrafishEmbryoAnalyzerLib.model_manifest",
+            "ZebrafishEmbryoAnalyzerLib.model_downloader",
+            "ZebrafishEmbryoAnalyzerLib.inference_runner",
+            "ZebrafishEmbryoAnalyzerLib.inference_worker",
+            "ZebrafishEmbryoAnalyzerLib.mrml",
+            "ZebrafishEmbryoAnalyzerLib.widget",
+            "ZebrafishEmbryoAnalyzerLib.gallery_tab",
+            "ZebrafishEmbryoAnalyzerLib.detail_tab",
+            "ZebrafishEmbryoAnalyzerLib.results_tab",
+            "ZebrafishEmbryoAnalyzerLib.logic",
+            "ZebrafishEmbryoAnalyzerLib.overlay",
+            "ZebrafishEmbryoAnalyzerLib.export",
+            "ZebrafishEmbryoAnalyzerLib.dependency_installer",
+            "ZebrafishEmbryoAnalyzerLib.zoom_view",
+            "ZebrafishEmbryoAnalyzerCore.seg",
+            "ZebrafishEmbryoAnalyzerCore.seg_helper",
+            "ZebrafishEmbryoAnalyzerCore.length",
+            "ZebrafishEmbryoAnalyzerCore.manual",
+            "ZebrafishEmbryoAnalyzerCore.scalebar",
+        ):
+            sys.modules[name] = types.ModuleType(name)
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+
+        # The module import runs _evict_reload_modules(), which drops the
+        # stubs again — reinstall after importing, not before.
+        mrml_stub = types.ModuleType("ZebrafishEmbryoAnalyzerLib.mrml")
+        sys.modules["ZebrafishEmbryoAnalyzerLib.mrml"] = mrml_stub
+        node = MagicMock()
+        node.GetName.return_value = "fish_000001.png"
+        node.GetID.return_value = "vtkMRMLVectorVolumeNode7"
+        mrml_stub.list_tracked_volume_nodes = lambda *a, **kw: [node]
+        mrml_stub.apply_analysis_to_volume_node = lambda *a, **kw: None
+
+        logic = ZebrafishEmbryoAnalyzerLogic()
+        logic.getParameterNode = lambda: MagicMock()
+
+        rows = [{"filename": "fish_000001.png"}, {"filename": "not_tracked.png"}]
+        applied = logic.apply_results_to_tracked_volume_nodes(rows, 22.99)
+
+        assert applied == 1, applied
+        assert rows[0]["_volume_node_id"] == "vtkMRMLVectorVolumeNode7", rows[0]
+        assert rows[0]["_volume_node"] is node
+        # A row with no matching node stays untouched rather than being
+        # stamped with someone else's id.
+        assert "_volume_node_id" not in rows[1], rows[1]
+        print("OK")
+    """)
+    env = {**os.environ, "ZEA_DIR": _MODULE_DIR}
+    r = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, env=env,
+    )
+    assert r.returncode == 0, f"subprocess failed:\nSTDOUT:\n{r.stdout}\nSTDERR:\n{r.stderr}"
+    assert "OK" in r.stdout
