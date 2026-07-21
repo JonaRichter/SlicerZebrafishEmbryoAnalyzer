@@ -983,49 +983,72 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
     def _recompute_params(self):
         """Build the params dict for a single-image recompute.
 
-        Mirrors the module defaults that the Run button uses — no
-        inference-time override. Um-per-px comes from the parameter
-        node's ``UM_PER_PX`` so the recompute matches the scale the
-        original run used.
+        Returns the same shape the Run button passes to ``analyse_images``:
+        ``length``, ``curvature``, ``ratio``, ``eyes``, ``hitl``,
+        ``threshold``, ``um_per_px``, ``model_id``. Values come from the
+        parameter node, so a recompute honours the settings the user actually
+        analysed with.
+
+        Issue #86: this function previously imported a constant that does not
+        exist (``PARAM_THRESHOLD``; the real name is
+        ``PARAM_CONFIDENCE_THRESHOLD``). The resulting ``ImportError`` was
+        swallowed by the blanket ``except`` below, so **every** recompute
+        silently fell back to hard-coded defaults — 22.99 µm/px regardless of
+        the calibrated scale, the default threshold, all metrics on, and the
+        general model. The wrong scale was then written to the volume node by
+        ``_sync_volume_node_spacing``, which is what left volumes and
+        segmentations disagreeing by a factor of nine.
+
+        Four of the keys were also misspelled — ``length_enabled`` and friends,
+        where ``analyse_images`` reads ``length`` — so those settings were
+        ignored even when the import happened to work, and ``hitl`` was never
+        passed at all.
+
+        The fallback is kept for a genuinely missing parameter node, but it is
+        no longer reachable through a typo.
         """
+        defaults = {
+            "length": True, "curvature": True, "ratio": True, "eyes": False,
+            "hitl": False, "threshold": 0.85, "um_per_px": 22.99,
+            "model_id": "general",
+        }
         try:
             from ZebrafishEmbryoAnalyzerLib.widget import (
-                PARAM_UM_PER_PX, PARAM_THRESHOLD,
+                PARAM_UM_PER_PX, PARAM_CONFIDENCE_THRESHOLD,
+                PARAM_CONFIDENCE_THRESHOLD_ENABLED,
                 PARAM_LENGTH_ENABLED, PARAM_CURVATURE_ENABLED,
                 PARAM_RATIO_ENABLED, PARAM_EYES_ENABLED,
                 PARAM_MODEL_ID, _DEFAULT_MODEL_ID,
             )
             node = self.getParameterNode()
-            params = {}
-            if node is not None and hasattr(node, "GetParameter"):
+            if node is None or not hasattr(node, "GetParameter"):
+                return dict(defaults)
+
+            params = dict(defaults)
+            params["model_id"] = _DEFAULT_MODEL_ID
+            for key, param_name, fallback in (
+                ("um_per_px", PARAM_UM_PER_PX, 22.99),
+                ("threshold", PARAM_CONFIDENCE_THRESHOLD, 0.85),
+            ):
                 try:
-                    params["um_per_px"] = float(node.GetParameter(PARAM_UM_PER_PX) or 22.99)
+                    params[key] = float(node.GetParameter(param_name) or fallback)
                 except (TypeError, ValueError):
-                    params["um_per_px"] = 22.99
-                try:
-                    params["threshold"] = float(node.GetParameter(PARAM_THRESHOLD) or 0.85)
-                except (TypeError, ValueError):
-                    params["threshold"] = 0.85
-                params["length_enabled"] = (node.GetParameter(PARAM_LENGTH_ENABLED) == "true")
-                params["curvature_enabled"] = (node.GetParameter(PARAM_CURVATURE_ENABLED) == "true")
-                params["ratio_enabled"] = (node.GetParameter(PARAM_RATIO_ENABLED) == "true")
-                params["eyes_enabled"] = (node.GetParameter(PARAM_EYES_ENABLED) == "true")
-                params["model_id"] = node.GetParameter(PARAM_MODEL_ID) or _DEFAULT_MODEL_ID
-            else:
-                params = {
-                    "um_per_px": 22.99,
-                    "threshold": 0.85,
-                    "length_enabled": True,
-                    "curvature_enabled": True,
-                    "ratio_enabled": True,
-                    "eyes_enabled": True,
-                    "model_id": _DEFAULT_MODEL_ID,
-                }
+                    params[key] = fallback
+            for key, param_name in (
+                ("length", PARAM_LENGTH_ENABLED),
+                ("curvature", PARAM_CURVATURE_ENABLED),
+                ("ratio", PARAM_RATIO_ENABLED),
+                ("eyes", PARAM_EYES_ENABLED),
+                ("hitl", PARAM_CONFIDENCE_THRESHOLD_ENABLED),
+            ):
+                params[key] = (node.GetParameter(param_name) == "true")
+            params["model_id"] = node.GetParameter(PARAM_MODEL_ID) or _DEFAULT_MODEL_ID
             return params
         except Exception:
-            return {"um_per_px": 22.99, "threshold": 0.85, "length_enabled": True,
-                    "curvature_enabled": True, "ratio_enabled": True,
-                    "eyes_enabled": True, "model_id": "general"}
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: recompute params fell back to defaults"
+            )
+            return dict(defaults)
 
     def _update_table_with_rows(self, rows):
         """Shared tail used by ``update_results_table`` and the reload path.

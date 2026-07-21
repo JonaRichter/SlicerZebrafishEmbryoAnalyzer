@@ -2861,3 +2861,67 @@ def test_recompute_hands_pixels_to_analyse_images_instead_of_a_path():
     assert '"__volume_node__"' not in src, (
         "the sentinel path must not come back — nothing consumes it"
     )
+
+
+def _read_source(*parts):
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return open(os.path.join(root, *parts)).read()
+
+
+def test_recompute_params_only_imports_constants_that_exist():
+    """Issue #86: ``_recompute_params`` imported ``PARAM_THRESHOLD``, which does
+    not exist — the constant is ``PARAM_CONFIDENCE_THRESHOLD``.
+
+    The ImportError was swallowed by the function's blanket ``except``, so every
+    recompute silently ran on hard-coded defaults: 22.99 µm/px whatever the
+    calibration said, which was then written onto the volume node and left it
+    disagreeing with its own segmentation by a factor of nine.
+
+    A typo in that import list must fail here rather than degrade quietly.
+    """
+    import re
+
+    src = _read_source("ZebrafishEmbryoAnalyzer", "ZebrafishEmbryoAnalyzer.py")
+    idx = src.find("def _recompute_params")
+    assert idx >= 0
+    body = src[idx:src.find("\n    def ", idx + 1)]
+
+    imported = re.search(
+        r"from ZebrafishEmbryoAnalyzerLib\.widget import \(([^)]*)\)", body
+    )
+    assert imported, "_recompute_params must import its constants from widget"
+    names = [n.strip() for n in imported.group(1).split(",") if n.strip()]
+    assert names, "expected at least one imported name"
+
+    widget_src = _read_source(
+        "ZebrafishEmbryoAnalyzer", "ZebrafishEmbryoAnalyzerLib", "widget.py"
+    )
+    for name in names:
+        assert re.search(rf"^{re.escape(name)}\s*=", widget_src, re.M), (
+            f"_recompute_params imports {name}, which widget.py does not define"
+        )
+
+
+def test_recompute_params_uses_the_keys_analyse_images_reads():
+    """The recompute params must speak the same dict language as the Run path.
+
+    Four keys used to be spelled ``length_enabled`` and friends while
+    ``analyse_images`` reads ``length`` — so those settings were dropped even
+    when the import worked, and ``hitl`` was never passed at all.
+    """
+    import re
+
+    src = _read_source("ZebrafishEmbryoAnalyzer", "ZebrafishEmbryoAnalyzer.py")
+    idx = src.find("def _recompute_params")
+    body = src[idx:src.find("\n    def ", idx + 1)]
+    produced = set(re.findall(r'"([a-z_]+)":', body))
+
+    logic_src = _read_source(
+        "ZebrafishEmbryoAnalyzer", "ZebrafishEmbryoAnalyzerLib", "logic.py"
+    )
+    consumed = set(re.findall(r'params\.get\("([a-z_]+)"', logic_src))
+
+    missing = consumed - produced
+    assert not missing, (
+        f"analyse_images reads {sorted(missing)}, which _recompute_params never sets"
+    )
