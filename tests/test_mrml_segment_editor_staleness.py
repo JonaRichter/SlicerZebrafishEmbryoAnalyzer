@@ -413,8 +413,6 @@ def test_refresh_abstains_when_the_segmentation_is_gone():
     assert is_volume_node_stale(volume) is False
 
 
-
-
 # --------------------------------------------------------------------------- #
 # Layer 3: widget-side glue
 # --------------------------------------------------------------------------- #
@@ -443,27 +441,32 @@ def _build_widget_prompt_double(policy_result):
     return w
 
 
-def test_prompt_recompute_calls_recompute_per_stale_when_yes():
+def test_prompt_recompute_asks_once_and_recomputes_every_stale_row():
+    """Issue #83: two edited images must produce one dialog, not two, and a
+    yes must cover both.
+    """
     from ZebrafishEmbryoAnalyzerLib import widget as widget_mod
     w = _build_widget_prompt_double(policy_result="yes")
     widget_mod.ZebrafishEmbryoAnalyzerMainWidget.prompt_recompute_stale_images(w)
-    assert w._stale_recompute_prompt_policy.call_count == 2
+    assert w._stale_recompute_prompt_policy.call_count == 1
     assert w._recompute_for_volume_node.call_count == 2
+
+
+def test_prompt_recompute_passes_every_filename_to_the_single_prompt():
+    """The one dialog has to name all affected images, so the policy receives
+    the whole list rather than one name.
+    """
+    from ZebrafishEmbryoAnalyzerLib import widget as widget_mod
+    w = _build_widget_prompt_double(policy_result="no")
+    widget_mod.ZebrafishEmbryoAnalyzerMainWidget.prompt_recompute_stale_images(w)
+    (names,), _kwargs = w._stale_recompute_prompt_policy.call_args
+    assert sorted(names) == ["embryo_a.tif", "embryo_b.tif"]
 
 
 def test_prompt_recompute_skips_recompute_when_no():
     from ZebrafishEmbryoAnalyzerLib import widget as widget_mod
     w = _build_widget_prompt_double(policy_result="no")
     widget_mod.ZebrafishEmbryoAnalyzerMainWidget.prompt_recompute_stale_images(w)
-    assert w._stale_recompute_prompt_policy.call_count == 2
-    assert w._recompute_for_volume_node.call_count == 0
-
-
-def test_prompt_recompute_stops_on_dismiss():
-    from ZebrafishEmbryoAnalyzerLib import widget as widget_mod
-    w = _build_widget_prompt_double(policy_result="dismiss")
-    widget_mod.ZebrafishEmbryoAnalyzerMainWidget.prompt_recompute_stale_images(w)
-    # First image prompted -> "dismiss" breaks the loop.
     assert w._stale_recompute_prompt_policy.call_count == 1
     assert w._recompute_for_volume_node.call_count == 0
 

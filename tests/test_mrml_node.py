@@ -1220,8 +1220,10 @@ def test_prompt_recompute_stale_images_skips_volumes_with_deleted_seg():
         fake_slicer = MagicMock(); fake_slicer.mrmlScene = scene
 
         prompt_calls = []
-        def _policy(_name):
-            prompt_calls.append(_name)
+        def _policy(_names):
+            # Issue #83: one prompt for the whole batch, so the policy gets a
+            # list of filenames rather than a single name.
+            prompt_calls.append(list(_names))
             return "yes"
 
         # Construct the widget without running __init__ so we do not
@@ -1245,9 +1247,9 @@ def test_prompt_recompute_stale_images_skips_volumes_with_deleted_seg():
         clear_fn.assert_called_once_with(deleted_vol)
         # 2) The prompt policy is called exactly once — for the
         #    volume whose segmentation is still in the scene.
-        assert prompt_calls == ["present.png"], (
-            f"Prompt called with {prompt_calls!r}; only the still-"
-            "present seg was supposed to be asked about."
+        assert prompt_calls == [["present.png"]], (
+            f"Prompt called with {prompt_calls!r}; exactly one prompt naming "
+            "only the still-present seg was expected."
         )
         # 3) Recompute runs only for the still-present seg.
         assert recompute_calls == [present_vol], (

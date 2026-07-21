@@ -1801,11 +1801,12 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             self._logic, "volume_node_references_existing_seg", lambda _v: True
         )
 
+        # Honour "Data module is ground truth": if the user deleted the
+        # segmentation in the Data module, drop the stale flag silently
+        # instead of asking a question whose default-Yes would resurrect the
+        # segmentation.
+        pending = []
         for vol in stale_nodes:
-            # Honour "Data module is ground truth": if the user deleted
-            # the segmentation in the Data module, drop the stale flag
-            # silently instead of asking the user a question whose
-            # default-Yes would resurrect the segmentation.
             if not seg_still_present(vol):
                 try:
                     getattr(
@@ -1822,56 +1823,74 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 except Exception:
                     pass
                 continue
+            pending.append(vol)
 
-            name = ""
+        if not pending:
+            return
+
+        # Issue #83: one dialog for the whole batch. Editing three
+        # segmentations used to mean dismissing three modal boxes in a row.
+        names = []
+        for vol in pending:
             try:
-                name = vol.GetName() if hasattr(vol, "GetName") else ""
+                names.append(vol.GetName() if hasattr(vol, "GetName") else "")
             except Exception:
-                name = ""
-            decision = self._stale_recompute_prompt_policy(name)
-            if decision == "yes":
-                self._recompute_for_volume_node(vol)
-            elif decision == "dismiss":
-                break
+                names.append("")
+        if self._stale_recompute_prompt_policy(names) != "yes":
+            return
+        for vol in pending:
+            self._recompute_for_volume_node(vol)
 
-    def _stale_recompute_prompt_policy(self, filename):
-        """User-facing yes/no prompt for one stale image.
+    def _stale_recompute_prompt_policy(self, filenames):
+        """One yes/no prompt covering every edited image.
 
-        Centralised so the prompt cadence (ask every enter vs. ask
-        only once) is a one-line change in this function — the rest
-        of the loop in :meth:`prompt_recompute_stale_images` does not
-        need to change. Returns one of ``"yes"``, ``"no"``, or
-        ``"dismiss"``. ``"dismiss"`` is treated like ``"no"`` but
-        stops the prompt loop (lets a user "ask no to all" by closing
-        one prompt with the close button).
+        Issue #83: this used to be asked once per image, so editing three
+        segmentations meant three modal dialogs in sequence. Slicer's UI
+        convention is a single dialog for a batch decision, which is also what
+        the "no popup storm" thread through #65 and #81 is about.
 
-        Issue #56 follow-up: this prompt is now safe to answer "Yes" to
-        unconditionally. ``_recompute_for_volume_node`` →
+        Centralised so the cadence stays a one-line change here rather than in
+        the caller. Returns ``"yes"`` or ``"no"``; closing the dialog counts as
+        no, which leaves every row stale and re-offers them on the next entry.
+
+        Answering yes is safe for all of them: ``_recompute_for_volume_node`` →
         ``apply_analysis_to_volume_node`` → ``_create_segmentation_for_volume``
-        reuses an existing segmentation node when one resolves for the
-        volume (the typical case after a Segment Editor edit), so the
-        recompute refreshes Body/Eye in place without stacking a
-        duplicate node. Volumes whose segmentation the user deleted in
-        the Data module are filtered out earlier in the loop via
-        ``Logic.volume_node_references_existing_seg`` and never reach
-        this prompt.
+        reuses the existing segmentation node when one resolves for the volume
+        (the typical case after a Segment Editor edit), so a recompute
+        refreshes Body/Eye in place instead of stacking duplicates. Volumes
+        whose segmentation the user deleted in the Data module are filtered out
+        by the caller and never reach this prompt.
         """
+        names = [n for n in (filenames or []) if n]
+        if not names:
+            return "no"
         try:
             import qt
+            if len(names) == 1:
+                text = (
+                    f"Segmentation for {names[0]} has been edited in the "
+                    f"Segment Editor.\n\nRecompute metrics now?"
+                )
+            else:
+                # Cap the list so a large batch cannot produce a dialog taller
+                # than the screen.
+                shown = names[:10]
+                listing = "\n".join(f"\u2022 {n}" for n in shown)
+                if len(names) > len(shown):
+                    listing += f"\n\u2022 and {len(names) - len(shown)} more"
+                text = (
+                    f"Segmentations for {len(names)} images have been edited "
+                    f"in the Segment Editor:\n\n{listing}\n\n"
+                    f"Recompute metrics for them now?"
+                )
             box = qt.QMessageBox()
             box.setIcon(qt.QMessageBox.Question)
             box.setWindowTitle("Recompute metrics?")
-            box.setText(
-                f"Segmentation for {filename or 'this image'} has been edited "
-                f"in the Segment Editor.\n\nRecompute metrics now?"
-            )
+            box.setText(text)
             box.setStandardButtons(qt.QMessageBox.Yes | qt.QMessageBox.No)
             box.setDefaultButton(qt.QMessageBox.Yes)
-            res = box.exec_()
-            if res == qt.QMessageBox.Yes:
+            if box.exec_() == qt.QMessageBox.Yes:
                 return "yes"
-            # No button or dialog closed returns to the caller loop
-            # as "no" so we continue with the next stale image.
         except Exception:
             logging.exception(
                 "ZebrafishEmbryoAnalyzer: stale-recompute prompt failed"
