@@ -52,7 +52,7 @@ def run_worker(request_path: str) -> int:
         print(f"preload_models failed: {exc}", file=sys.stderr)
         return 2
 
-    # --- 4. Run analysis ---
+    # --- 4. Run analysis with incremental result write ---
     n = len(image_paths)
 
     def _progress_cb(i, total):
@@ -60,22 +60,15 @@ def run_worker(request_path: str) -> int:
         sys.stdout.flush()
 
     try:
-        results = analyse_images(image_paths, params, _progress_cb)
-    except Exception as exc:
-        _write_error(result_json_path, 1, str(exc))
-        return 1
-
-    # --- 5. Write arrays and strip from results ---
-    try:
         os.makedirs(arrays_dir, exist_ok=True)
     except Exception as exc:
         _write_error(result_json_path, 4, f"Cannot create arrays dir: {exc}")
         return 4
 
     _ARRAY_KEYS = ("mask", "grown", "eye_mask", "path_points", "straight_line_points")
-
     serializable_results = []
-    for i, r in enumerate(results):
+
+    def _serialize_one(i, r):
         stem = _safe_stem(r.get("filename", str(i)))
         npz_path = os.path.join(arrays_dir, f"{stem}_{i}.npz")
         arrays = {}
@@ -95,16 +88,12 @@ def run_worker(request_path: str) -> int:
             pass
 
         if arrays:
-            try:
-                import numpy as np
-                np.savez(npz_path, **arrays)
-            except Exception as exc:
-                _write_error(result_json_path, 4, f"Cannot write npz: {exc}")
-                return 4
+            import numpy as np
+            np.savez(npz_path, **arrays)
         else:
             npz_path = None
 
-        sr = {
+        return {
             "filename": r.get("filename"),
             "image_path": r.get("image_path"),
             "length_um": r.get("length"),
@@ -116,21 +105,36 @@ def run_worker(request_path: str) -> int:
             "error": r.get("error"),
             "arrays_npz": npz_path,
         }
-        serializable_results.append(sr)
 
-    # --- 6. Write result JSON ---
-    result_data = {
-        "protocol_version": 1,
-        "status": "ok",
-        "error_code": 0,
-        "error_message": "",
-        "results": serializable_results,
-    }
-    try:
-        with open(result_json_path, "w", encoding="utf-8") as fh:
+    def _write_result_json_atomic():
+        result_data = {
+            "protocol_version": 1,
+            "status": "ok",
+            "error_code": 0,
+            "error_message": "",
+            "results": serializable_results,
+        }
+        tmp_path = result_json_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as fh:
             json.dump(result_data, fh)
-    except Exception:
-        return 4
+        os.replace(tmp_path, result_json_path)
+
+    _next_index = [0]
+
+    def _on_one_image_done(image_path, r):
+        i = _next_index[0]
+        _next_index[0] += 1
+        try:
+            serializable_results.append(_serialize_one(i, r))
+            _write_result_json_atomic()
+        except Exception as exc:
+            print(f"per_image_callback serialization failed for {image_path}: {exc}", file=sys.stderr)
+
+    try:
+        analyse_images(image_paths, params, _progress_cb, per_image_callback=_on_one_image_done)
+    except Exception as exc:
+        _write_error(result_json_path, 1, str(exc))
+        return 1
 
     return 0
 

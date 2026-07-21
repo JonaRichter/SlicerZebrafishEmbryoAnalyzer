@@ -373,3 +373,174 @@ def test_analyse_images_error_field_contains_message(tmp_path, synthetic_fish_im
     assert len(results) == 1
     assert results[0]["error"] is not None
     assert "GPU out of memory" in results[0]["error"]
+
+
+# ---------------------------------------------------------------------------
+# Issue #82 — recompute works from pixels the caller already holds
+# ---------------------------------------------------------------------------
+
+def test_preloaded_image_is_segmented_without_touching_the_filesystem(
+    synthetic_fish_image, mock_model_paths,
+):
+    """A caller that already has the pixels must be able to analyse them with
+    no file behind the name.
+
+    This is the recompute-from-a-volume-node case. It used to read the pixels,
+    discard them, and pass a sentinel string in the ``image_paths`` position;
+    the analysis then tried to open that as a file and every recompute failed
+    with "Could not read image.". The path below deliberately does not exist —
+    if anything reaches the filesystem, this test fails.
+    """
+    from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
+
+    dummy_mask = np.zeros((256, 256), dtype=np.uint8)
+    name = "fish_000001_from_a_volume_node.jpg"   # no such file anywhere
+
+    with patch("ZebrafishEmbryoAnalyzerCore.seg.segmentation_pipeline") as mock_pipe, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.load_model"), \
+         patch("ZebrafishEmbryoAnalyzerCore.length.tube_length_border2border") as mock_len, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.classification_curvature") as mock_curv, \
+         patch("ZebrafishEmbryoAnalyzerLib.logic.shutil.copy2") as mock_copy:
+
+        mock_pipe.return_value = (
+            [synthetic_fish_image[:, :, ::-1]],
+            [dummy_mask],
+            [dummy_mask.copy()],
+        )
+        mock_len.return_value = (1200.0, 1100.0, np.zeros((2, 2)), ((0, 0), (1, 1)))
+        mock_cls = MagicMock()
+        mock_cls.item.return_value = 2
+        mock_curv.return_value = (None, mock_cls)
+
+        results = analyse_images(
+            [name],
+            {"length": True, "curvature": True, "ratio": True,
+             "eyes": False, "hitl": False, "threshold": 0.85, "um_per_px": 22.99},
+            preloaded_images={name: synthetic_fish_image},
+        )
+
+    assert len(results) == 1
+    assert not results[0].get("error"), results[0].get("error")
+    mock_copy.assert_not_called()
+
+    handed_over = mock_pipe.call_args.kwargs.get("preloaded_images")
+    assert handed_over is not None, "pipeline must receive the pixels directly"
+    assert len(handed_over) == 1
+    assert handed_over[0].shape == synthetic_fish_image.shape
+
+
+def test_paths_without_preloaded_pixels_still_read_from_disk(
+    tmp_path, synthetic_fish_image, mock_model_paths,
+):
+    """The preloaded path is opt-in — Run Analysis must keep reading files."""
+    import cv2
+    from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
+
+    img_path = str(tmp_path / "fish.png")
+    cv2.imwrite(img_path, synthetic_fish_image)
+    dummy_mask = np.zeros((256, 256), dtype=np.uint8)
+
+    with patch("ZebrafishEmbryoAnalyzerCore.seg.segmentation_pipeline") as mock_pipe, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.load_model"), \
+         patch("ZebrafishEmbryoAnalyzerCore.length.tube_length_border2border") as mock_len, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.classification_curvature") as mock_curv:
+
+        mock_pipe.return_value = (
+            [synthetic_fish_image[:, :, ::-1]],
+            [dummy_mask],
+            [dummy_mask.copy()],
+        )
+        mock_len.return_value = (1200.0, 1100.0, np.zeros((2, 2)), ((0, 0), (1, 1)))
+        mock_cls = MagicMock()
+        mock_cls.item.return_value = 2
+        mock_curv.return_value = (None, mock_cls)
+
+        analyse_images(
+            [img_path],
+            {"length": True, "curvature": True, "ratio": True,
+             "eyes": False, "hitl": False, "threshold": 0.85, "um_per_px": 22.99},
+        )
+
+    assert mock_pipe.call_args.kwargs.get("preloaded_images") is None
+
+
+# ---------------------------------------------------------------------------
+# Issue #84 — recompute measures the existing mask instead of re-segmenting
+# ---------------------------------------------------------------------------
+
+def test_supplied_mask_is_measured_without_running_segmentation(
+    synthetic_fish_image, synthetic_fish_mask, mock_model_paths,
+):
+    """A caller that hands over a mask must get it measured, not replaced.
+
+    This is the recompute-after-a-manual-edit case. Re-running the model here
+    overwrote the user's correction and handed back the model's version of the
+    fish — the row is flagged stale precisely because their mask is the ground
+    truth now.
+    """
+    from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
+
+    name = "fish_000001_edited.jpg"
+
+    with patch("ZebrafishEmbryoAnalyzerCore.seg.segmentation_pipeline") as mock_pipe, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.load_model"), \
+         patch("ZebrafishEmbryoAnalyzerCore.length.tube_length_border2border") as mock_len, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.classification_curvature") as mock_curv:
+
+        mock_len.return_value = (1200.0, 1100.0, np.zeros((2, 2)), ((0, 0), (1, 1)))
+        mock_cls = MagicMock()
+        mock_cls.item.return_value = 3
+        mock_curv.return_value = (None, mock_cls)
+
+        results = analyse_images(
+            [name],
+            {"length": True, "curvature": True, "ratio": True,
+             "eyes": False, "hitl": False, "threshold": 0.85, "um_per_px": 22.99},
+            preloaded_images={name: synthetic_fish_image},
+            preloaded_masks={name: {"mask": synthetic_fish_mask, "eye_mask": None}},
+        )
+
+    mock_pipe.assert_not_called()
+    assert len(results) == 1
+    r = results[0]
+    assert not r.get("error"), r.get("error")
+    assert r["mask"] is synthetic_fish_mask, "the supplied mask must be measured as-is"
+    assert r["length"] == 1200.0
+    assert r["curvature"] == 3
+
+
+def test_supplied_mask_still_feeds_the_curvature_classifier_a_grown_mask(
+    synthetic_fish_image, synthetic_fish_mask, mock_model_paths,
+):
+    """The classifier expects the dilated mask the segmentation stage would
+    have produced, so it has to be derived from the supplied one rather than
+    left empty.
+    """
+    from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
+
+    name = "fish_000001_edited.jpg"
+
+    with patch("ZebrafishEmbryoAnalyzerCore.seg.segmentation_pipeline"), \
+         patch("ZebrafishEmbryoAnalyzerCore.length.load_model"), \
+         patch("ZebrafishEmbryoAnalyzerCore.length.tube_length_border2border") as mock_len, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.classification_curvature") as mock_curv:
+
+        mock_len.return_value = (1200.0, 1100.0, np.zeros((2, 2)), ((0, 0), (1, 1)))
+        mock_cls = MagicMock()
+        mock_cls.item.return_value = 1
+        mock_curv.return_value = (None, mock_cls)
+
+        analyse_images(
+            [name],
+            {"length": True, "curvature": True, "ratio": True,
+             "eyes": False, "hitl": False, "threshold": 0.85, "um_per_px": 22.99},
+            preloaded_images={name: synthetic_fish_image},
+            preloaded_masks={name: {"mask": synthetic_fish_mask, "eye_mask": None}},
+        )
+
+    grown = mock_curv.call_args[0][1]
+    assert grown is not None
+    assert grown.shape == synthetic_fish_mask.shape
+    assert int((grown > 0).sum()) >= int((synthetic_fish_mask > 0).sum()), (
+        "the grown mask must cover at least the supplied mask"
+    )

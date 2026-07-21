@@ -82,6 +82,9 @@ def test_set_queue_empty_disables_run_button(widget_module):
     w._tabs = MagicMock()
     w._um_per_px = MagicMock()
     w._load_originals = MagicMock()
+    w._load_result_label = MagicMock()  # Issue #62
+    w._filter_readable_paths = MagicMock(return_value=([], [], {}))
+    w._logic = MagicMock()
     # No active runner
     w._active_runner = None
 
@@ -89,6 +92,8 @@ def test_set_queue_empty_disables_run_button(widget_module):
 
     # Button must be disabled after clearing queue
     w._btn_run.setEnabled.assert_called_with(False)
+    # Issue #38: pre-flight was exercised with the empty input list.
+    w._filter_readable_paths.assert_called_once_with([])
 
 
 def test_set_queue_with_images_enables_run_button(widget_module):
@@ -106,11 +111,18 @@ def test_set_queue_with_images_enables_run_button(widget_module):
     w._tabs = MagicMock()
     w._um_per_px = MagicMock()
     w._load_originals = MagicMock()
+    w._load_result_label = MagicMock()  # Issue #62
     w._active_runner = None
+    # Issue #38 stubs: the pre-flight readability check and MRML-batch helpers
+    # are not safe to run against nonexistent files in unit tests, so we treat
+    # every input as readable and let the mocked `_load_originals` no-op.
+    w._filter_readable_paths = MagicMock(return_value=(["/tmp/a.png", "/tmp/b.png"], [], {}))
+    w._logic = MagicMock()
 
     w._set_queue(["/tmp/a.png", "/tmp/b.png"])
 
     w._btn_run.setEnabled.assert_called_with(True)
+    w._filter_readable_paths.assert_called_once_with(["/tmp/a.png", "/tmp/b.png"])
 
 
 def test_run_button_disabled_on_construction_with_no_images(widget_module):
@@ -138,12 +150,16 @@ def test_set_queue_does_not_enable_button_when_deps_missing(widget_module):
     w._tabs = MagicMock()
     w._um_per_px = MagicMock()
     w._load_originals = MagicMock()
+    w._load_result_label = MagicMock()  # Issue #62
     w._active_runner = None
+    w._filter_readable_paths = MagicMock(return_value=(["/tmp/a.png"], [], {}))
+    w._logic = MagicMock()
 
     w._set_queue(["/tmp/a.png"])
 
     # deps missing → button stays disabled even with images
     w._btn_run.setEnabled.assert_called_with(False)
+    w._filter_readable_paths.assert_called_once_with(["/tmp/a.png"])
 
 
 # ---------------------------------------------------------------------------
@@ -151,17 +167,19 @@ def test_set_queue_does_not_enable_button_when_deps_missing(widget_module):
 # ---------------------------------------------------------------------------
 
 def test_on_load_folder_shows_message_when_no_supported_images(widget_module, tmp_path, monkeypatch):
-    """Issue #30: silent empty queue is a UX bug.
+    """Issue #30 / #62: silent empty queue is a UX bug.
 
     Selecting a folder that contains no .png/.tif/.tiff/.jpg/.jpeg files must
     surface a visible status message instead of leaving the user staring at
-    an empty queue with no explanation.
+    an empty queue with no explanation. Since issue #62, the persistent
+    ``_load_result_label`` feedback lives entirely inside ``_set_queue``
+    (see test_load_result_label.py), so ``_on_load_folder`` just needs to
+    still call through to it with the empty list.
     """
     import qt  # the MagicMock installed by the fixture
     from unittest.mock import MagicMock
 
     w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
-    w._scale_status = MagicMock()
     w._queue_list = MagicMock()
     w._results = []
     w._excluded = set()
@@ -182,11 +200,9 @@ def test_on_load_folder_shows_message_when_no_supported_images(widget_module, tm
 
     w._on_load_folder()
 
-    w._scale_status.setText.assert_called_once_with(
-        "No supported images found in the selected folder."
-    )
     # Queue is still cleared via _set_queue — user sees an empty queue plus
-    # the explanation above, not stale contents from a previous load.
+    # the explanation, which _set_queue itself now surfaces on the
+    # persistent label.
     w._set_queue.assert_called_once_with([])
 
 
@@ -200,7 +216,6 @@ def test_on_load_folder_no_message_when_folder_has_images(widget_module, tmp_pat
     (tmp_path / "sample.png").write_bytes(b"")
 
     w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
-    w._scale_status = MagicMock()
     w._queue_list = MagicMock()
     w._results = []
     w._excluded = set()
@@ -219,7 +234,6 @@ def test_on_load_folder_no_message_when_folder_has_images(widget_module, tmp_pat
 
     w._on_load_folder()
 
-    w._scale_status.setText.assert_not_called()
     w._set_queue.assert_called_once()
     assert len(w._set_queue.call_args[0][0]) == 1
 

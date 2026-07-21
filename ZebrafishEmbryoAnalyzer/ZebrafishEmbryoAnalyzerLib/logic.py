@@ -10,6 +10,7 @@ puts the module directory on sys.path; no path manipulation here.
 Export functions (export_excel, export_csv) live in export.py.
 """
 
+import logging
 import os
 import shutil
 import tempfile
@@ -153,25 +154,37 @@ def _empty_result(image_path: str) -> dict:
 # Public API
 # ---------------------------------------------------------------------------
 
-def detect_scalebar(image_path: str, label_um: float | None = None) -> dict:
+def detect_scalebar(image_path: str, label_um: float | None = None,
+                    img_rgb=None) -> dict:
     """
-    Detect scale bar in an image file.
+    Detect scale bar in an image.
+
+    If ``img_rgb`` (an already-decoded uint8 RGB ndarray) is provided, it is
+    used directly and ``image_path`` is not read from disk at all — needed
+    because after a scene reload (#41), ``image_path`` may be a bare filename
+    with no backing file (see #57). Falls back to reading ``image_path`` from
+    disk when ``img_rgb`` is None, preserving existing behavior for the
+    fresh-load path.
 
     Returns the dict produced by core detect_scalebar, or a failure dict
-    if the image cannot be read.
+    if the image cannot be read/is unavailable.
     """
     import cv2  # deferred: heavy compiled extension, only needed at call time
     from ZebrafishEmbryoAnalyzerCore.scalebar import detect_scalebar as _detect_scalebar
-    img_bgr = cv2.imread(image_path)
-    if img_bgr is None:
-        return {"success": False, "bar_found": False,
-                "message": "Could not read image."}
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    if img_rgb is None:
+        img_bgr = cv2.imread(image_path)
+        if img_bgr is None:
+            return {"success": False, "bar_found": False,
+                    "message": "Could not read image."}
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     return _detect_scalebar(img_rgb, label_um=label_um)
 
 
 def analyse_images(image_paths: list, params: dict,
-                   progress_callback=None) -> list:
+                   progress_callback=None,
+                   per_image_callback=None,
+                   preloaded_images: dict = None,
+                   preloaded_masks: dict = None) -> list:
     """
     Run segmentation + measurements on a list of image paths.
 
@@ -187,6 +200,35 @@ def analyse_images(image_paths: list, params: dict,
           um_per_px                      : float — physical scale (µm/pixel)
           model_id                       : str   — "general" or "desy"
     progress_callback : callable(current, total) | None
+        Called once per image with ``(current, total)`` AFTER the result is
+        appended. Used to drive progress UI.
+    preloaded_images : dict[str, ndarray] | None
+        Maps an entry of ``image_paths`` to an already-decoded uint8 RGB array.
+        Entries present here are segmented straight from memory and their path
+        is never touched, so the caller does not need the original file to
+        still exist — the recompute-from-a-volume-node case (issue #82). Same
+        opt-in shape as ``detect_scalebar``'s ``img_rgb``; paths not listed
+        keep the normal read-from-disk behaviour.
+    preloaded_masks : dict[str, dict] | None
+        Maps an entry of ``image_paths`` to ``{"mask": ndarray, "eye_mask":
+        ndarray | None}``. When given, segmentation is **skipped entirely** and
+        those masks are measured as-is — the recompute-after-a-manual-edit case
+        (issue #84), where the user's mask is the ground truth and re-running
+        the model would throw their correction away. The dilated mask the
+        curvature classifier needs is derived from it with the same
+        ``fill_holes``/``grow_mask`` pair the segmentation stage uses.
+    per_image_callback : callable(image_path, result_dict) | None
+        Called once per image with the fully-populated result dict BEFORE
+        progress_callback fires. Used by the MRML streaming layer
+        (issue #39) to write per-image segmentation / markups nodes and
+        metric attributes onto the volume node immediately, so a Cancel
+        mid-batch leaves fully-formed state for completed images.
+
+        Exceptions raised inside the callback are caught and logged; the
+        ``error`` field on the result dict is set to a descriptive message
+        so sub-issue #40's table-derivation code can route the failed
+        image to the error row. The batch is never aborted by a single
+        failing callback.
 
     Returns
     -------
@@ -199,6 +241,7 @@ def analyse_images(image_paths: list, params: dict,
     import numpy as np  # deferred: only needed inside analyse_images
     _install_model_cache()
     from ZebrafishEmbryoAnalyzerCore.seg import segmentation_pipeline
+    from ZebrafishEmbryoAnalyzerCore.seg_helper import fill_holes, grow_mask
     from ZebrafishEmbryoAnalyzerCore.length import (
         load_model,
         tube_length_border2border,
@@ -264,28 +307,63 @@ def analyse_images(image_paths: list, params: dict,
         r = _empty_result(image_path)
 
         try:
-            # Segment this single image — model already cached, no disk reload
-            with tempfile.TemporaryDirectory() as _tmp:
-                # copy2 instead of symlink: os.symlink requires admin rights on
-                # Windows; copy2 is portable and the temp dir is cleaned up
-                # immediately after segmentation_pipeline returns.
-                shutil.copy2(image_path, os.path.join(_tmp, os.path.basename(image_path)))
-                seg_result = segmentation_pipeline(_tmp, **_seg_kwargs)
-
-            if include_eyes and len(seg_result) == 4:
-                originals_bgr, masks, growns, eyes_list = seg_result
+            preloaded = (preloaded_images or {}).get(image_path)
+            supplied_masks = (preloaded_masks or {}).get(image_path)
+            if supplied_masks is not None:
+                # Measure-only: the caller already has the mask and it is
+                # authoritative — re-segmenting here would discard a manual
+                # correction, which is exactly what the recompute exists to
+                # honour (issue #84). No model inference runs on this path.
+                if preloaded is not None:
+                    orig_bgr = cv2.cvtColor(preloaded, cv2.COLOR_RGB2BGR)
+                else:
+                    orig_bgr = cv2.imread(image_path)
+                mask = supplied_masks.get("mask")
+                eye = supplied_masks.get("eye_mask")
+                grown = grow_mask(fill_holes(mask)) if mask is not None else None
+            elif preloaded is not None:
+                # Pixels already in hand — hand them to the pipeline directly.
+                # Nothing is read from ``image_path``, which in this case is a
+                # display name rather than a file that has to exist (issue #82).
+                seg_result = segmentation_pipeline(
+                    preloaded_images=[cv2.cvtColor(preloaded, cv2.COLOR_RGB2BGR)],
+                    **_seg_kwargs
+                )
             else:
-                originals_bgr, masks, growns = seg_result[:3]
-                eyes_list = [None]
+                # Segment this single image — model already cached, no disk reload
+                with tempfile.TemporaryDirectory() as _tmp:
+                    # copy2 instead of symlink: os.symlink requires admin rights on
+                    # Windows; copy2 is portable and the temp dir is cleaned up
+                    # immediately after segmentation_pipeline returns.
+                    shutil.copy2(image_path, os.path.join(_tmp, os.path.basename(image_path)))
+                    seg_result = segmentation_pipeline(_tmp, **_seg_kwargs)
 
-            orig_bgr = originals_bgr[0] if originals_bgr else None
-            mask    = masks[0]      if masks      else None
-            grown   = growns[0]     if growns     else None
-            eye     = eyes_list[0]  if eyes_list  else None
+            if supplied_masks is None:
+                if include_eyes and len(seg_result) == 4:
+                    originals_bgr, masks, growns, eyes_list = seg_result
+                else:
+                    originals_bgr, masks, growns = seg_result[:3]
+                    eyes_list = [None]
+
+                orig_bgr = originals_bgr[0] if originals_bgr else None
+                mask    = masks[0]      if masks      else None
+                grown   = growns[0]     if growns     else None
+                eye     = eyes_list[0]  if eyes_list  else None
 
             if orig_bgr is None:
                 r["error"] = "Could not read image."
                 results.append(r)
+                # Issue #59/#39: still fire per_image_callback so the caller
+                # (worker process writing result.json, or a future MRML
+                # streaming consumer) can record this image before skipping.
+                if per_image_callback is not None:
+                    try:
+                        per_image_callback(image_path, r)
+                    except Exception as exc:
+                        logging.exception(
+                            "analyse_images: per_image_callback failed for %s",
+                            image_path,
+                        )
                 if progress_callback:
                     progress_callback(_loop_i + 1, n)
                 continue
@@ -355,6 +433,25 @@ def analyse_images(image_paths: list, params: dict,
             r["error"] = f"Unhandled error: {exc}\n{traceback.format_exc()}"
 
         results.append(r)
+        # Issue #59/#39: stream per-image state via per_image_callback so the
+        # caller can persist progress after every completed image, not only
+        # at batch end — the worker process uses this to write result.json
+        # atomically (issue #59); a future MRML-streaming consumer (issue
+        # #39) can reuse the same hook. Errors are recorded on the result
+        # dict rather than propagated, so a single bad callback never aborts
+        # the batch.
+        if per_image_callback is not None:
+            try:
+                per_image_callback(image_path, r)
+            except Exception as exc:
+                logging.exception(
+                    "analyse_images: per_image_callback failed for %s", image_path
+                )
+                if not r.get("error"):
+                    r["error"] = (
+                        f"Per-image write failed for "
+                        f"{os.path.basename(image_path)}: {exc}"
+                    )
         if progress_callback:
             progress_callback(_loop_i + 1, n)
 

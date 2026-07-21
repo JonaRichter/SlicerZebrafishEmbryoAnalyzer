@@ -26,6 +26,36 @@ _MODEL_ENTRIES = [
 _MODEL_BY_ID  = {mid: data for _, mid, data in _MODEL_ENTRIES}
 _DEFAULT_MODEL_ID = "general"
 
+# Longest filename kept intact in a message-box listing. Dataset names like
+# ``fish_000001_jpg.rf.f9e4338f9fdce1d85c4fdbe1e177ecce.jpg`` wrap onto a
+# second line otherwise, which turns a list of a few images into a wall of
+# text.
+_FILENAME_DISPLAY_LIMIT = 44
+
+
+def elide_filename(name, limit=_FILENAME_DISPLAY_LIMIT):
+    """Shorten ``name`` to ``limit`` characters, dropping from the middle.
+
+    The gallery elides with ``fontMetrics().elidedText`` (see
+    ``gallery_tab.py``), which needs a widget and a pixel width. A message
+    box's text has neither, so this uses a character budget instead —
+    deterministic and unit-testable.
+
+    Dropped from the middle rather than the end because both ends carry
+    information: the head distinguishes images from one another, the tail
+    holds the extension. Cutting the tail would leave a list of names that
+    all look alike apart from a truncation marker.
+    """
+    try:
+        text = str(name or "")
+    except Exception:
+        return ""
+    if limit < 8 or len(text) <= limit:
+        return text
+    tail = min(14, (limit - 1) // 2)
+    head = limit - tail - 1
+    return text[:head] + "…" + text[-tail:]
+
 
 # ---------------------------------------------------------------------------
 # Parameter node schema — names and string-encoded defaults
@@ -71,6 +101,10 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._run_token = 0
         self._deps_ok = True
         self._install_declined = False  # set True when user cancels the dependency dialog; reset on dispose
+        # Issue #61: temp files written by _materialize_missing_image_paths to
+        # back in-memory-only images (e.g. after a scene reload). Cleared and
+        # deleted on every _on_runner_finished path (success/cancel/error).
+        self._run_temp_files = []  # internal state; cleaned up below.
 
         self._saved_layout_id = None
         self._saved_central_visible = None
@@ -238,10 +272,30 @@ class ZebrafishEmbryoAnalyzerMainWidget:
 
         self._btn_folder = qt.QPushButton("Load Folder…")
         self._btn_files  = qt.QPushButton("Load Images…")
+        self._btn_folder.setToolTip(
+            "Loading a folder replaces the current selection in this scene."
+        )
+        self._btn_files.setToolTip(
+            "Loading images replaces the current selection in this scene."
+        )
         _load_row = qt.QHBoxLayout()
         _load_row.addWidget(self._btn_folder)
         _load_row.addWidget(self._btn_files)
         in_layout.addLayout(_load_row)
+        # Issue #38: always-visible hint (no modal confirmation) explaining
+        # that loading replaces the previous scene contents.
+        self._load_replace_hint = qt.QLabel(
+            "Loading replaces the current selection in this scene."
+        )
+        self._load_replace_hint.setStyleSheet("color: #888; font-size: 11px;")
+        self._load_replace_hint.setWordWrap(True)
+        in_layout.addWidget(self._load_replace_hint)
+        # Issue #62: persistent (not transient-status-bar) feedback on the
+        # outcome of the last load — stays visible until the next load,
+        # unlike slicer.util.showStatusMessage (8s global status bar flash).
+        self._load_result_label = qt.QLabel("")
+        self._load_result_label.setWordWrap(True)
+        in_layout.addWidget(self._load_result_label)
         in_layout.addWidget(qt.QLabel("Queue:"))
         self._queue_list = qt.QListWidget()
         self._queue_list.setMaximumHeight(120)
@@ -266,6 +320,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         # Confidence threshold hidden from UI (issue #79); widget still
         # created above and stays wired into settings/parameter-node sync.
         # an_layout.addWidget(self._chk_hitl)
+        self._enforce_length_ratio_dependency()
 
         self._threshold_slider = ctk.ctkSliderWidget()
         self._threshold_slider.minimum    = 0.0
@@ -377,6 +432,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
 
 
     def _build_right_panel(self, splitter):
+        import qt
         self._tabs = qt.QTabWidget()
         splitter.addWidget(self._tabs)
 
@@ -393,6 +449,33 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         )
         self._detail._params_getter = self._get_correction_params
         self._tabs.addTab(self._detail, "Detail")
+        # Issue #42: "Recompute metrics" button shown on the detail tab
+        # only when the current image's segmentation is marked stale.
+        # Created lazily so unit tests can run without a full Qt setup.
+        self._recompute_btn = None
+        try:
+            self._recompute_btn = qt.QPushButton("Recompute metrics")
+            self._recompute_btn.setToolTip(
+                "Segmentation was edited in the Segment Editor — "
+                "recompute metrics from the new segmentation."
+            )
+            self._recompute_btn.setEnabled(False)
+            self._recompute_btn.setVisible(False)
+            self._recompute_btn.connect(
+                "clicked()", lambda: self._on_recompute_current_detail()
+            )
+            # Place it in the tab bar area so it is reachable when the
+            # user is viewing the Detail tab.
+            self._tabs.tabBar().setTabButton(
+                self._tabs.indexOf(self._detail),
+                self._tabs.tabBar().RightSide,
+                self._recompute_btn,
+            )
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: detail recompute button init failed"
+            )
+            self._recompute_btn = None
 
         from ZebrafishEmbryoAnalyzerLib.results_tab import ResultsTab
         self._results_tab = ResultsTab(on_exclude_change=self._on_exclude_change)
@@ -421,6 +504,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             self._chk_hitl.toggled,
         ):
             _signal.connect(self._notify_settings_changed)
+        self._chk_length.toggled.connect(self._enforce_length_ratio_dependency)
         self._threshold_slider.valueChanged.connect(self._notify_settings_changed)
         self._um_per_px.valueChanged.connect(self._notify_settings_changed)
         self._model_combo.currentIndexChanged.connect(self._notify_settings_changed)
@@ -440,10 +524,6 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             for f in os.listdir(folder)
             if os.path.splitext(f)[1].lower() in exts and not f.startswith(".")
         ])
-        if not paths:
-            self._scale_status.setText(
-                "No supported images found in the selected folder."
-            )
         self._set_queue(paths)
 
     def _on_load_files(self):
@@ -466,6 +546,48 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 self._run_stack.setCurrentIndex(0)
             except Exception:
                 pass
+
+        # Issue #38: replace-on-load. Remove any volume nodes owned by the
+        # previous selection BEFORE touching the new selection so the Data
+        # module never shows a mixed set of volume nodes from two batches.
+        try:
+            self._logic.replace_image_volume_nodes()
+        except Exception:
+            logging.exception("ZebrafishEmbryoAnalyzer: replace_image_volume_nodes failed")
+
+        # Issue #38: pre-flight readability check. Files that cv2 cannot read
+        # are dropped before queue, stubs, or volume nodes are created; the
+        # user sees one consolidated, capped summary naming them.
+        # The pre-flight also returns the already-decoded RGB arrays so the
+        # subsequent _load_originals / volume-node-creation passes never
+        # repeat the cv2.imread call (issue #38 acceptance: "no image is read
+        # from disk twice").
+        paths, failed, decoded = self._filter_readable_paths(paths)
+        total_attempted = len(paths) + len(failed)
+        if failed:
+            msg = (
+                f"Loaded {len(paths)} of {total_attempted} image(s) — "
+                f"{len(failed)} unreadable and skipped: "
+                f"{self._format_readability_message(len(failed), failed)}"
+            )
+            style = "color: #FFC107; font-size: 11px;"  # amber — partial success
+            try:
+                slicer.util.showStatusMessage(
+                    self._format_readability_message(len(failed), failed), 8000,
+                )
+            except Exception:
+                pass
+        elif paths:
+            msg = f"Loaded {len(paths)} image(s)."
+            style = "color: #4CAF50; font-size: 11px;"  # green — full success
+        else:
+            # total_attempted == 0: folder/selection contained no
+            # supported-extension files at all — must not fail silently.
+            msg = "No supported images found in the selected folder."
+            style = "color: #F44336; font-size: 11px;"  # red — nothing loaded
+        self._load_result_label.setText(msg)
+        self._load_result_label.setStyleSheet(style)
+
         import os
         self._image_paths = paths
         self._queue_list.clear()
@@ -494,25 +616,186 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             except Exception:
                 pass
 
-        self._load_originals(paths, stubs)
+        self._load_originals(paths, stubs, decoded=decoded)
         self._refresh_run_button()
 
-    def _load_originals(self, paths, stubs):
-        """Load original images after an explicit user action."""
+        # Issue #38: eagerly create one vtkMRMLVectorVolumeNode per
+        # successfully-read image, reusing the rgb already in stubs[i]["original"]
+        # so the file is never read from disk a second time. Pre-flight failures
+        # are absent from this list because they were filtered above.
+        self._create_image_volume_nodes_for_batch()
+
+    def _filter_readable_paths(self, paths):
+        """Pre-flight readability check for issue #38.
+
+        Reads every file from disk EXACTLY ONCE: ``cv2.imread`` plus the
+        ``BGR2RGB`` conversion happen here. Files that cv2 cannot decode
+        (decode failure, conversion failure, or any unexpected exception)
+        are dropped from the batch entirely — no volume node, no queue row,
+        no further processing. Unreadable files are surfaced as a single
+        capped summary by the caller, not as a modal popup.
+
+        Returns
+        -------
+        tuple (readable_paths, failed_basenames, decoded_rgb)
+            readable_paths : list[str] of paths that decoded successfully.
+            failed_basenames : list[str] of basenames that failed.
+            decoded_rgb : dict[path, np.ndarray] of uint8 RGB arrays for the
+                readable paths; reused by ``_load_originals`` and the
+                volume-node-creation pass to avoid a second ``cv2.imread``.
+        """
+        import os
+        import cv2
+        readable = []
+        failed = []
+        decoded = {}
+        for p in paths:
+            try:
+                img = cv2.imread(p)
+                if img is None:
+                    failed.append(os.path.basename(p))
+                    continue
+                # cvtColor can fail on grayscales/non-RGB sources; treat them
+                # as pre-flight failures rather than crashing the load flow.
+                rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            except Exception:
+                failed.append(os.path.basename(p))
+                continue
+            readable.append(p)
+            decoded[p] = rgb
+        return readable, failed, decoded
+
+    @staticmethod
+    def _format_readability_message(total_failed, failed_names, cap=10):
+        """Build a single-line capped summary for unreadable files (issue #38).
+
+        Shows the first ``cap`` names verbatim and ``"... and N more"`` when
+        additional failures were truncated.
+        """
+        shown = list(failed_names[:cap])
+        extra = total_failed - len(shown)
+        suffix = f", ... and {extra} more" if extra > 0 else ""
+        plural = "s" if total_failed != 1 else ""
+        return (
+            f"{total_failed} image{plural} could not be read and were not imported: "
+            + ", ".join(shown)
+            + suffix
+        )
+
+    @staticmethod
+    def _format_failed_batch_message(total_failed, failed_names, cap=10):
+        """Build a single-line capped summary for MRML batch failures (issue #38).
+
+        Mirrors :meth:`_format_readability_message` but uses different wording
+        so users can distinguish decode-time failures from runtime failures
+        while reading the eventual volume node into the scene.
+        """
+        shown = list(failed_names[:cap])
+        extra = total_failed - len(shown)
+        suffix = f", ... and {extra} more" if extra > 0 else ""
+        plural = "s" if total_failed != 1 else ""
+        return (
+            f"{total_failed} image{plural} failed to create a scene volume node: "
+            + ", ".join(shown)
+            + suffix
+        )
+
+    def _create_image_volume_nodes_for_batch(self):
+        """Issue #38: eagerly create one ``vtkMRMLVectorVolumeNode`` per
+        successfully-loaded image, reusing pixel arrays already held in
+        ``self._results[i]["original"]`` by :meth:`_load_originals`.
+        """
+        if not getattr(self, "_results", None):
+            return
+        try:
+            um_per_px = float(self._um_per_px.value)
+        except Exception:
+            um_per_px = 22.99
+        batches = []
+        for stub in self._results:
+            rgb = stub.get("original") if isinstance(stub, dict) else None
+            if rgb is None:
+                continue
+            batches.append({
+                "filename": stub.get("filename") or "ZebrafishEmbryoAnalyzer Image",
+                "image_rgb": rgb,
+                "um_per_px": um_per_px,
+            })
+        if not batches:
+            return
+        try:
+            created, failed = self._logic.create_image_volume_nodes(batches)
+        except MRMLAdapterError as exc:
+            logging.warning(
+                "ZebrafishEmbryoAnalyzer: per-image volume node creation failed: %s", exc
+            )
+            try:
+                slicer.util.showStatusMessage(
+                    "Could not create per-image volume nodes. Check the application log.",
+                    5000,
+                )
+            except Exception:
+                pass
+            return
+        except Exception:
+            # Defensive: a half-constructed logic instance (or any
+            # non-MRMLAdapterError failure) must not derail the load flow.
+            # Subsequent batches or a re-load retry the node creation.
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: _create_image_volume_nodes_for_batch failed"
+            )
+            try:
+                slicer.util.showStatusMessage(
+                    "Could not create per-image volume nodes. Check the application log.",
+                    5000,
+                )
+            except Exception:
+                pass
+            return
+
+        if failed:
+            # Partial-success: some images turned into volume nodes, others did
+            # not. The user gets a capped, named summary rather than a silent
+            # partial state (CLAUDE.md error-handling rule).
+            try:
+                slicer.util.showStatusMessage(
+                    self._format_failed_batch_message(len(failed), failed),
+                    8000,
+                )
+            except Exception:
+                pass
+        _ = created  # currently diagnostic-only; tests count via param_node refs
+
+    def _load_originals(self, paths, stubs, decoded=None):
+        """Populate ``stubs[i]["original"]`` with RGB pixel arrays.
+
+        The pixel arrays are reused from the pre-flight pass when
+        ``decoded`` (a path → uint8 RGB dict) is provided, so each image is
+        read from disk exactly once across the full ``_set_queue`` flow
+        (issue #38 acceptance: "No image is read from disk twice"). When
+        ``decoded`` is None the legacy single-read path is used, keeping the
+        helper backward-compatible with the few unit tests that patch
+        ``cv2.imread`` directly.
+        """
         import cv2
         from ZebrafishEmbryoAnalyzerLib.gallery_tab import THUMB_SIZE as _THUMB_SIZE
 
+        decoded = decoded if decoded is not None else {}
         for i, p in enumerate(paths):
             if stubs is not self._results:
                 return
-            img = cv2.imread(p)
-            if img is not None:
+            if p in decoded:
+                rgb = decoded[p]
+            else:
+                img = cv2.imread(p)
+                if img is None:
+                    continue
                 rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                stubs[i]["original"] = rgb
-                h, w = rgb.shape[:2]
-                scale = _THUMB_SIZE / max(h, w)
-                thumb = cv2.resize(rgb, (max(1, int(w * scale)), max(1, int(h * scale))))
-                self._gallery.update_thumb_prebuilt(i, thumb)
+            stubs[i]["original"] = rgb
+            h, w = rgb.shape[:2]
+            scale = _THUMB_SIZE / max(h, w)
+            thumb = cv2.resize(rgb, (max(1, int(w * scale)), max(1, int(h * scale))))
+            self._gallery.update_thumb_prebuilt(i, thumb)
 
     def _required_model_entries(self, model_id):
         """Return the model entries required by the current settings."""
@@ -571,7 +854,11 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         if not self._image_paths:
             self._scale_status.setText("Load images first.")
             return
-        result = self._logic.detect_scalebar(self._image_paths[0])
+        # Issue #57: pass the in-memory RGB array when available so detection
+        # still works after a scene reload where self._image_paths[0] is a
+        # bare filename without a backing file on disk.
+        original = self._results[0].get("original") if self._results else None
+        result = self._logic.detect_scalebar(self._image_paths[0], img_rgb=original)
         if result.get("bar_found"):
             um_per_px = result.get("scale_um_per_px")
             bar_px = result.get("bar_length_px")
@@ -610,7 +897,10 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         except ValueError:
             self._scale_status.setText("Invalid value — enter a number.")
             return
-        result = self._logic.detect_scalebar(self._image_paths[0], label_um=label_um)
+        # Issue #57: pass the in-memory RGB array (see _on_detect_scale for
+        # rationale — works identically on fresh load and scene reload).
+        original = self._results[0].get("original") if self._results else None
+        result = self._logic.detect_scalebar(self._image_paths[0], label_um=label_um, img_rgb=original)
         if result.get("success"):
             self._um_per_px.value = result["scale_um_per_px"]
             self._scale_status.setText(
@@ -707,6 +997,67 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             logging.exception("ZebrafishEmbryoAnalyzer: failed to start model download")
             slicer.util.errorDisplay(f"Could not start model download:\n{exc}")
 
+    def _materialize_missing_image_paths(self, image_paths, originals):
+        """Write any in-memory-only image (no real file on disk — e.g. after a
+        scene reload, per #41/#57/#61) to a temp file and substitute that path.
+
+        Needed because analyse_images() ultimately does shutil.copy2(image_path, ...)
+        to hand the file to the out-of-process inference worker — a bare filename
+        with no backing file on disk fails there. Temp files are written once per
+        Run Analysis click and cleaned up in _on_runner_finished's existing
+        teardown path: any temp paths produced here are appended to
+        ``self._run_temp_files`` and deleted (regardless of the run's success /
+        failure / cancellation) before the handler returns.
+        """
+        import os
+        import tempfile
+        import cv2
+        result = []
+        for i, path in enumerate(image_paths):
+            if path and os.path.exists(path):
+                result.append(path)
+                continue
+            original = originals[i] if i < len(originals) else None
+            if original is None:
+                # Nothing to materialize from — let downstream fail as before so
+                # the per-image error field surfaces the actual cause.
+                result.append(path)
+                continue
+            fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="zebrafish_reload_")
+            os.close(fd)
+            try:
+                bgr = cv2.cvtColor(original, cv2.COLOR_RGB2BGR)
+                cv2.imwrite(tmp_path, bgr)
+                result.append(tmp_path)
+                self._run_temp_files.append(tmp_path)
+            except Exception:
+                logging.exception(
+                    "ZebrafishEmbryoAnalyzer: failed to materialize in-memory image for %s", path
+                )
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+                result.append(path)  # fall through to the original (still-broken) path
+        return result
+
+    def _clear_run_temp_files(self):
+        """Delete every temp file produced by _materialize_missing_image_paths.
+
+        Called on every branch of _on_runner_finished (success / failure /
+        cancellation / token mismatch / disposed) so the temp dir doesn't
+        accumulate after Run Analysis clicks.
+        """
+        import os
+        if not self._run_temp_files:
+            return
+        for tmp_path in self._run_temp_files:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        self._run_temp_files = []
+
     def _start_inference_process(self, model_id, params, token):
         """Launch analysis as a QProcess worker subprocess."""
         if self._active_runner is not None:
@@ -715,6 +1066,12 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         try:
             originals = [r.get("original") for r in self._results]
             image_paths = list(self._image_paths)
+            image_paths = self._materialize_missing_image_paths(image_paths, originals)
+            # Snapshot of exactly what was sent to the worker, positionally
+            # aligned with self._image_paths — _handle_runner_finished uses
+            # this to restore queue order and original filenames from the
+            # worker's echoed (possibly materialized-temp-file) image_path.
+            self._run_sent_paths = list(image_paths)
 
             self._run_status_label.setText("Loading models…")
             self._run_progress.setRange(0, 0)   # native Qt marquee: fixed chunk moves left→right
@@ -729,29 +1086,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 self._run_progress.setFormat("")
 
             def _on_runner_finished(success, state, message, controller):
-                logging.debug("ZebrafishEmbryoAnalyzer: _on_runner_finished state=%s success=%s token=%s run_token=%s", state, success, token, self._run_token)
-                if self._disposed or controller is not self._active_runner:
-                    return
-                self._active_runner = None
-                self._refresh_settings_actions()
-                if self._run_token != token:
-                    self._run_stack.setCurrentIndex(0)
-                    return
-                if not success:
-                    self._run_stack.setCurrentIndex(0)
-                    if state not in ("cancelled", "disposed"):
-                        ui_message = self._categorize_inference_error(message, controller)
-                        slicer.util.errorDisplay(ui_message)
-                    return
-                self._results = controller.results
-                self._run_stack.setCurrentIndex(0)
-                logging.debug("ZebrafishEmbryoAnalyzer: results ready, count=%d", len(self._results))
-                try:
-                    self._on_results_ready()
-                    self._try_update_mrml_table(self._results)
-                except Exception:
-                    logging.exception("ZebrafishEmbryoAnalyzer: exception in _on_results_ready")
-                    raise
+                self._handle_runner_finished(success, state, message, controller, token)
 
             from ZebrafishEmbryoAnalyzerLib.inference_runner import start_inference
             self._active_runner = start_inference(
@@ -766,10 +1101,39 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             logging.exception("ZebrafishEmbryoAnalyzer: failed to start inference process")
             slicer.util.errorDisplay(f"Could not start analysis:\n{exc}")
 
-    def _try_update_mrml_table(self, results):
-        """Update the MRML results table; log and show a status warning on failure."""
+    def _try_apply_results_to_volume_nodes(self, results):
+        """Issue #39 follow-up: write segmentation/markups/attributes onto each
+        result's already-existing (#38 eager) volume node before the table
+        and staleness observers are built from those nodes' attributes.
+
+        Best-effort — logs and shows a status message on failure rather than
+        raising, matching ``_try_update_mrml_table``'s pattern.
+        """
         try:
-            self._logic.update_results_table(results)
+            self._logic.apply_results_to_tracked_volume_nodes(
+                results, self._um_per_px.value
+            )
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: apply_results_to_tracked_volume_nodes failed"
+            )
+            slicer.util.showStatusMessage(
+                "Analysis complete — writing segmentation nodes failed. Check the application log.",
+                5000,
+            )
+
+    def _try_update_mrml_table(self, results):
+        """Update the MRML results table; log and show a status warning on failure.
+
+        Issues #40 / #41: the table is now always rebuilt from the per-image
+        volume nodes (single code path), not from the in-memory ``results``
+        list — the volume nodes carry the ``ZebrafishAnalysis.*`` attributes
+        that are the source of truth (ADR 0001). The ``results`` argument
+        is still accepted so callers stay backward-compatible but it is
+        ignored once the volume-node path is in use.
+        """
+        try:
+            self._logic.update_results_table_from_tracked_nodes()
         except MRMLAdapterError as exc:
             logging.warning("ZebrafishEmbryoAnalyzer: MRML table update failed: %s", exc)
             slicer.util.showStatusMessage(
@@ -777,28 +1141,29 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 5000,
             )
 
-    def _try_update_mrml_image(self, result):
-        # NOTE: _on_detect_scale / show_raw_image does NOT call this method (E2b scope).
-        # The MRML node intentionally reflects the last gallery selection, not the
-        # scalebar debug overlay. Re-sync by clicking any gallery item.
-        try:
-            self._logic.update_current_image_node(result, self._um_per_px.value)
-        except MRMLAdapterError as exc:
-            logging.warning("ZebrafishEmbryoAnalyzer: MRML image node update failed: %s", exc)
-            slicer.util.showStatusMessage(
-                "Image node update failed. Check the application log.",
-                5000,
-            )
+    def _try_show_gallery_selection_in_slice_view(self, result):
+        """Issue #56: mirror the gallery selection into Slicer's slice views.
 
-    def _try_update_mrml_segmentation(self, result):
+        Delegates to :meth:`ZebrafishEmbryoAnalyzerLogic.show_gallery_selection_in_slice_view`,
+        which sets the selected image's per-image volume node as the
+        slice-view background and toggles its segmentation display visibility
+        on. The logic method never raises, so this wrapper only catches the
+        unlikely case where the logic layer itself is unavailable so it can
+        surface a status message instead of crashing the gallery click.
+        """
         try:
-            self._logic.update_current_segmentation_node(result, self._um_per_px.value)
-        except MRMLAdapterError as exc:
-            logging.warning("ZebrafishEmbryoAnalyzer: MRML segmentation node update failed: %s", exc)
-            slicer.util.showStatusMessage(
-                "Segmentation node update failed. Check the application log.",
-                5000,
+            self._logic.show_gallery_selection_in_slice_view(result)
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: slice-view mirror for gallery selection failed"
             )
+            try:
+                slicer.util.showStatusMessage(
+                    "Slice-view mirror failed. Check the application log.",
+                    5000,
+                )
+            except Exception:
+                pass
 
     def _get_correction_params(self):
         """Return current hitl/threshold settings for manual correction curvature recompute."""
@@ -812,6 +1177,19 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             self._excluded.add(filename)
         else:
             self._excluded.discard(filename)
+        # Persist it. The set above is in-memory only, so without this a fish
+        # excluded by hand came back included after save/reload — the scene
+        # had nowhere to carry the decision.
+        for row in self._results or []:
+            if isinstance(row, dict) and row.get("filename") == filename:
+                row["exclude"] = bool(checked)
+                try:
+                    self._logic.set_row_exclusion(row, bool(checked))
+                except Exception:
+                    logging.exception(
+                        "ZebrafishEmbryoAnalyzer: persisting the exclude state failed"
+                    )
+                break
         self._results_tab.sync_exclude(self._excluded)
         self._detail.sync_exclude(filename in self._excluded)
 
@@ -823,8 +1201,8 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             self._detail.sync_exclude(self._results[index]["filename"] in self._excluded)
         self._detail.setFocus()
         if index < len(self._results):
-            self._try_update_mrml_image(self._results[index])
-            self._try_update_mrml_segmentation(self._results[index])
+            self._try_show_gallery_selection_in_slice_view(self._results[index])
+        self._refresh_detail_recompute_button()
 
     def _navigate_detail(self, delta: int):
         if not self._results:
@@ -837,6 +1215,19 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         """Forward any setting control change to the parameter node owner."""
         if not self._updatingGUIFromParameterNode and callable(self._on_settings_changed):
             self._on_settings_changed()
+
+    def _enforce_length_ratio_dependency(self):
+        """Issue #60: "Length/straight ratio" only has any effect when
+        "Body length" is also enabled — logic.py's ratio computation is
+        nested inside the length block (see analyse_images), so ratio
+        silently computes nothing otherwise. Keep the UI from representing
+        that invalid combination: grey out ratio when length is off, and
+        force it unchecked so the effective params state can't lie about it.
+        """
+        length_enabled = self._chk_length.isChecked()
+        self._chk_ratio.setEnabled(length_enabled)
+        if not length_enabled:
+            self._chk_ratio.setChecked(False)
 
     def updateGUIFromParameterNode(self, node):
         """Read parameter values from node and apply to all setting controls."""
@@ -869,6 +1260,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             self._chk_length.setChecked(_b(PARAM_LENGTH_ENABLED, True))
             self._chk_curvature.setChecked(_b(PARAM_CURVATURE_ENABLED, True))
             self._chk_ratio.setChecked(_b(PARAM_RATIO_ENABLED, True))
+            self._enforce_length_ratio_dependency()
             self._chk_eyes.setChecked(_b(PARAM_EYES_ENABLED, False))
             self._chk_hitl.setChecked(_b(PARAM_CONFIDENCE_THRESHOLD_ENABLED, False))
             self._threshold_slider.value = _f_clamp(PARAM_CONFIDENCE_THRESHOLD, 0.0, 1.0, 0.85)
@@ -1133,16 +1525,22 @@ class ZebrafishEmbryoAnalyzerMainWidget:
 
     def _cancel_workers(self):
         """Cancel active asynchronous operations and invalidate transient state."""
-        self._run_token = getattr(self, "_run_token", 0) + 1  # invalidate any pending deferred continuation
         if getattr(self, "_active_downloader", None) is not None:
             self._active_downloader.cancel(silent=True)
             self._active_downloader = None
         if getattr(self, "_active_runner", None) is not None:
+            # cancel() synchronously fires on_finished -> _handle_runner_finished,
+            # which applies any partial results (issue #59) and clears
+            # _active_runner/_run_stack itself. Must run before the _run_token
+            # bump below — bumping first makes _handle_runner_finished's
+            # token-mismatch guard silently discard those partial results
+            # (issue #59 follow-up: cancelled runs left volume nodes with no
+            # segmentation even though images had visibly completed).
             self._active_runner.cancel()
             self._active_runner = None
+        self._run_token = getattr(self, "_run_token", 0) + 1  # invalidate any pending deferred continuation
         if hasattr(self, "_run_stack"):
             self._run_stack.setCurrentIndex(0)
-        self._results = []
         self._detail.invalidate_cache()
         self._refresh_settings_actions()
 
@@ -1163,6 +1561,526 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._scale_status.setStyleSheet("color: #888; font-size: 11px;")
         self._bar_um_edit.setText("")
 
+    def rebuild_from_scene(self):
+        """Issue #41: rebuild the widget's full UI from the active scene.
+
+        Called from ``ZebrafishEmbryoAnalyzer._on_scene_end_import`` after a
+        scene file containing Zebrafish analysis state is loaded. Reads the
+        parameter node's ``ROLE_ZEBRAFISH_IMAGES`` volume node list, asks
+        the logic layer to derive ``self._results`` dicts (with pixel
+        arrays for gallery thumbnails), then repopulates the gallery,
+        results table, exclude set, and detail view.
+
+        No-op when the scene carries no tracked volume nodes (e.g. an empty
+        freshly-loaded scene) — the widget keeps its current empty state.
+        Robustness per the #41 acceptance criteria: any volume node with
+        missing attributes or a broken segmentation reference surfaces
+        as an auto-excluded error row rather than crashing the rebuild.
+        """
+        if not getattr(self, "_logic", None):
+            return
+        try:
+            results = self._logic.rebuild_results_from_scene()
+        except Exception:
+            logging.exception("ZebrafishEmbryoAnalyzer: rebuild_results_from_scene failed")
+            return
+        if not results:
+            # Empty scene or no tracked nodes — nothing to rebuild. The
+            # caller (initializeParameterNode etc.) keeps the empty UI.
+            return
+
+        # Mirror results_to_rows error-row auto-exclude, then build a
+        # matching image_paths list from the per-row filenames so the rest
+        # of the widget (queue_list, export) stays consistent.
+        self._results = results
+        self._image_paths = [r.get("filename") or "" for r in results]
+        self._excluded = {r["filename"] for r in self._results if r.get("exclude") or r.get("error")}
+
+        # Gallery thumbnails come from each volume node's pixel array
+        # (issue #41 acceptance: no dependency on the original source
+        # folder).
+        try:
+            import cv2
+            from ZebrafishEmbryoAnalyzerLib.gallery_tab import THUMB_SIZE as _THUMB_SIZE
+            for i, r in enumerate(self._results):
+                rgb = r.get("original")
+                if rgb is None:
+                    continue
+                h, w = rgb.shape[:2]
+                scale = _THUMB_SIZE / max(h, w)
+                thumb = cv2.resize(rgb, (max(1, int(w * scale)), max(1, int(h * scale))))
+                try:
+                    self._gallery.update_thumb_prebuilt(i, thumb)
+                except Exception:
+                    pass
+        except Exception:
+            logging.exception("ZebrafishEmbryoAnalyzer: thumbnail rebuild failed on scene reload")
+
+        try:
+            self._gallery.populate(self._results)
+        except Exception:
+            logging.exception("ZebrafishEmbryoAnalyzer: gallery populate failed on scene reload")
+        try:
+            self._queue_list.clear()
+            for r in self._results:
+                self._queue_list.addItem(r.get("filename") or "")
+        except Exception:
+            pass
+        try:
+            self._results_tab.populate(self._results, self._excluded)
+        except Exception:
+            logging.exception("ZebrafishEmbryoAnalyzer: results tab populate failed on scene reload")
+
+        # Rebuild the table from the same source (#40 single code path).
+        try:
+            self._logic.update_results_table_from_tracked_nodes()
+        except Exception:
+            logging.exception("ZebrafishEmbryoAnalyzer: tracked-nodes table rebuild failed on scene reload")
+
+        # First-row detail view + run-button state.
+        try:
+            self._detail.invalidate_cache()
+            if self._results:
+                self._current_detail_idx = 0
+                self._detail.show_result(0, self._results)
+                sync_excl = bool(self._results[0]["filename"] in self._excluded)
+                self._detail.sync_exclude(sync_excl)
+                self._refresh_detail_recompute_button()
+        except Exception:
+            logging.exception("ZebrafishEmbryoAnalyzer: detail view rebuild failed on scene reload")
+        try:
+            self._refresh_run_button()
+        except Exception:
+            logging.exception("ZebrafishEmbryoAnalyzer: run-button refresh failed on scene reload")
+
+        errors = [r for r in self._results if r.get("error")]
+        if errors:
+            try:
+                msg = "\n".join(f"• {r['filename']}: {r['error']}" for r in errors)
+                qt.QMessageBox.warning(
+                    self._main_widget if hasattr(self, "_main_widget") else None,
+                    "Restored with errors",
+                    f"Some images could not be fully restored from the scene:\n\n{msg}",
+                )
+            except Exception:
+                # Fall back to status message if QMessageBox isn't usable.
+                try:
+                    import slicer
+                    slicer.util.showStatusMessage(
+                        f"Restored {len(self._results) - len(errors)} image(s); {len(errors)} row(s) had errors.",
+                        8000,
+                    )
+                except Exception:
+                    pass
+
+    # ----------------------------------------------------------------- #
+    # Issue #41 follow-up: rebuild on enter() if a saved scene was loaded
+    # before the module was ever opened in this session. EndImportEvent
+    # can't reach us in that case because scene observers are only
+    # registered in ZebrafishEmbryoAnalyzerWidget.setup(), which Slicer
+    # only calls once the module is first selected.
+    # ----------------------------------------------------------------- #
+    def try_rebuild_from_scene_if_empty(self):
+        """No-op if the widget already has results (avoids rebuilding on
+        every tab switch); otherwise delegates to :meth:`rebuild_from_scene`,
+        which already reads the tracked volume nodes straight off the
+        current parameter node.
+        """
+        if getattr(self, "_results", None):
+            return
+        try:
+            self.rebuild_from_scene()
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: try_rebuild_from_scene_if_empty failed"
+            )
+
+    # ----------------------------------------------------------------- #
+    # Issue #56 Mode B follow-up: lightweight revalidation of the
+    # already-populated ``self._results`` against the live MRML scene.
+    # ----------------------------------------------------------------- #
+    def refresh_results_against_scene(self):
+        """Re-validate every populated row's per-image MRML state and
+        refresh the visible widgets — cheap enough to run on every
+        ``enter()``.
+
+        Unlike :meth:`rebuild_from_scene` (used only when the widget is
+        empty), this does NOT read pixel arrays or rebuild thumbnails:
+        ``self._results`` is already populated from the previous run, so
+        the only thing that can drift between module entries is the row's
+        ``error`` / ``exclude`` state (e.g. a segmentation node the user
+        just removed in the Data module → dangling ref → "Segmentation
+        node missing" auto-exclude).
+
+        Honours "Data module is ground truth": rows whose segmentation
+        node was removed surface as auto-excluded immediately, so the
+        gallery, results table, queue list, and detail view all show the
+        deletion without needing a re-run.
+        """
+        if not getattr(self, "_results", None):
+            return
+        if not hasattr(self, "_logic") or self._logic is None:
+            return
+        if not hasattr(self._logic, "validate_tracked_row_exclusion"):
+            return
+
+        changed = False
+        for i, row in enumerate(self._results):
+            try:
+                vol = self._logic.find_tracked_volume_node_for_row(row)
+            except Exception:
+                continue
+            if vol is None or not hasattr(vol, "GetID"):
+                continue
+            try:
+                new_error, should_exclude = self._logic.validate_tracked_row_exclusion(vol)
+            except Exception:
+                continue
+            new_error = new_error or ""
+            prev_error = row.get("error") or ""
+            prev_exclude = bool(row.get("exclude"))
+            new_exclude = bool(should_exclude) or prev_exclude
+            if new_error != prev_error or new_exclude != prev_exclude:
+                row["error"] = new_error
+                row["exclude"] = new_exclude
+                changed = True
+
+        if not changed:
+            return
+
+        # Issue #56 follow-up: scrub cached segmentation-overlay inputs
+        # from rows that were just auto-excluded. See
+        # ``Logic.scrub_excluded_row_overlays`` for why this matters.
+        try:
+            self._logic.scrub_excluded_row_overlays(self._results)
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: row overlay-input scrub failed"
+            )
+
+        # Re-derive excluded set from the updated rows so the gallery's
+        # eye-icons, queue list strikethrough, and results tab match.
+        try:
+            self._excluded = {
+                r["filename"]
+                for r in self._results
+                if r.get("exclude") or r.get("error")
+            }
+        except Exception:
+            pass
+
+        # Refresh every visible widget whose state depends on
+        # ``self._results`` / ``self._excluded``. Same surface as
+        # :meth:`rebuild_from_scene` but WITHOUT the thumbnail rebuild
+        # (``update_thumb_prebuilt`` is skipped so the per-row cv2.resize
+        # cost does not hit every tab switch).
+        try:
+            self._gallery.populate(self._results)
+        except Exception:
+            pass
+        try:
+            self._results_tab.populate(self._results, self._excluded)
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: results-tab refresh on enter() failed"
+            )
+        try:
+            self._logic.update_results_table_from_tracked_nodes()
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: table refresh on enter() failed"
+            )
+        try:
+            self._queue_list.clear()
+            for r in self._results:
+                self._queue_list.addItem(r.get("filename") or "")
+        except Exception:
+            pass
+        try:
+            if (
+                0 <= getattr(self, "_current_detail_idx", -1) < len(self._results)
+            ):
+                self._detail.invalidate_cache()
+                self._detail.show_result(self._current_detail_idx, self._results)
+                sync_excl = bool(
+                    self._results[self._current_detail_idx].get("filename")
+                    in self._excluded
+                )
+                self._detail.sync_exclude(sync_excl)
+                self._refresh_detail_recompute_button()
+        except Exception:
+            pass
+
+    # ----------------------------------------------------------------- #
+    # Issue #42: prompt + recompute for stale segment-editor edits.
+    # ----------------------------------------------------------------- #
+    def prompt_recompute_stale_images(self):
+        """On every module re-entry, ask the user whether to recompute
+        metrics for each tracked image whose segmentation has been
+        edited in the Segment Editor since the last analysis.
+
+        Policy is centralised in :meth:`_stale_recompute_prompt_policy`
+        so the per-image decision logic is unit-testable without a Qt
+        message box. This method only handles the UI loop and the
+        recompute call.
+
+        Issue #56 follow-up: drops any volume whose segmentation node
+        no longer exists in the scene — the Data module is treated as
+        ground truth, so a deletion there is respected and never
+        resurrected by a recompute answer here. The stale flag is
+        cleared in that case so a later enter() is silent instead of
+        re-prompting.
+        """
+        if not getattr(self, "_logic", None):
+            return
+        try:
+            stale_nodes = self._logic.list_stale_tracked_volume_nodes()
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: list_stale_tracked_volume_nodes failed"
+            )
+            return
+        if not stale_nodes:
+            return
+
+        seg_still_present = getattr(
+            self._logic, "volume_node_references_existing_seg", lambda _v: True
+        )
+
+        # Honour "Data module is ground truth": if the user deleted the
+        # segmentation in the Data module, drop the stale flag silently
+        # instead of asking a question whose default-Yes would resurrect the
+        # segmentation.
+        pending = []
+        for vol in stale_nodes:
+            if not seg_still_present(vol):
+                # Issue #81: clearing the flag is enough — staleness no
+                # longer touches ``exclude``/``error``. Removing the exclude
+                # attribute outright, as this used to, also broke
+                # ``validate_volume_node``'s "was analysed" check, which keys
+                # on the attribute being present.
+                try:
+                    getattr(
+                        self._logic, "clear_stale_flag_for_volume_node", lambda _v: None
+                    )(vol)
+                except Exception:
+                    pass
+                continue
+            pending.append(vol)
+
+        if not pending:
+            return
+
+        # Issue #83: one dialog for the whole batch. Editing three
+        # segmentations used to mean dismissing three modal boxes in a row.
+        names = []
+        for vol in pending:
+            try:
+                names.append(vol.GetName() if hasattr(vol, "GetName") else "")
+            except Exception:
+                names.append("")
+        if self._stale_recompute_prompt_policy(names) != "yes":
+            return
+        for vol in pending:
+            self._recompute_for_volume_node(vol)
+
+    def _stale_recompute_prompt_policy(self, filenames):
+        """One yes/no prompt covering every edited image.
+
+        Issue #83: this used to be asked once per image, so editing three
+        segmentations meant three modal dialogs in sequence. Slicer's UI
+        convention is a single dialog for a batch decision, which is also what
+        the "no popup storm" thread through #65 and #81 is about.
+
+        Centralised so the cadence stays a one-line change here rather than in
+        the caller. Returns ``"yes"`` or ``"no"``; closing the dialog counts as
+        no, which leaves every row stale and re-offers them on the next entry.
+
+        Answering yes is safe for all of them: ``_recompute_for_volume_node`` →
+        ``apply_analysis_to_volume_node`` → ``_create_segmentation_for_volume``
+        reuses the existing segmentation node when one resolves for the volume
+        (the typical case after a Segment Editor edit), so a recompute
+        refreshes Body/Eye in place instead of stacking duplicates. Volumes
+        whose segmentation the user deleted in the Data module are filtered out
+        by the caller and never reach this prompt.
+        """
+        names = [n for n in (filenames or []) if n]
+        if not names:
+            return "no"
+        try:
+            import qt
+            if len(names) == 1:
+                text = (
+                    f"Segmentation for {elide_filename(names[0])} has been "
+                    f"edited in the Segment Editor.\n\nRecompute metrics now?"
+                )
+            else:
+                # Cap the list so a large batch cannot produce a dialog taller
+                # than the screen.
+                shown = names[:10]
+                listing = "\n".join(f"\u2022 {elide_filename(n)}" for n in shown)
+                if len(names) > len(shown):
+                    listing += f"\n\u2022 and {len(names) - len(shown)} more"
+                text = (
+                    f"Segmentations for {len(names)} images have been edited "
+                    f"in the Segment Editor:\n\n{listing}\n\n"
+                    f"Recompute metrics for them now?"
+                )
+            box = qt.QMessageBox()
+            box.setIcon(qt.QMessageBox.Question)
+            box.setWindowTitle("Recompute metrics?")
+            box.setText(text)
+            box.setStandardButtons(qt.QMessageBox.Yes | qt.QMessageBox.No)
+            box.setDefaultButton(qt.QMessageBox.Yes)
+            if box.exec_() == qt.QMessageBox.Yes:
+                return "yes"
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: stale-recompute prompt failed"
+            )
+            return "no"
+        return "no"
+
+    def _recompute_for_volume_node(self, volume_node):
+        """Run the recompute pipeline for one volume node and refresh
+        UI state.
+
+        Updates the matching entry in ``self._results`` in place,
+        removes it from the auto-excluded set, rebuilds the table via
+        the single code path, refreshes the gallery / detail views if
+        applicable, and clears the stale attribute via the Logic
+        layer.
+        """
+        if not getattr(self, "_logic", None) or volume_node is None:
+            return
+        try:
+            new_row = self._logic.recompute_metrics_for_volume_node(volume_node)
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: recompute_metrics_for_volume_node failed"
+            )
+            return
+        if new_row is None:
+            try:
+                import slicer
+                slicer.util.showStatusMessage(
+                    "Recompute failed — see application log.", 5000
+                )
+            except Exception:
+                pass
+            return
+
+        # Find the matching row in self._results and update in place
+        # so the gallery/detail/excluded state stay consistent.
+        new_id = new_row.get("_volume_node_id")
+        for i, r in enumerate(self._results):
+            if r.get("_volume_node_id") == new_id:
+                # Preserve the pixel array — the recompute pipeline
+                # does not carry it forward.
+                if r.get("original") is not None:
+                    new_row["original"] = r["original"]
+                self._results[i] = new_row
+                if new_row["filename"] in self._excluded:
+                    self._excluded.discard(new_row["filename"])
+                break
+
+        # Refresh UI.
+        try:
+            self._gallery.populate(self._results)
+        except Exception:
+            pass
+        try:
+            self._results_tab.populate(self._results, self._excluded)
+        except Exception:
+            pass
+        try:
+            self._logic.update_results_table_from_tracked_nodes()
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: table rebuild after recompute failed"
+            )
+        # If the recomputed image is the currently-shown detail view,
+        # refresh the detail cache so it picks up the new metrics.
+        try:
+            if (
+                0 <= self._current_detail_idx < len(self._results)
+                and self._results[self._current_detail_idx].get("_volume_node_id")
+                == new_id
+            ):
+                self._detail.invalidate_cache()
+                self._detail.show_result(self._current_detail_idx, self._results)
+                self._detail.sync_exclude(False)
+                self._refresh_detail_recompute_button()
+        except Exception:
+            pass
+
+    def _on_recompute_current_detail(self):
+        """Detail-view "Recompute metrics" action — recompute the
+        currently-shown image if it is stale. No-op when the current
+        detail is healthy, when no detail is selected, or when the
+        row has no associated volume node.
+
+        Wired to the recompute button added to the detail view; it is
+        only enabled when the row is stale (see ``_set_detail_buttons_enabled``).
+        """
+        if not (0 <= self._current_detail_idx < len(self._results)):
+            return
+        r = self._results[self._current_detail_idx]
+        vol = r.get("_volume_node")
+        if vol is None:
+            return
+        if not getattr(self._logic, "is_volume_node_stale", lambda _v: False)(vol):
+            return
+        self._recompute_for_volume_node(vol)
+        # After recompute the current row is no longer stale — refresh
+        # the button state.
+        try:
+            self._refresh_detail_recompute_button()
+        except Exception:
+            pass
+
+    def _refresh_detail_recompute_button(self):
+        """Enable / disable the detail-view "Recompute metrics" button
+        based on whether the currently shown row's segmentation is
+        marked stale. No-op when the button has not been created yet
+        (older builds / tests without the widget fully set up).
+
+        Issue #56 follow-up: also hides the button when the row's
+        segmentation node no longer exists in the scene — the user
+        deleted it from the Data module and clicking "Recompute" here
+        would resurrect it, defeating their delete. Honour the deletion
+        silently.
+        """
+        btn = getattr(self, "_recompute_btn", None)
+        if btn is None:
+            return
+        is_stale = False
+        try:
+            if 0 <= self._current_detail_idx < len(self._results):
+                vol = self._results[self._current_detail_idx].get("_volume_node")
+                if vol is not None:
+                    is_stale = bool(
+                        getattr(self._logic, "is_volume_node_stale", lambda _v: False)(vol)
+                    )
+                    if is_stale:
+                        # Suppress the button when the seg node the stale
+                        # flag points at has been removed — Data-module
+                        # delete is ground truth and a manual "Recompute"
+                        # click here would resurrect the segmentation.
+                        seg_present = getattr(
+                            self._logic,
+                            "volume_node_references_existing_seg",
+                            lambda _v: True,
+                        )(vol)
+                        is_stale = bool(seg_present)
+        except Exception:
+            is_stale = False
+        try:
+            btn.setEnabled(is_stale)
+            btn.setVisible(is_stale)
+        except Exception:
+            pass
+
     def cleanup(self):
         """Stop persistent resources before the widget is torn down."""
         self._disposed = True
@@ -1181,11 +2099,141 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         # Auto-exclude error rows so the visual state and export filter are consistent.
         self._excluded = {r["filename"] for r in self._results if r.get("error")}
         self._results_tab.populate(self._results, self._excluded)
+        if self._results:
+            # Keep the Detail tab in sync even if the user reaches it via
+            # the tab bar instead of a gallery click — otherwise it shows
+            # whatever stale/placeholder state it was last left in.
+            self._current_detail_idx = 0
+            self._detail.show_result(0, self._results)
         self._tabs.setCurrentIndex(0)
+        # Issue #81: no observer wiring here any more. ``apply_analysis_to_volume_node``
+        # has just stamped each row's content digest, so every row is by
+        # definition current; staleness is re-evaluated against those digests
+        # on the next module entry.
+        # Refresh the detail-button state — newly-built rows are by
+        # definition not stale, so the button stays hidden.
+        self._refresh_detail_recompute_button()
         errors = [r for r in self._results if r.get("error")]
         if errors:
             msg = "\n".join(f"• {r['filename']}: {r['error']}" for r in errors)
             slicer.util.warningDisplay(f"Errors in {len(errors)} image(s):\n\n{msg}")
+
+    def _reorder_and_rename_results(self, results, fill_missing_from=None):
+        """Restore original queue order and original filenames after a run.
+
+        ``analyse_images`` (logic.py) iterates ``sorted(image_paths)``
+        internally, so ``results`` comes back sorted by whatever path string
+        was actually sent to the worker — not the user's original queue
+        order (issue found while testing #61's reload path). Each result's
+        own ``filename`` also reflects that sent path's basename, which for
+        a materialized in-memory image (``_materialize_missing_image_paths``)
+        is a random temp filename, not the real image name — that garbled
+        name would otherwise leak into the gallery caption, the results
+        table, and ``apply_results_to_tracked_volume_nodes``'s name-based
+        MRML node lookup (silently failing to match the real volume node).
+
+        Matches each result back to its position via ``self._run_sent_paths``
+        (captured in ``_start_inference_process``, positionally aligned with
+        ``self._image_paths``) and restores the true filename from there.
+
+        ``fill_missing_from``, when given, fills any position with no
+        result (e.g. images the worker never reached before a cancel) from
+        that list's entry at the same position — used to keep every queued
+        image in ``self._results`` after a cancel (issue #59 follow-up).
+        Positions with neither a result nor a fill entry are dropped.
+        """
+        import os
+        sent_paths = getattr(self, "_run_sent_paths", None) or []
+        if not sent_paths:
+            # Not wired up (e.g. a test harness driving _handle_runner_finished
+            # directly) — pass through unchanged rather than silently
+            # dropping every result.
+            return list(results or [])
+        n = len(sent_paths)
+        slots = [None] * n
+        for r in results or []:
+            image_path = r.get("image_path")
+            try:
+                idx = sent_paths.index(image_path) if image_path is not None else None
+            except ValueError:
+                idx = None
+            if idx is None:
+                continue
+            if idx < len(self._image_paths):
+                r["filename"] = os.path.basename(self._image_paths[idx])
+            slots[idx] = r
+        if fill_missing_from is not None:
+            for i in range(n):
+                if slots[i] is None and i < len(fill_missing_from):
+                    slots[i] = fill_missing_from[i]
+        return [s for s in slots if s is not None]
+
+    def _handle_runner_finished(self, success, state, message, controller, token):
+        """Apply inference results — runs identically for a successful run and
+        for a cancel that had at least one image completed before click.
+
+        Issue #59: prior to this, a cancel mid-batch would unconditionally wipe
+        ``controller.results`` and the widget would return early, dropping
+        segmentation/attributes for every image the worker had already
+        finished. We now keep the partial results and apply them here on
+        ``state == "cancelled"`` — including materializing their MRML
+        volume nodes (issue #39's ``_try_apply_results_to_volume_nodes``),
+        so a cancelled run's completed images end up fully formed in the
+        scene just like a successful run's. Images the worker never reached
+        stay in ``self._results`` too (gallery/table keep showing them,
+        raw/unsegmented, per issue #59's acceptance criteria) but are
+        excluded from the apply step, since running it on their
+        ``mask``-less stub would create an empty segmentation node.
+        """
+        logging.debug(
+            "ZebrafishEmbryoAnalyzer: _on_runner_finished state=%s success=%s token=%s run_token=%s",
+            state, success, token, self._run_token,
+        )
+        if self._disposed or controller is not self._active_runner:
+            return
+        self._active_runner = None
+        # Issue #61: any temp files we wrote for in-memory images must be
+        # cleaned up on every exit path, regardless of which branch below runs.
+        self._clear_run_temp_files()
+        self._refresh_settings_actions()
+        if self._run_token != token:
+            self._run_stack.setCurrentIndex(0)
+            return
+        if state == "disposed":
+            return
+        if not success and state != "cancelled":
+            self._run_stack.setCurrentIndex(0)
+            ui_message = self._categorize_inference_error(message, controller)
+            slicer.util.errorDisplay(ui_message)
+            return
+        if state == "cancelled" and not controller.results:
+            # Cancelled before any image finished — nothing to apply.
+            self._run_stack.setCurrentIndex(0)
+            return
+        if state == "cancelled":
+            # Issue #59 follow-up: only apply/materialize the images the
+            # worker actually finished — the rest keep whatever they were
+            # before this run (raw stub, or a previous run's results) so
+            # calling apply_analysis_to_volume_node on them never creates a
+            # segmentation from a missing mask. But self._results itself
+            # still gets every image so the gallery/table keep showing the
+            # unprocessed ones too, just without segmentation/metrics.
+            completed = self._reorder_and_rename_results(controller.results)
+            to_apply = completed
+            self._results = self._reorder_and_rename_results(
+                controller.results, fill_missing_from=self._results
+            )
+        else:
+            to_apply = self._results = self._reorder_and_rename_results(controller.results)
+        self._run_stack.setCurrentIndex(0)
+        logging.debug("ZebrafishEmbryoAnalyzer: results ready, count=%d", len(self._results))
+        try:
+            self._try_apply_results_to_volume_nodes(to_apply)
+            self._on_results_ready()
+            self._try_update_mrml_table(self._results)
+        except Exception:
+            logging.exception("ZebrafishEmbryoAnalyzer: exception in _on_results_ready")
+            raise
 
     def _resolve_export_start_dir(self):
         settings = qt.QSettings()

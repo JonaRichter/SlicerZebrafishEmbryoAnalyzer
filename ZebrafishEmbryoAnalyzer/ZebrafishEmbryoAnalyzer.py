@@ -1,3 +1,4 @@
+import logging
 import sys
 
 import vtk
@@ -78,6 +79,11 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
         _evict_reload_modules()
 
         self.logic = ZebrafishEmbryoAnalyzerLogic()
+        # Widget code (and ``_on_results_ready``) reaches staleness handling
+        # through ``self._logic`` so the logic stays the single facade, but
+        # the implementation needs the widget's parameter-node access. Wire
+        # the widget as a back-pointer so the logic can delegate.
+        self.logic._widget_ref = self
 
         from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
         self._main = ZebrafishEmbryoAnalyzerMainWidget(self.layout, logic=self.logic)
@@ -106,6 +112,11 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
         )
         self.addObserver(
             slicer.mrmlScene,
+            slicer.mrmlScene.StartImportEvent,
+            self._on_scene_start_import,
+        )
+        self.addObserver(
+            slicer.mrmlScene,
             slicer.mrmlScene.EndImportEvent,
             self._on_scene_end_import,
         )
@@ -116,7 +127,47 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
             self.initializeParameterNode()
         if self._main is not None:
             self._main.apply_shell_layout()
+            # Issue #41 follow-up: EndImportEvent for a saved scene that was
+            # loaded BEFORE this module was first opened cannot reach us —
+            # scene observers are only registered in setup(), which Slicer
+            # calls the first time the module is selected. No-op when the
+            # widget already has results (do not rebuild on every tab
+            # switch in a long session).
+            self._main.try_rebuild_from_scene_if_empty()
             self._main.prompt_install_if_missing()
+            # Issue #56 Mode B follow-up: lightweight revalidation of
+            # ``self._results`` against the live MRML scene. The Data
+            # module is ground truth — when the user deletes a
+            # segmentation node there while the Zebrafish module was
+            # in the background, the row's dangling-reference status
+            # only becomes visible to the widget when we re-validate
+            # each row on entry. Without this refresh the gallery
+            # still shows the row as if its segmentation were
+            # attached, even though the seg node is gone. Cheap (no
+            # pixel-array reload, no thumbnail rebuild) so safe to run
+            # on every tab switch.
+            try:
+                self._main.refresh_results_against_scene()
+            except Exception:
+                logging.exception(
+                    "ZebrafishEmbryoAnalyzer: refresh_results_against_scene failed in enter()"
+                )
+            # Issue #81: re-evaluate staleness from the segmentation content
+            # itself. Module entry is the moment that matters — it is when the
+            # prompt below reads the flags, and the user cannot have edited
+            # anything between here and there.
+            try:
+                self.refresh_staleness_flags()
+            except Exception:
+                logging.exception(
+                    "ZebrafishEmbryoAnalyzer: refresh_staleness_flags failed in enter()"
+                )
+            # Issue #42: ask the user to recompute metrics for every
+            # tracked image whose segmentation was edited in the Segment
+            # Editor since we last saw it. The policy is "ask once per
+            # image per enter()"; changing it to "ask only once" is a
+            # one-line tweak in the policy function.
+            self._main.prompt_recompute_stale_images()
 
     def exit(self):
         if self._main is not None:
@@ -129,6 +180,17 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
         if self._main is not None:
             self._main.restore_shell_layout()  # ensure restore even on reload (exit() not called)
             self._main.cleanup()
+
+    def getParameterNode(self):
+        """Delegate to the logic object.
+
+        ``ScriptedLoadableModuleWidget`` (a plain Python class) does not
+        provide ``getParameterNode()`` itself — only ``ScriptedLoadableModuleLogic``
+        does. Widget-side code that needs the parameter node outside
+        ``initializeParameterNode()``/``setParameterNode()`` calls this
+        instead of reaching into ``self.logic`` directly at each call site.
+        """
+        return self.logic.getParameterNode()
 
     # ------------------------------------------------------------------
     # Parameter node
@@ -224,9 +286,116 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
             self._main.reset_for_scene_close()
         self.initializeParameterNode()
 
+    def refresh_staleness_flags(self):
+        """Issue #81: bring every tracked row's stale marking in line with the
+        actual segmentation content.
+
+        Replaces the ``ModifiedEvent`` observers this method used to install.
+        Those could not distinguish a user edit from Slicer touching the data
+        itself — measured in a live session, saving the scene alone marked all
+        five images stale — so detection now compares content digests instead
+        of modification times, and does so at well-defined moments rather than
+        whenever VTK happens to fire.
+
+        Cheap enough for module entry: one labelmap read per tracked image.
+        Should that become noticeable at large batch sizes, it belongs with
+        the scale evaluation in #47 rather than with a cleverer filter here.
+
+        Best-effort: any failure leaves the existing flags untouched.
+        """
+        try:
+            import slicer
+            from ZebrafishEmbryoAnalyzerLib.mrml import (
+                list_tracked_volume_nodes,
+                refresh_stale_flag,
+                renest_segmentation_under_volume,
+            )
+        except Exception:
+            return
+        param_node = self.getParameterNode()
+        if param_node is None:
+            return
+        scene = getattr(slicer, "mrmlScene", None)
+        if scene is None:
+            return
+        for vol in list_tracked_volume_nodes(param_node, scene):
+            try:
+                refresh_stale_flag(vol, scene)
+            except Exception:
+                logging.exception(
+                    "ZebrafishEmbryoAnalyzer: staleness refresh failed for one row"
+                )
+            # Issue #85: the Segment Editor leaves the segmentation it just
+            # edited parented to the scene root. Repair it here, where we are
+            # already walking every tracked node, so the Data tree is tidy
+            # again as soon as the user comes back — not only after the next
+            # analysis write.
+            try:
+                renest_segmentation_under_volume(vol, scene)
+            except Exception:
+                logging.exception(
+                    "ZebrafishEmbryoAnalyzer: re-nesting a segmentation failed"
+                )
+
+    def _on_scene_start_import(self, caller=None, event=None):
+        """Record which images are tracked *before* an import begins.
+
+        Loading a scene on top of an open session keeps both sets of volume
+        nodes, but the parameter node is a singleton — the imported copy
+        overwrites the reference list, so once EndImportEvent fires there is
+        no way left to tell which nodes were already here. Capturing the
+        order now lets :func:`mrml.reconcile_tracked_volume_nodes` keep the
+        existing images in front of the imported batch (issue #36).
+
+        Best-effort: on any failure the snapshot is dropped and the merge
+        falls back to reference order, which still restores every image —
+        only the ordering between the two batches becomes arbitrary.
+        """
+        if not hasattr(self, "logic"):
+            return
+        try:
+            import slicer
+            from ZebrafishEmbryoAnalyzerLib.mrml import list_tracked_volume_nodes
+
+            param_node = self.getParameterNode()
+            scene = getattr(slicer, "mrmlScene", None)
+            ids = []
+            for node in list_tracked_volume_nodes(param_node, scene):
+                nid = node.GetID() if hasattr(node, "GetID") else ""
+                if nid:
+                    ids.append(nid)
+            self.logic.pre_import_tracked_ids = ids
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: pre-import snapshot of tracked images failed"
+            )
+            try:
+                self.logic.pre_import_tracked_ids = None
+            except Exception:
+                pass
+
     def _on_scene_end_import(self, caller=None, event=None):
         # Pick up parameter node values from the newly loaded scene.
         self.initializeParameterNode()
+        # Issue #41: rebuild the widget's UI from the freshly imported
+        # scene's volume nodes, seg nodes, and metric attributes — the
+        # full-state reconstruction for scene reload. Runs only when the
+        # new scene actually carries tracked volume nodes (i.e. a save of
+        # our own scene); a fresh empty scene is a no-op.
+        # Issue #81: no stale-flag scrub happens here. Whether a restored row
+        # is stale is decided by comparing its segmentation content against
+        # the digest recorded when its metrics were computed — done inside
+        # ``rebuild_results_from_scene`` below, before the attributes are
+        # read. A row edited and saved without recomputing therefore stays
+        # stale across the reload, and one that was merely saved comes back
+        # clean without anything having to undo a wrong flag first.
+        if self._main is not None:
+            try:
+                self._main.rebuild_from_scene()
+            except Exception:
+                # Reload must never crash the module — log and continue.
+                logging.exception("ZebrafishEmbryoAnalyzer: scene-reload rebuild failed")
+
 
 class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
     """Orchestrates analysis requests on behalf of the widget.
@@ -235,6 +404,12 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
     function in ZebrafishEmbryoAnalyzerLib.logic so the widget never imports that
     module directly.  ZebrafishEmbryoAnalyzerCore remains Slicer-independent.
     """
+
+    # Ordered tracked-node IDs as they were just before a scene import, set
+    # by the widget's StartImportEvent handler and consumed once by
+    # ``rebuild_results_from_scene`` (issue #36). ``None`` means "no import
+    # observed", which is the normal state outside a merge.
+    pre_import_tracked_ids = None
 
     def dependency_status(self) -> dict:
         """Return availability of optional ML/vision dependencies.
@@ -317,9 +492,12 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
         from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
         return analyse_images(normalized_paths, normalized_params, progress_callback)
 
-    def detect_scalebar(self, image_path, label_um=None):
+    def detect_scalebar(self, image_path, label_um=None, img_rgb=None):
+        # Issue #57: forward img_rgb so callers can supply an already-decoded
+        # RGB ndarray (reconstructed from the MRML volume after a scene
+        # reload) instead of forcing a re-read from a possibly-stale path.
         from ZebrafishEmbryoAnalyzerLib.logic import detect_scalebar
-        return detect_scalebar(image_path, label_um=label_um)
+        return detect_scalebar(image_path, label_um=label_um, img_rgb=img_rgb)
 
     def preload_models(self, params):
         from ZebrafishEmbryoAnalyzerLib.logic import preload_models
@@ -348,13 +526,587 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
         try:
             import slicer
             from ZebrafishEmbryoAnalyzerLib.mrml import (
+                build_vtk_table,
+                get_or_create_table_node,
                 results_to_rows,
+            )
+            # Route through the single shared build/observe path: the run
+            # path supplies ``results`` here (legacy entry point); the
+            # reload path (#41) calls ``update_results_table_from_volume_nodes``
+            # which uses the same ``_update_table_with_rows`` tail. Both
+            # produce identical table content for identical metric state.
+            return self._update_table_with_rows(results_to_rows(results))
+        except MRMLAdapterError:
+            raise
+        except Exception as exc:
+            raise MRMLAdapterError(
+                f"Failed to update results table: {exc}"
+            ) from exc
+
+    def update_results_table_from_volume_nodes(self, volume_nodes):
+        """Issue #40 / #41: rebuild the results table from per-image volume nodes.
+
+        Reads each volume node's ``ZebrafishAnalysis.*`` attributes (written
+        by ``apply_analysis_to_volume_node`` in #39) and rebuilds the same
+        table content as :meth:`update_results_table` would. Used both:
+
+        * after a fresh analysis run (the widget now routes the table
+          build through this path instead of the in-memory ``results``
+          list, to satisfy the "single code path" acceptance criterion),
+        * and during scene reload (#41) where the only state available
+          is the volume nodes already in the MRML scene.
+
+        ``volume_nodes`` must be ordered the same way the user expects to
+        see in the table; both the run path and the reload path read
+        ``ROLE_ZEBRAFISH_IMAGES`` from the parameter node for that order.
+
+        Returns ``vtkMRMLTableNode`` on success, ``None`` if no parameter
+        node exists. Raises ``MRMLAdapterError`` on any failure.
+        """
+        from ZebrafishEmbryoAnalyzerLib.errors import MRMLAdapterError
+        try:
+            from ZebrafishEmbryoAnalyzerLib.mrml import volume_nodes_to_rows
+            rows = volume_nodes_to_rows(list(volume_nodes))
+            return self._update_table_with_rows(rows)
+        except MRMLAdapterError:
+            raise
+        except Exception as exc:
+            raise MRMLAdapterError(
+                f"Failed to update results table from volume nodes: {exc}"
+            ) from exc
+
+    def update_results_table_from_tracked_nodes(self):
+        """Issue #40: build the table from the volume nodes currently
+        registered on the parameter node under ``ROLE_ZEBRAFISH_IMAGES``.
+
+        Used by the widget's post-analysis finish path so the run flow and
+        the scene-reload flow share the same code path
+        (``update_results_table_from_volume_nodes`` → ``_update_table_with_rows``).
+        Issue #41 will call this exact method from the scene-reload handler.
+        """
+        try:
+            import slicer
+            from ZebrafishEmbryoAnalyzerLib.mrml import list_tracked_volume_nodes
+        except Exception:
+            return None
+        param_node = self.getParameterNode()
+        if param_node is None:
+            return None
+        scene = getattr(slicer, "mrmlScene", None)
+        nodes = list_tracked_volume_nodes(param_node, scene)
+        return self.update_results_table_from_volume_nodes(nodes)
+
+    def rebuild_results_from_scene(self):
+        """Issue #41: rebuild the widget's ``self._results`` list from the
+        current MRML scene state.
+
+        Walks the parameter node's ``ROLE_ZEBRAFISH_IMAGES`` reference list,
+        reconstructs a result dict per volume node (with ``original``
+        populated from the volume node's pixel array when available), and
+        validates each via :func:`mrml.validate_volume_node` so broken /
+        half-finished entries surface as auto-excluded error rows instead
+        of crashing the widget.
+
+        Returns ``list[dict]`` — one entry per tracked volume node. Returns
+        an empty list when no parameter node or no tracked nodes exist.
+        """
+        try:
+            import slicer
+            from ZebrafishEmbryoAnalyzerLib.mrml import (
+                list_tracked_volume_nodes,
+                volume_node_to_result_dict_with_validation,
+                volume_node_to_pixels,
+                _populate_row_overlays_from_scene,
+                reconcile_tracked_volume_nodes,
+                refresh_stale_flag,
+            )
+        except Exception:
+            return []
+
+        param_node = self.getParameterNode()
+        if param_node is None:
+            return []
+        scene = getattr(slicer, "mrmlScene", None)
+        # Issue #36: a scene loaded on top of an open session leaves the
+        # previous batch's volume nodes in the scene but wipes them from the
+        # parameter node's reference list (singleton copy). Re-register them
+        # before reading the list, so a merge behaves the way the Data module
+        # already does — both batches present. This rebuild is the single
+        # choke point both scene-reload entry paths funnel through
+        # (``_on_scene_end_import`` when the scene loads while the module is
+        # open, and ``enter()`` -> ``try_rebuild_from_scene_if_empty`` when
+        # the scene was loaded first), so doing it here covers them alike.
+        try:
+            reconcile_tracked_volume_nodes(
+                param_node, scene, self.pre_import_tracked_ids
+            )
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: reconciling tracked volume nodes failed"
+            )
+        finally:
+            # One-shot: the snapshot describes exactly one import.
+            self.pre_import_tracked_ids = None
+        nodes = list_tracked_volume_nodes(param_node, scene)
+        results = []
+        for node in nodes:
+            # Issue #81: decide staleness from the segmentation content before
+            # the attributes are read, so the row below reflects reality. A row
+            # edited and saved without recomputing stays stale; one that was
+            # only saved comes back clean. Both entry paths funnel through
+            # here, so neither needs its own handling.
+            try:
+                refresh_stale_flag(node, scene)
+            except Exception:
+                logging.exception(
+                    "ZebrafishEmbryoAnalyzer: staleness refresh failed during rebuild"
+                )
+            row = volume_node_to_result_dict_with_validation(node)
+            px = volume_node_to_pixels(node)
+            if px is not None:
+                row["original"] = px
+            # Issue #56 follow-up: pull the segmentation/markups overlay
+            # inputs from the linked scene nodes so the gallery shows the
+            # analyzed overlay, not a bare original, after a saved-scene
+            # reload. Without this the rows exist (the Data module still
+            # has the segmentation) but ``make_full_overlay`` has nothing
+            # to draw and every thumbnail is bare.
+            try:
+                _populate_row_overlays_from_scene(row, node, scene)
+            except Exception:
+                logging.exception(
+                    "ZebrafishEmbryoAnalyzer: row overlay reconstruction failed"
+                )
+            # stashed so row-to-node lookups don't need to walk the MRML
+            # scene again — keeps the per-row state self-contained.
+            row["_volume_node"] = node
+            row["_volume_node_id"] = (
+                node.GetID() if hasattr(node, "GetID") else ""
+            )
+            results.append(row)
+        return results
+
+    def list_stale_tracked_volume_nodes(self):
+        """Issue #42: return the volume nodes currently marked stale.
+
+        Walks ``ROLE_ZEBRAFISH_IMAGES`` on the parameter node and filters
+        to those whose ``ZebrafishAnalysis.stale`` attribute is ``"true"``.
+        Used by the widget's ``enter()`` recompute-prompt to know which
+        images to ask about.
+        """
+        try:
+            import slicer
+            from ZebrafishEmbryoAnalyzerLib.mrml import (
+                list_tracked_volume_nodes,
+                is_volume_node_stale,
+            )
+        except Exception:
+            return []
+        param_node = self.getParameterNode()
+        if param_node is None:
+            return []
+        scene = getattr(slicer, "mrmlScene", None)
+        return [n for n in list_tracked_volume_nodes(param_node, scene)
+                if is_volume_node_stale(n)]
+
+    def is_volume_node_stale(self, volume_node):
+        """Issue #42: thin re-export of :func:`mrml.is_volume_node_stale`.
+
+        Lets the widget check a single node's staleness without importing
+        ``ZebrafishEmbryoAnalyzerLib.mrml`` directly (see the test that
+        enforces this rule). Returns False on any error so a missing
+        attribute / bad node never raises into the UI.
+        """
+        try:
+            from ZebrafishEmbryoAnalyzerLib.mrml import is_volume_node_stale
+        except Exception:
+            return False
+        try:
+            return bool(is_volume_node_stale(volume_node))
+        except Exception:
+            return False
+
+    def clear_stale_flag_for_volume_node(self, volume_node):
+        """Issue #56 follow-up: clear a single volume node's stale flag.
+
+        Used by ``prompt_recompute_stale_images`` when the segmentation
+        node a stale volume was once linked to has been removed from the
+        scene (e.g. the user deleted it in the Data module). Clearing
+        the flag without recreating anything honours "Data module is
+        ground truth" — the gallery row stays visible without the
+        "Segmentation modified — recompute needed" error, and a later
+        enter() will not re-prompt.
+
+        Best-effort: returns silently on any error so a transient scene
+        glitch cannot break the recompute-prompt loop.
+        """
+        try:
+            from ZebrafishEmbryoAnalyzerLib.mrml import clear_volume_node_stale
+        except Exception:
+            return
+        try:
+            clear_volume_node_stale(volume_node)
+        except Exception:
+            pass
+
+    def volume_node_references_existing_seg(self, volume_node):
+        """Issue #56 follow-up: return True if ``volume_node`` has a
+        ``ROLE_ZEBRAFISH_SEGMENTATION`` reference whose target
+        segmentation node is still in the scene.
+
+        Used by the recompute-prompt loop to silently drop any
+        tracked volume whose segmentation the user deleted in the
+        Data module — honouring the deletion rather than offering to
+        recompute (which would resurrect the segmentation).
+
+        Returns ``False`` for any error condition so callers can use
+        this as a guard without try/except.
+        """
+        if volume_node is None or not hasattr(volume_node, "GetNodeReferenceID"):
+            return False
+        try:
+            import slicer
+            from ZebrafishEmbryoAnalyzerLib.mrml import ROLE_ZEBRAFISH_SEGMENTATION
+            scene = getattr(slicer, "mrmlScene", None)
+            seg_id = volume_node.GetNodeReferenceID(ROLE_ZEBRAFISH_SEGMENTATION)
+            if not seg_id or scene is None:
+                return False
+            return scene.GetNodeByID(seg_id) is not None
+        except Exception:
+            return False
+
+    def find_tracked_volume_node_for_row(self, row):
+        """Issue #56 Mode B follow-up: return the ``vtkMRMLVolumeNode``
+        backing one result row.
+
+        First checks ``row.get("_volume_node")`` (stashed by
+        :func:`rebuild_results_from_scene`, which is the
+        scene-reload-only data path). If that is missing — the common
+        case after ``_handle_runner_finished`` rewrites
+        ``self._results`` from controller output, where rows carry
+        ``mask`` / ``eye_mask`` / ``path_points`` but NOT
+        ``_volume_node`` — falls back to
+        :func:`mrml.find_tracked_volume_node_by_filename` keyed on
+        ``row["filename"]``.
+
+        Lets :meth:`Widget.refresh_results_against_scene` re-validate
+        every row regardless of how it was populated.
+
+        Returns ``None`` when neither path produces a node — callers
+        should treat that as "skip this row" rather than an error.
+        """
+        if isinstance(row, dict):
+            vol = row.get("_volume_node")
+            if vol is not None and hasattr(vol, "GetID"):
+                return vol
+            filename = row.get("filename") or ""
+            if not filename:
+                return None
+            try:
+                import slicer
+                from ZebrafishEmbryoAnalyzerLib.mrml import (
+                    find_tracked_volume_node_by_filename,
+                )
+                param_node = self.getParameterNode()
+                scene = getattr(slicer, "mrmlScene", None)
+                return find_tracked_volume_node_by_filename(
+                    param_node, scene, filename,
+                )
+            except Exception:
+                return None
+        return None
+
+    def scrub_excluded_row_overlays(self, rows):
+        """Issue #56 follow-up: drop cached segmentation-overlay inputs
+        from every row that is auto-excluded (``error`` non-empty or
+        ``exclude`` truthy). Lets ``make_overlay`` render the bare
+        original image without needing conditional state-aware logic in
+        ``overlay.py``.
+
+        Removes ``mask`` / ``eye_mask`` / ``path_points`` /
+        ``straight_line_points`` from each excluded row dict in place.
+        Idempotent — calling it twice is a no-op the second time. Safe
+        against missing keys (only existing keys are deleted) and
+        against non-dict rows (silently skipped). Never raises.
+
+        The widget's ``refresh_results_against_scene`` calls this after
+        auto-excluding freshly-dangling-seg rows so the gallery
+        thumbnail and detail tab stop drawing a segmentation that was
+        removed in the Data module — honouring "Data module is ground
+        truth" visually, not just textually.
+
+        Keyed on ``error`` alone. It used to also fire on ``exclude``, which
+        conflated "this fish is out of the statistics" with "this fish's mask
+        is gone" and silently discarded a perfectly good segmentation.
+        """
+        if not rows:
+            return
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            # Only rows whose segmentation is genuinely gone. A hand-excluded
+            # fish means "leave this out of the statistics", not "its mask is
+            # invalid" — dropping its overlay inputs destroyed a segmentation
+            # the user could still see and judge, and after a reload left them
+            # unable to tell why they had excluded it. The dangling-segmentation
+            # case this exists for always carries an error string.
+            if not row.get("error"):
+                continue
+            for _key in (
+                "mask", "eye_mask", "path_points", "straight_line_points",
+            ):
+                if _key in row:
+                    try:
+                        del row[_key]
+                    except Exception:
+                        pass
+
+    def set_row_exclusion(self, row, excluded):
+        """Persist a row's exclude state onto its volume node.
+
+        The widget keeps the exclude set in memory; without this the decision
+        is lost the moment the scene is saved and reloaded. Resolves the row's
+        volume node the same way the rest of the per-row plumbing does.
+
+        Returns True when the attribute was written. Best-effort: a row with
+        no resolvable node (never analysed, segmentation deleted) is a no-op
+        rather than an error.
+        """
+        try:
+            from ZebrafishEmbryoAnalyzerLib.mrml import set_volume_node_exclude
+        except Exception:
+            return False
+        try:
+            volume_node = self.find_tracked_volume_node_for_row(row)
+        except Exception:
+            return False
+        if volume_node is None:
+            return False
+        return bool(set_volume_node_exclude(volume_node, excluded))
+
+    def validate_tracked_row_exclusion(self, volume_node):
+        """Issue #56 Mode B follow-up: return ``(error_message, should_exclude)``
+        for one volume node by delegating to :func:`mrml.validate_volume_node`.
+
+        Lets the widget's ``refresh_results_against_scene`` re-validate
+        each row without importing ``ZebrafishEmbryoAnalyzerLib.mrml``
+        directly (widget.py is forbidden to do that — see
+        ``test_widget_calls_update_results_table_not_mrml_directly``).
+
+        Returns ``("", False)`` for any failure (no error, no exclude)
+        so callers can apply the result without their own try/except.
+        """
+        if volume_node is None:
+            return ("", False)
+        try:
+            from ZebrafishEmbryoAnalyzerLib.mrml import validate_volume_node
+            err_field, _msg = validate_volume_node(volume_node)
+            return (err_field or "", bool(err_field))
+        except Exception:
+            return ("", False)
+
+    def refresh_staleness_flags(self):
+        """Thin wrapper around the widget's :meth:`refresh_staleness_flags`.
+
+        ``_on_results_ready`` (and friends) go through the logic so widget
+        code does not have to reach into scene handling itself. The widget
+        hands itself to the logic via ``_widget_ref`` in ``Widget.setup``.
+
+        Best-effort: returns silently on any error (no widget ref yet, scene
+        not ready) so callers do not need their own try/except.
+        """
+        widget = getattr(self, "_widget_ref", None)
+        if widget is None:
+            return
+        refresh = getattr(widget, "refresh_staleness_flags", None)
+        if refresh is None:
+            return
+        try:
+            refresh()
+        except Exception:
+            pass
+
+    def recompute_metrics_for_volume_node(self, volume_node):
+        """Issue #42: rerun the segmentation→measurement pipeline for one
+        volume node and update its attributes + segmentation node.
+
+        Synchronous on the Slicer main thread (no threading — same pattern as
+        the Run Analysis button). Reads the pixel data *and the current masks*
+        from the volume node and passes both to ``analyse_images``, so no file
+        has to exist (the scene may have been saved on another machine) and no
+        segmentation model runs: the user's mask is measured as it stands
+        rather than replaced by a fresh one. Runs the same
+        ``apply_analysis_to_volume_node`` write-back that #39 uses, then clears
+        the stale flag.
+
+        Returns the updated result dict (filename + new metric fields),
+        or ``None`` if the recompute fails (e.g. model unavailable). The
+        widget surfaces a status message on None.
+        """
+        try:
+            import slicer
+            import numpy as np
+            from ZebrafishEmbryoAnalyzerLib.mrml import (
+                volume_node_to_pixels,
+                apply_analysis_to_volume_node,
+                clear_volume_node_stale,
+                read_segment_masks,
+            )
+        except Exception:
+            return None
+        px = volume_node_to_pixels(volume_node)
+        if px is None:
+            return None
+        params = self._recompute_params()
+        # Issue #82: hand the pixels we just read to the analysis instead of a
+        # path. The previous code read them and then passed a fixed sentinel
+        # string in the image_paths position that nothing consumed — the
+        # analysis tried to open it as a file, so every recompute failed with
+        # "Could not read image.". The name below is only a label for the
+        # result dict; no file is opened.
+        name = volume_node.GetName() if hasattr(volume_node, "GetName") else "image"
+        # Issue #84: measure the mask the user has, do not produce a new one.
+        # A row is stale precisely because their edit is now the ground truth;
+        # re-running the segmentation model here overwrote that edit and gave
+        # them back the model's version of the fish.
+        masks = read_segment_masks(volume_node, slicer.mrmlScene)
+        if masks.get("mask") is None:
+            return None
+        try:
+            from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
+            results = analyse_images(
+                [name],
+                params,
+                per_image_callback=lambda _path, r: apply_analysis_to_volume_node(
+                    r, volume_node, slicer.mrmlScene, params.get("um_per_px", 22.99)
+                ),
+                preloaded_images={name: px},
+                preloaded_masks={name: masks},
+            )
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: recompute_metrics_for_volume_node failed"
+            )
+            return None
+        if not results or results[0].get("error"):
+            return None
+        # Issue #81: only the stale flag is cleared. Staleness no longer
+        # borrows ``exclude``/``error``, so a recompute has no business
+        # resetting them — doing so used to wipe a fish the user had excluded
+        # by hand.
+        clear_volume_node_stale(volume_node)
+        # Surface the recomputed metrics in the widget-visible shape.
+        r = results[0]
+        return {
+            "filename": volume_node.GetName() if hasattr(volume_node, "GetName") else "",
+            "length": r.get("length"),
+            "curvature": r.get("curvature"),
+            "ratio": r.get("ratio"),
+            "eye_area": r.get("eye_area"),
+            "eye_diameter": r.get("eye_diameter"),
+            # The overlay inputs have to travel with the metrics: the widget
+            # replaces the whole row with this dict, so anything missing here
+            # is gone from the gallery and Detail tab. Leaving them out meant a
+            # recompute silently dropped the user's edited mask from the view
+            # while the metrics next to it described exactly that mask.
+            "mask": r.get("mask"),
+            "eye_mask": r.get("eye_mask"),
+            "path_points": r.get("path_points"),
+            "straight_line_points": r.get("straight_line_points"),
+            "spacing": r.get("spacing"),
+            "exclude": False,
+            "error": "",
+            "_volume_node": volume_node,
+            "_volume_node_id": (
+                volume_node.GetID() if hasattr(volume_node, "GetID") else ""
+            ),
+        }
+
+    def _recompute_params(self):
+        """Build the params dict for a single-image recompute.
+
+        Returns the same shape the Run button passes to ``analyse_images``:
+        ``length``, ``curvature``, ``ratio``, ``eyes``, ``hitl``,
+        ``threshold``, ``um_per_px``, ``model_id``. Values come from the
+        parameter node, so a recompute honours the settings the user actually
+        analysed with.
+
+        Issue #86: this function previously imported a constant that does not
+        exist (``PARAM_THRESHOLD``; the real name is
+        ``PARAM_CONFIDENCE_THRESHOLD``). The resulting ``ImportError`` was
+        swallowed by the blanket ``except`` below, so **every** recompute
+        silently fell back to hard-coded defaults — 22.99 µm/px regardless of
+        the calibrated scale, the default threshold, all metrics on, and the
+        general model. The wrong scale was then written to the volume node by
+        ``_sync_volume_node_spacing``, which is what left volumes and
+        segmentations disagreeing by a factor of nine.
+
+        Four of the keys were also misspelled — ``length_enabled`` and friends,
+        where ``analyse_images`` reads ``length`` — so those settings were
+        ignored even when the import happened to work, and ``hitl`` was never
+        passed at all.
+
+        The fallback is kept for a genuinely missing parameter node, but it is
+        no longer reachable through a typo.
+        """
+        defaults = {
+            "length": True, "curvature": True, "ratio": True, "eyes": False,
+            "hitl": False, "threshold": 0.85, "um_per_px": 22.99,
+            "model_id": "general",
+        }
+        try:
+            from ZebrafishEmbryoAnalyzerLib.widget import (
+                PARAM_UM_PER_PX, PARAM_CONFIDENCE_THRESHOLD,
+                PARAM_CONFIDENCE_THRESHOLD_ENABLED,
+                PARAM_LENGTH_ENABLED, PARAM_CURVATURE_ENABLED,
+                PARAM_RATIO_ENABLED, PARAM_EYES_ENABLED,
+                PARAM_MODEL_ID, _DEFAULT_MODEL_ID,
+            )
+            node = self.getParameterNode()
+            if node is None or not hasattr(node, "GetParameter"):
+                return dict(defaults)
+
+            params = dict(defaults)
+            params["model_id"] = _DEFAULT_MODEL_ID
+            for key, param_name, fallback in (
+                ("um_per_px", PARAM_UM_PER_PX, 22.99),
+                ("threshold", PARAM_CONFIDENCE_THRESHOLD, 0.85),
+            ):
+                try:
+                    params[key] = float(node.GetParameter(param_name) or fallback)
+                except (TypeError, ValueError):
+                    params[key] = fallback
+            for key, param_name in (
+                ("length", PARAM_LENGTH_ENABLED),
+                ("curvature", PARAM_CURVATURE_ENABLED),
+                ("ratio", PARAM_RATIO_ENABLED),
+                ("eyes", PARAM_EYES_ENABLED),
+                ("hitl", PARAM_CONFIDENCE_THRESHOLD_ENABLED),
+            ):
+                params[key] = (node.GetParameter(param_name) == "true")
+            params["model_id"] = node.GetParameter(PARAM_MODEL_ID) or _DEFAULT_MODEL_ID
+            return params
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: recompute params fell back to defaults"
+            )
+            return dict(defaults)
+
+    def _update_table_with_rows(self, rows):
+        """Shared tail used by ``update_results_table`` and the reload path.
+
+        Builds the vtk table before touching the MRML scene so a build
+        failure cannot leave the existing table in a torn state.
+        ``MRMLAdapterError`` from mrml.build_vtk_table (e.g. invalid
+        values) propagates as-is.
+        """
+        from ZebrafishEmbryoAnalyzerLib.errors import MRMLAdapterError
+        try:
+            import slicer
+            from ZebrafishEmbryoAnalyzerLib.mrml import (
                 build_vtk_table,
                 get_or_create_table_node,
             )
-            rows = results_to_rows(results)
-            # Build the vtk table before touching the MRML scene: if this fails,
-            # no node is created and no reference is stored.
             completed_table = build_vtk_table(rows)
             param_node = self.getParameterNode()
             if param_node is None:
@@ -364,69 +1116,271 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
             return table_node
         except MRMLAdapterError:
             raise
-        except Exception as exc:
-            raise MRMLAdapterError(
-                f"Failed to update results table: {exc}"
-            ) from exc
 
-    def update_current_image_node(self, result, um_per_px):
-        """Create or update the MRML vector volume node for the current image.
+    def show_gallery_selection_in_slice_view(self, result):
+        """Mirror the selected gallery image into Slicer's slice views.
 
-        Returns None silently if result["original"] is None (stub or error row).
-        Raises MRMLAdapterError on MRML or VTK failure.
-        Must be called on the Slicer main thread only.
-        Does not use result["spacing"] — that is calibrated to 256x256 mask space.
+        Issue #56: replaces the singleton ``CurrentImage`` / ``CurrentSegmentation``
+        mechanism. Resolves ``result`` to its already-existing per-image
+        volume node (issue #38), sets it as the slice-view background, and
+        toggles its segmentation display visibility on — hiding any
+        previously-shown segmentation so the slice views do not accumulate
+        stacked overlays across gallery clicks.
+
+        Returns ``None`` (no exceptions propagate). Tolerates:
+
+        * a result without a volume node (decode-failure / error row),
+        * a result whose analysis hasn't run yet (volume exists but no
+          segmentation reference attached),
+        * slicer / mrml / display-node bindings that disagree across
+          Slicer versions — every step is guarded individually.
+
+        Parameters
+        ----------
+        result : dict | None
+            A result dict from ``self._results``. May carry
+            ``"_volume_node"`` (scene-reload path) or just ``"filename"``
+            (post-Run Analysis path — volume node looked up by display
+            name match).
         """
-        original = result.get("original") if result else None
-        if original is None:
-            return None
         try:
-            from ZebrafishEmbryoAnalyzerLib.errors import MRMLAdapterError
             import slicer
             from ZebrafishEmbryoAnalyzerLib.mrml import (
-                get_or_create_image_node,
-                update_image_node,
+                ROLE_ZEBRAFISH_SEGMENTATION,
+                find_tracked_volume_node_by_filename,
+                set_slice_viewer_background,
+                set_segmentation_visibility,
             )
-            param_node = self.getParameterNode()
-            if param_node is None:
-                return None
-            node = get_or_create_image_node(param_node, slicer.mrmlScene)
-            update_image_node(original, um_per_px, node)
-            return node
-        except MRMLAdapterError:
-            raise
+        except Exception:
+            return None
+
+        param_node = self.getParameterNode()
+        scene = getattr(slicer, "mrmlScene", None)
+        if param_node is None or scene is None or not result:
+            return None
+
+        volume_node = result.get("_volume_node")
+        if volume_node is None:
+            volume_node = find_tracked_volume_node_by_filename(
+                param_node, scene, (result or {}).get("filename")
+            )
+        if volume_node is None:
+            return None
+
+        set_slice_viewer_background(volume_node)
+
+        seg_node = None
+        try:
+            seg_node = volume_node.GetNodeReference(ROLE_ZEBRAFISH_SEGMENTATION)
+        except Exception:
+            seg_node = None
+
+        # Re-read the "previously visible" id from a parameter-node
+        # attribute when present, so a fresh ``ZebrafishEmbryoAnalyzerLogic``
+        # instance on the same scene (e.g. after a Slicer restart) does
+        # not show two segmentations stacked on the first click.
+        prev_seg_id = None
+        try:
+            prev_seg_id = param_node.GetParameter(
+                "ZebrafishAnalysis.previousVisibleSegmentationId"
+            )
+        except Exception:
+            prev_seg_id = None
+        # Slicer returns "" for unset parameter strings — coerce everything
+        # falsy to None so the "hide previous" branch only runs when an id
+        # was actually recorded.
+        if not prev_seg_id:
+            prev_seg_id = None
+
+        new_seg_id = None
+        try:
+            new_seg_id = seg_node.GetID() if seg_node is not None else None
+        except Exception:
+            new_seg_id = None
+
+        if prev_seg_id and prev_seg_id != new_seg_id:
+            try:
+                prev_seg = scene.GetNodeByID(prev_seg_id)
+            except Exception:
+                prev_seg = None
+            set_segmentation_visibility(prev_seg, False)
+
+        if seg_node is not None:
+            set_segmentation_visibility(seg_node, True)
+
+        try:
+            param_node.SetParameter(
+                "ZebrafishAnalysis.previousVisibleSegmentationId", new_seg_id or ""
+            )
+        except Exception:
+            pass
+        return None
+
+    def create_image_volume_nodes(self, batches):
+        """Create one ``vtkMRMLVectorVolumeNode`` per readable image (issue #38).
+
+        Called by the widget after its pre-flight readability check has
+        already loaded every pixel array into a result stub. No second
+        disk read happens here; the pixel arrays are reused directly.
+
+        Each batch is attempted independently. A failure in one image
+        never aborts the remaining batches (CLAUDE.md "avoid partial
+        results appearing as successful" rule): per-image failures are
+        collected into ``failed``, and a fully fatal setup failure
+        (slicer / MRML unavailable) raises ``MRMLAdapterError`` so the
+        widget can surface it.
+
+        Parameters
+        ----------
+        batches : list[dict]
+            Each dict has keys:
+              - ``"filename"`` (str) — display-name hint for the node.
+              - ``"image_rgb"`` (``numpy.ndarray``) — uint8 (H, W, 3).
+              - ``"um_per_px"`` (float) — physical scale metadata.
+
+        Returns
+        -------
+        tuple ``(created, failed)``
+            ``created`` (int) — number of nodes successfully added to the
+            scene; may be 0 when the parameter node was unavailable.
+            ``failed`` (list[str]) — basenames of images whose volume node
+            creation raised; the widget surfaces them in one capped summary.
+        """
+        if not batches:
+            return 0, []
+        # Local imports so the module loads even if slicer / mrml are
+        # unavailable (e.g. during interpreter startup outside Slicer).
+        try:
+            import slicer
+            from ZebrafishEmbryoAnalyzerLib.mrml import create_image_volume_node
         except Exception as exc:
+            from ZebrafishEmbryoAnalyzerLib.errors import MRMLAdapterError
             raise MRMLAdapterError(
-                f"Failed to update current image node: {exc}"
+                f"Failed to create image volume nodes: {exc}"
             ) from exc
 
-    def update_current_segmentation_node(self, result, um_per_px):
-        """Create or update the MRML segmentation node for the current image's masks.
+        param_node = self.getParameterNode()
+        if param_node is None:
+            return 0, [
+                b.get("filename") or "ZebrafishEmbryoAnalyzer Image"
+                for b in batches
+            ]
+        scene = slicer.mrmlScene
 
-        Returns None silently if result["original"] is None (stub or error row).
-        Raises MRMLAdapterError on MRML or VTK failure.
-        Must be called on the Slicer main thread only.
+        import logging
+        created = 0
+        failed = []
+        for batch in batches:
+            image_rgb = batch.get("image_rgb")
+            filename = batch.get("filename") or "ZebrafishEmbryoAnalyzer Image"
+            if image_rgb is None:
+                failed.append(filename)
+                continue
+            um_per_px = float(batch.get("um_per_px", 22.99))
+            try:
+                create_image_volume_node(image_rgb, um_per_px, filename, param_node, scene)
+                created += 1
+            except Exception as exc:
+                # Half-success guard: keep going, accumulate the failed
+                # filenames, and let the caller surface them all at once.
+                logging.exception(
+                    "ZebrafishEmbryoAnalyzer: image volume node failed for %s: %s",
+                    filename, exc,
+                )
+                failed.append(filename)
+
+        return created, failed
+
+    def replace_image_volume_nodes(self):
+        """Remove every volume node owned by this batch from the scene (#38).
+
+        Used by ``ZebrafishEmbryoAnalyzerMainWidget._set_queue`` so that
+        loading a new folder or file selection replaces the previous one in
+        the MRML scene rather than accumulating orphans in the Data module.
+        Returns the number of top-level image nodes removed. Never raises —
+        scene-cleanup failures are logged and swallowed so a transient scene
+        glitch cannot break the user-facing load flow.
         """
-        original = result.get("original") if result else None
-        if original is None:
-            return None
         try:
-            from ZebrafishEmbryoAnalyzerLib.errors import MRMLAdapterError
+            import logging
+            import slicer
+            from ZebrafishEmbryoAnalyzerLib.mrml import remove_all_image_volume_nodes
+            param_node = self.getParameterNode()
+            if param_node is None:
+                return 0
+            return remove_all_image_volume_nodes(param_node, slicer.mrmlScene)
+        except Exception as exc:  # noqa: BLE001 — best-effort cleanup, log only
+            try:
+                import logging
+                logging.exception(
+                    "ZebrafishEmbryoAnalyzer: replace_image_volume_nodes failed: %s", exc
+                )
+            except Exception:
+                pass
+            return 0
+
+    def apply_results_to_tracked_volume_nodes(self, results, um_per_px):
+        """Issue #39 follow-up: write per-image segmentation/markups/attributes
+        for a batch of results produced by the subprocess-based Run Analysis
+        flow (``inference_runner``).
+
+        ``analyse_images``'s ``per_image_callback`` (the original streaming
+        hook #39 was scoped against) only fires for the in-process
+        ``recompute_metrics_for_volume_node`` path — the main Run Analysis
+        button runs inference out-of-process via ``inference_runner`` and only
+        gets results back in one batch once the subprocess exits, so there is
+        no per-image callback to hook there. This applies the same
+        ``apply_analysis_to_volume_node`` write, once per result, matched to
+        its already-existing (#38 eager) volume node by filename.
+
+        Returns the number of results successfully applied. Never raises —
+        a missing match or per-node failure is logged and skipped so one bad
+        image cannot block the rest of the batch.
+        """
+        try:
+            import logging
             import slicer
             from ZebrafishEmbryoAnalyzerLib.mrml import (
-                get_or_create_segmentation_node,
-                update_segmentation_node,
+                list_tracked_volume_nodes,
+                apply_analysis_to_volume_node,
             )
-            param_node = self.getParameterNode()
-            if param_node is None:
-                return None
-            image_node = param_node.GetNodeReference("CurrentImage")
-            node = get_or_create_segmentation_node(param_node, slicer.mrmlScene)
-            update_segmentation_node(result, um_per_px, node, image_node=image_node)
-            return node
-        except MRMLAdapterError:
-            raise
-        except Exception as exc:
-            raise MRMLAdapterError(
-                f"Failed to update current segmentation node: {exc}"
-            ) from exc
+        except Exception:
+            return 0
+        param_node = self.getParameterNode()
+        if param_node is None:
+            return 0
+        scene = slicer.mrmlScene
+        nodes_by_name = {}
+        for node in list_tracked_volume_nodes(param_node, scene):
+            try:
+                nodes_by_name[node.GetName()] = node
+            except Exception:
+                continue
+        applied = 0
+        for result in results or []:
+            filename = (result or {}).get("filename")
+            node = nodes_by_name.get(filename)
+            if node is None:
+                continue
+            try:
+                apply_analysis_to_volume_node(result, node, scene, um_per_px)
+                # Stamp the row-to-node link. ``_recompute_for_volume_node``
+                # finds the row to refresh by ``_volume_node_id``, and only the
+                # scene-reload path used to set it — so after a fresh Run
+                # Analysis a recompute updated the MRML side while the gallery,
+                # Detail tab and Results table kept showing the pre-edit mask
+                # and the old numbers, with no error anywhere.
+                try:
+                    result["_volume_node"] = node
+                    result["_volume_node_id"] = (
+                        node.GetID() if hasattr(node, "GetID") else ""
+                    )
+                except Exception:
+                    pass
+                applied += 1
+            except Exception:
+                logging.exception(
+                    "ZebrafishEmbryoAnalyzer: apply_results_to_tracked_volume_nodes "
+                    "failed for %s", filename,
+                )
+        return applied

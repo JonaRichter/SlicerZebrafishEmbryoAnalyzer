@@ -42,7 +42,18 @@ def _resize_to_fit(img: np.ndarray, max_side: int) -> np.ndarray:
 
 
 def make_full_overlay(result: dict) -> np.ndarray:
-    """Return full-resolution BGR overlay array."""
+    """Return full-resolution BGR overlay array.
+
+    When ``result`` carries a non-empty ``error`` — e.g. the segmentation node
+    was deleted in the Data module while this row was analysed — draw only the
+    bare original image. The gallery already marks the cell with a red border
+    and an ``ERROR`` caption, but a stale mask left in the row dict would
+    otherwise leak an old segmentation onto the thumbnail, so "Data module is
+    ground truth" has to look like "no segmentation" here too.
+
+    A row the user excluded by hand still gets its full overlay: exclusion is
+    a statistics decision, not a statement about the mask.
+    """
     original = result.get("original")
     if original is None:
         return np.zeros((256, 256, 3), dtype=np.uint8)
@@ -50,6 +61,17 @@ def make_full_overlay(result: dict) -> np.ndarray:
     # original is stored as RGB in result dicts
     base = cv2.cvtColor(original, cv2.COLOR_RGB2BGR)
     h_base, w_base = base.shape[:2]
+
+    # Skip the segmentation overlay only for rows whose segmentation is
+    # genuinely unusable — a deleted seg node leaves a stale mask in the row
+    # dict that would otherwise leak onto the thumbnail.
+    #
+    # Deliberately not keyed on ``exclude``: excluding a fish means leaving it
+    # out of the statistics, not hiding what was segmented. Blanking it made a
+    # hand-excluded image indistinguishable from a failed one and, after a
+    # reload, left no way to see why it had been excluded.
+    if result.get("error"):
+        return base
 
     mask = result.get("mask")
     if mask is not None:

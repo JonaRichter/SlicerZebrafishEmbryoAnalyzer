@@ -213,6 +213,69 @@ def test_success_exit_reads_result_json_and_merges_originals(tmp_path):
     assert results[0]["mask"].shape == (256, 256)
 
 
+def test_merge_originals_matches_by_filename_not_worker_order(tmp_path):
+    """analyse_images (logic.py) iterates sorted(image_paths) internally, so
+    the worker can return results in a different order than the caller's
+    image_paths/originals lists (e.g. materialized temp files from issue
+    #61's reload path, whose random basenames sort unrelated to the
+    original queue order). _merge_originals must match each result's
+    "original" by filename, not by list position — otherwise a mask
+    computed for one image gets paired with a different image's pixel
+    data (found while working #61: this produced gallery thumbnails with
+    a segmentation overlay for the wrong fish)."""
+    proc = FakeProcess()
+    original_a = np.full((8, 8, 3), fill_value=10, dtype=np.uint8)
+    original_b = np.full((8, 8, 3), fill_value=20, dtype=np.uint8)
+    # Caller order: a.png, b.png — mirrors self._image_paths / self._results order.
+    controller, calls, fqt = _make_controller(
+        tmp_path,
+        fake_process=proc,
+        image_paths=["/tmp/a.png", "/tmp/b.png"],
+        originals=[original_a, original_b],
+    )
+    controller.start()
+
+    result_dir = controller._tmp_dir
+    arrays_dir = os.path.join(result_dir, "arrays")
+    os.makedirs(arrays_dir, exist_ok=True)
+
+    mask_a = np.full((4, 4), 1, dtype=np.uint8)
+    mask_b = np.full((4, 4), 2, dtype=np.uint8)
+    npz_a = os.path.join(arrays_dir, "a.npz")
+    npz_b = os.path.join(arrays_dir, "b.npz")
+    np.savez(npz_a, mask=mask_a)
+    np.savez(npz_b, mask=mask_b)
+
+    # Worker returns results in the OPPOSITE order from image_paths/originals
+    # (simulating analyse_images's internal sorted(image_paths) reordering).
+    wire_results = [
+        {
+            "filename": "b.png", "image_path": "/tmp/b.png",
+            "length_um": None, "curvature_class": None,
+            "length_straight_ratio": None, "eye_area_um2": None,
+            "eye_diameter_um": None, "spacing": None, "error": None,
+            "arrays_npz": npz_b,
+        },
+        {
+            "filename": "a.png", "image_path": "/tmp/a.png",
+            "length_um": None, "curvature_class": None,
+            "length_straight_ratio": None, "eye_area_um2": None,
+            "eye_diameter_um": None, "spacing": None, "error": None,
+            "arrays_npz": npz_a,
+        },
+    ]
+    _write_result_json(controller._result_json_path, results=wire_results)
+
+    proc.finished.emit(0, 0)
+
+    results = controller.results
+    by_name = {r["filename"]: r for r in results}
+    assert np.array_equal(by_name["a.png"]["original"], original_a)
+    assert np.array_equal(by_name["b.png"]["original"], original_b)
+    assert by_name["a.png"]["mask"][0, 0] == 1
+    assert by_name["b.png"]["mask"][0, 0] == 2
+
+
 def test_failure_exit_calls_on_finished_with_false(tmp_path):
     proc = FakeProcess()
     controller, calls, fqt = _make_controller(tmp_path, fake_process=proc)
@@ -506,3 +569,125 @@ def test_python_exe_unix_fallback_bin_python(tmp_path, monkeypatch):
 
     assert calls == [], f"Should not have failed early; calls={calls}"
     assert str(fake_exe) in proc.started_args
+
+
+# ---------------------------------------------------------------------------
+# Issue #59: cancel() reads partial results before teardown
+# ---------------------------------------------------------------------------
+
+def test_cancel_loads_partial_results_from_existing_result_json(tmp_path):
+    """If the worker has already written K partial results before cancel,
+    ``controller.results`` must contain those K results (not []).
+
+    The runner's ``_read_partial_results`` reads ``_result_json_path`` while
+    the temp dir is still on disk, BEFORE ``_finish_once`` removes it. By
+    the time the on_finished callback fires, ``controller.results`` must
+    hold whatever the worker produced so far.
+    """
+    proc = FakeProcess()
+    original_img = np.zeros((64, 64, 3), dtype=np.uint8)
+    controller, calls, fqt = _make_controller(
+        tmp_path, fake_process=proc,
+        image_paths=["/tmp/fish_0.png", "/tmp/fish_1.png"],
+        originals=[original_img, original_img],
+    )
+    controller.start()
+
+    # Result JSON lives in the controller's own temp dir (created by start()).
+    result_dir = controller._tmp_dir
+    arrays_dir = os.path.join(result_dir, "arrays")
+    os.makedirs(arrays_dir, exist_ok=True)
+
+    # Write a mask array and a partial result.json reflecting two completed
+    # images — simulating the worker writing atomically after each image.
+    mask = np.ones((16, 16), dtype=np.uint8)
+    npz_path_0 = os.path.join(arrays_dir, "fish_0_0.npz")
+    npz_path_1 = os.path.join(arrays_dir, "fish_1_1.npz")
+    np.savez(npz_path_0, mask=mask)
+    np.savez(npz_path_1, mask=mask)
+
+    _write_result_json(controller._result_json_path, results=[
+        {
+            "filename": "fish_0.png", "image_path": "/tmp/fish_0.png",
+            "length_um": 100.0, "curvature_class": 0, "length_straight_ratio": 0.9,
+            "eye_area_um2": None, "eye_diameter_um": None,
+            "spacing": [22.99, 22.99], "error": None, "arrays_npz": npz_path_0,
+        },
+        {
+            "filename": "fish_1.png", "image_path": "/tmp/fish_1.png",
+            "length_um": 200.0, "curvature_class": 1, "length_straight_ratio": 0.8,
+            "eye_area_um2": None, "eye_diameter_um": None,
+            "spacing": [22.99, 22.99], "error": None, "arrays_npz": npz_path_1,
+        },
+    ])
+
+    controller.cancel()
+
+    # on_finished must have fired exactly once (idempotent terminal).
+    assert len(calls) == 1
+    success, state, message = calls[0]
+    assert success is False
+    assert state == "cancelled"
+
+    # Critical assertion: controller.results holds the partial results,
+    # not the empty list that the pre-#59 implementation produced.
+    assert len(controller.results) == 2
+    assert controller.results[0]["filename"] == "fish_0.png"
+    assert controller.results[0]["length"] == pytest.approx(100.0)
+    assert controller.results[1]["filename"] == "fish_1.png"
+    assert controller.results[1]["length"] == pytest.approx(200.0)
+    # Original images from before the run were re-attached in their slots.
+    assert controller.results[0]["original"] is original_img
+    assert controller.results[1]["original"] is original_img
+    # npz arrays were loaded into memory before the temp dir got cleaned up.
+    assert controller.results[0]["mask"] is not None
+    assert controller.results[0]["mask"].shape == (16, 16)
+
+
+def test_cancel_with_no_partial_results_yields_empty_results():
+    """No result.json on disk yet (worker hasn't completed any image) →
+    ``controller.results`` stays empty after cancel.
+    """
+    proc = FakeProcess()
+    controller, calls, fqt = _make_controller(None, fake_process=proc)
+    controller.start()
+
+    # Don't write a result.json. The worker process was killed before it
+    # could produce one.
+    controller.cancel()
+
+    assert len(calls) == 1
+    assert calls[0][1] == "cancelled"
+    assert controller.results == []
+
+
+def test_cancel_with_corrupt_partial_result_json_returns_empty(tmp_path):
+    """A torn / unreadable result.json on disk falls back to [].
+
+    Defensive: a partial write that ended mid-flush must not crash cancel().
+    """
+    proc = FakeProcess()
+    controller, calls, fqt = _make_controller(tmp_path, fake_process=proc)
+    controller.start()
+
+    # Write garbage to the result file to simulate a torn write.
+    with open(controller._result_json_path, "w") as fh:
+        fh.write("{this is not valid json")
+
+    controller.cancel()
+
+    assert calls[0][1] == "cancelled"
+    assert controller.results == []  # graceful fallback, not an exception
+
+
+def test_read_partial_results_returns_empty_when_result_json_missing(tmp_path):
+    """The runner's _read_partial_results is a no-op when result.json doesn't exist."""
+    proc = FakeProcess()
+    controller, calls, fqt = _make_controller(tmp_path, fake_process=proc)
+    controller.start()
+
+    # Pre-condition: no result.json yet
+    assert not os.path.exists(controller._result_json_path)
+
+    result = controller._read_partial_results()
+    assert result == []  # no exception, empty list
