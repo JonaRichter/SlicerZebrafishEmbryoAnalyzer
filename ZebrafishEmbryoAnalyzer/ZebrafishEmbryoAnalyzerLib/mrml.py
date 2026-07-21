@@ -2013,7 +2013,17 @@ def _extract_segment_mask(seg_node, segment_name):
     if not seg_id:
         return None
     try:
-        arr = slicer.util.arrayFromSegment(seg_node, seg_id)
+        # ``arrayFromSegment`` is a deprecated wrapper that logs a warning on
+        # every call — two per row (Body + Eye), so a scene reload floods the
+        # Python console. It forwards to ``arrayFromSegmentBinaryLabelmap``
+        # with identical semantics; call that directly and keep the old name
+        # as a fallback for older Slicer builds and the test doubles.
+        read_labelmap = getattr(
+            slicer.util, "arrayFromSegmentBinaryLabelmap", None
+        ) or getattr(slicer.util, "arrayFromSegment", None)
+        if read_labelmap is None:
+            return None
+        arr = read_labelmap(seg_node, seg_id)
     except Exception:
         return None
     if arr is None or getattr(arr, "size", 0) == 0:

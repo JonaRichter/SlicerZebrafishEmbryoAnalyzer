@@ -2350,24 +2350,42 @@ def test_logic_scrub_excluded_row_overlays_handles_exclude_without_error():
 
 
 def _stub_slicer_array_from_segment(seg_node, segment_id, labelmap):
-    """Helper: monkeypatch ``slicer.util.arrayFromSegment`` to return
-    ``labelmap`` for a single ``(seg_node, segment_id)`` pair.
+    """Helper: stub the segment-labelmap readers on ``slicer.util`` to
+    return ``labelmap`` for a single ``(seg_node, segment_id)`` pair.
 
-    Returns ``(slicer_util, prev_attr)`` so the caller can restore the
-    previous attribute in a ``finally`` block. Also installs a
+    Both ``arrayFromSegmentBinaryLabelmap`` (what production code calls) and
+    the deprecated ``arrayFromSegment`` (the fallback for older Slicer) are
+    installed, so the stub covers whichever branch ``_extract_segment_mask``
+    takes.
+
+    Returns ``(slicer_util, restore)`` — call ``restore()`` in a ``finally``
+    block to put both attributes back the way they were. Also installs a
     ``slicer.util`` namespace if the test runner left ``slicer`` as a bare
     stub without ``util``.
     """
     slicer, util, _prev_util = _ensure_slicer_module()
-    prev_attr = getattr(util, "arrayFromSegment", None)
+    names = ("arrayFromSegmentBinaryLabelmap", "arrayFromSegment")
+    prev = {name: getattr(util, name, None) for name in names}
 
-    def _fake(sn, sid):
+    def _fake(sn, sid, *_args, **_kwargs):
         if sn is seg_node and sid == segment_id:
             return labelmap
         return None
 
-    util.arrayFromSegment = _fake
-    return util, prev_attr
+    for name in names:
+        setattr(util, name, _fake)
+
+    def restore():
+        for name in names:
+            if prev[name] is not None:
+                setattr(util, name, prev[name])
+            else:
+                try:
+                    delattr(util, name)
+                except AttributeError:
+                    pass
+
+    return util, restore
 
 
 class _FakeSegWithLabelmap(_FakeSegmentationNode):
@@ -2452,17 +2470,11 @@ def test_extract_segment_mask_returns_uint8_for_body_segment():
     )
     seg.SetSegmentLabelmap("Body", labelmap)
 
-    util, saved = _stub_slicer_array_from_segment(seg, "Body", labelmap)
+    _util, restore = _stub_slicer_array_from_segment(seg, "Body", labelmap)
     try:
         mask = _extract_segment_mask(seg, "Body")
     finally:
-        if saved is not None:
-            util.arrayFromSegment = saved
-        else:
-            try:
-                del util.arrayFromSegment
-            except AttributeError:
-                pass
+        restore()
 
     assert mask is not None
     assert mask.shape == labelmap.shape
@@ -2492,20 +2504,44 @@ def test_extract_segment_mask_undoes_the_stored_180_degree_rotation():
     )
     seg.SetSegmentLabelmap("Body", stored)
 
-    util, saved = _stub_slicer_array_from_segment(seg, "Body", stored)
+    _util, restore = _stub_slicer_array_from_segment(seg, "Body", stored)
     try:
         mask = _extract_segment_mask(seg, "Body")
     finally:
-        if saved is not None:
-            util.arrayFromSegment = saved
-        else:
-            try:
-                del util.arrayFromSegment
-            except AttributeError:
-                pass
+        restore()
 
     assert mask is not None
     assert np.array_equal(mask, np.flipud(np.fliplr(stored)))
+
+
+def test_extract_segment_mask_prefers_the_non_deprecated_reader():
+    """``arrayFromSegment`` logs a deprecation warning on every call — two
+    per restored row, so a scene reload spams the Python console. Production
+    must call ``arrayFromSegmentBinaryLabelmap`` when it exists.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import _extract_segment_mask
+
+    seg = _FakeSegWithLabelmap()
+    seg.GetSegmentation().AddEmptySegment("Body", "Body", [0.0, 1.0, 0.0])
+    labelmap = np.array([[0, 1], [1, 1]], dtype=np.uint8)
+    seg.SetSegmentLabelmap("Body", labelmap)
+
+    _util, restore = _stub_slicer_array_from_segment(seg, "Body", labelmap)
+    _slicer, util, _prev = _ensure_slicer_module()
+    calls = []
+
+    def _deprecated(sn, sid, *_args, **_kwargs):
+        calls.append(sid)
+        return labelmap
+
+    try:
+        util.arrayFromSegment = _deprecated
+        mask = _extract_segment_mask(seg, "Body")
+    finally:
+        restore()
+
+    assert mask is not None
+    assert calls == [], "deprecated arrayFromSegment was called"
 
 
 def test_extract_segment_mask_returns_none_for_missing_segment():
