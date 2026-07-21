@@ -609,3 +609,81 @@ def test_handle_runner_finished_stale_token_does_not_apply(widget_module):
     w._try_update_mrml_table.assert_not_called()
     assert w._results == []  # unchanged
     w._run_stack.setCurrentIndex.assert_called_with(0)
+
+
+# ---------------------------------------------------------------------------
+# Issue #77: Detail tab must sync when reached via the tab bar, not just a
+# gallery click — _on_results_ready must call show_result the same way the
+# gallery-click and scene-reload paths already do.
+# ---------------------------------------------------------------------------
+
+def _make_results_ready_widget(widget_module, results):
+    """Minimal widget shell with the attributes the real _on_results_ready reads."""
+    w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
+    w._results = results
+    w._detail = MagicMock()
+    w._gallery = MagicMock()
+    w._results_tab = MagicMock()
+    w._tabs = MagicMock()
+    w._logic = MagicMock()
+    w._refresh_detail_recompute_button = MagicMock()
+    w._excluded = set()
+    return w
+
+
+def test_on_results_ready_syncs_detail_tab_when_results_present(widget_module):
+    """_on_results_ready must call _detail.show_result(0, results) and set
+    _current_detail_idx, mirroring the gallery-click (_on_gallery_select) and
+    scene-reload paths — otherwise Detail tab shows stale/placeholder state
+    when reached via the tab bar right after a fresh Run Analysis.
+    """
+    import slicer as _slicer
+    _slicer.util.warningDisplay = MagicMock()
+    results = [{"filename": "fish_0.png"}, {"filename": "fish_1.png"}]
+    w = _make_results_ready_widget(widget_module, results)
+
+    w._on_results_ready()
+
+    w._detail.show_result.assert_called_once_with(0, results)
+    assert w._current_detail_idx == 0
+
+
+def test_on_results_ready_no_detail_sync_when_no_results(widget_module):
+    """Empty results (e.g. an all-failed batch) must not call show_result
+    with an out-of-range index."""
+    import slicer as _slicer
+    _slicer.util.warningDisplay = MagicMock()
+    w = _make_results_ready_widget(widget_module, [])
+
+    w._on_results_ready()
+
+    w._detail.show_result.assert_not_called()
+
+
+def test_handle_runner_finished_cancel_with_partial_results_syncs_detail_tab(widget_module):
+    """The cancel-with-partial-results path shares _on_results_ready with the
+    success path (issue #59), so it must get the same Detail-tab sync fix —
+    not a separately-maintained code path that could drift out of sync again.
+    """
+    import slicer as _slicer
+    w = _make_runner_finished_widget(widget_module, token=1)
+    w._on_results_ready = widget_module.ZebrafishEmbryoAnalyzerMainWidget._on_results_ready.__get__(w)
+    w._detail = MagicMock()
+    w._gallery = MagicMock()
+    w._results_tab = MagicMock()
+    w._tabs = MagicMock()
+    w._logic = MagicMock()
+    w._refresh_detail_recompute_button = MagicMock()
+    w._try_apply_results_to_volume_nodes = MagicMock()
+    w._reorder_and_rename_results = lambda results, fill_missing_from=None: results
+    _slicer.util.warningDisplay = MagicMock()
+
+    runner = MagicMock()
+    runner.results = [{"filename": "fish_0.png"}]
+    w._active_runner = runner
+
+    w._handle_runner_finished(success=False, state="cancelled", message=None,
+                              controller=runner, token=1)
+
+    w._detail.show_result.assert_called_once_with(0, [{"filename": "fish_0.png"}])
+    assert w._current_detail_idx == 0
