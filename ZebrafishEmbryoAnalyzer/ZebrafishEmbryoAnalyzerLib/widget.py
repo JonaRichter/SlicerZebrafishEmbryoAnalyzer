@@ -1838,18 +1838,15 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         pending = []
         for vol in stale_nodes:
             if not seg_still_present(vol):
+                # Issue #81: clearing the flag is enough — staleness no
+                # longer touches ``exclude``/``error``. Removing the exclude
+                # attribute outright, as this used to, also broke
+                # ``validate_volume_node``'s "was analysed" check, which keys
+                # on the attribute being present.
                 try:
                     getattr(
                         self._logic, "clear_stale_flag_for_volume_node", lambda _v: None
                     )(vol)
-                except Exception:
-                    pass
-                try:
-                    vol.RemoveAttribute("ZebrafishAnalysis.exclude")
-                except Exception:
-                    pass
-                try:
-                    vol.SetAttribute("ZebrafishAnalysis.error", "")
                 except Exception:
                     pass
                 continue

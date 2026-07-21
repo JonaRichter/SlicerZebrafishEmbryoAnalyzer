@@ -234,11 +234,24 @@ def test_mark_volume_node_stale_round_trip():
     mark_volume_node_stale(n)
     assert n.GetAttribute(ATTR_STALE) == "true"
     assert is_volume_node_stale(n) is True
-    # Auto-excluded + error message set on the row so the table surfaces it.
-    assert n.GetAttribute("ZebrafishAnalysis.exclude") == "true"
-    assert "recompute" in (n.GetAttribute("ZebrafishAnalysis.error") or "").lower()
     clear_volume_node_stale(n)
     assert is_volume_node_stale(n) is False
+
+
+def test_marking_stale_does_not_touch_exclude_or_error():
+    """Issue #81: staleness is its own state.
+
+    Borrowing ``exclude`` and ``error`` is what made a reloaded scene report
+    "could not be fully restored", suppressed the overlay, and left a stale
+    row indistinguishable from a broken or hand-excluded one.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import mark_volume_node_stale
+    n = _make_attr_node("embryo.tif")
+
+    mark_volume_node_stale(n)
+
+    assert n.GetAttribute("ZebrafishAnalysis.exclude") is None
+    assert n.GetAttribute("ZebrafishAnalysis.error") is None
 
 
 def test_is_volume_node_stale_handles_missing_node():
@@ -370,7 +383,28 @@ def test_refresh_clears_a_stale_marking_once_the_content_matches_again():
 
     assert refresh_stale_flag(volume, scene) is False
     assert is_volume_node_stale(volume) is False
+
+
+def test_refresh_repairs_a_row_marked_by_the_pre_decoupling_version():
+    """Scenes saved before #81 carry ``stale`` + ``exclude=true`` + the stale
+    error string. Those must come back clean, or an existing ``.mrb`` keeps
+    reporting "could not be fully restored" and hiding its overlay forever.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import (
+        refresh_stale_flag, is_volume_node_stale,
+        ATTR_STALE, ATTR_EXCLUDE, ATTR_PREFIX, STALE_ERROR_MESSAGE,
+    )
+    seg_node = _FakeSegmentationNode()
+    volume, scene = _analysed_row(seg_node)
+    volume.SetAttribute(ATTR_STALE, "true")
+    volume.SetAttribute(ATTR_EXCLUDE, "true")
+    volume.SetAttribute(ATTR_PREFIX + "error", STALE_ERROR_MESSAGE)
+
+    assert refresh_stale_flag(volume, scene) is False
+
+    assert is_volume_node_stale(volume) is False
     assert volume.GetAttribute(ATTR_EXCLUDE) == "false"
+    assert volume.GetAttribute(ATTR_PREFIX + "error") is None
 
 
 def test_refresh_preserves_a_genuine_user_exclusion():

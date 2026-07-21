@@ -938,15 +938,11 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
             return None
         if not results or results[0].get("error"):
             return None
+        # Issue #81: only the stale flag is cleared. Staleness no longer
+        # borrows ``exclude``/``error``, so a recompute has no business
+        # resetting them — doing so used to wipe a fish the user had excluded
+        # by hand.
         clear_volume_node_stale(volume_node)
-        # Restore the un-excluded state — the user explicitly asked for
-        # recompute, so the row no longer counts as "excluded because of
-        # stale segmentation".
-        try:
-            volume_node.SetAttribute("ZebrafishAnalysis.exclude", "false")
-            volume_node.SetAttribute("ZebrafishAnalysis.error", "")
-        except Exception:
-            pass
         # Surface the recomputed metrics in the widget-visible shape.
         r = results[0]
         return {

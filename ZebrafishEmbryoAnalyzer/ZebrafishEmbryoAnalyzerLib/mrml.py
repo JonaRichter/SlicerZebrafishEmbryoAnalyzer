@@ -464,44 +464,44 @@ def volume_node_to_result_dict_with_validation(node):
 #
 # A per-image segmentation node's ``ModifiedEvent`` triggers the cheap
 # bookkeeping in :func:`mark_volume_node_stale` so the volume node's
-# ``ZebrafishAnalysis.stale`` attribute is set immediately on every
-# brush stroke (synchronous, no recomputation). The user is then asked on
-# every module re-entry whether to recompute (policy in widget.py).
+# ``ZebrafishAnalysis.stale`` attribute is set as soon as an edit is
+# detected. The user is then asked once per module re-entry whether to
+# recompute (policy in widget.py).
 
-# Standard user-facing error message for stale rows; centralised here so
-# the wording stays consistent between the auto-exclude flow and the
-# detail-view helper text.
+# Issue #81: no longer written anywhere. Staleness used to be recorded by
+# putting this string into ``ZebrafishAnalysis.error`` and setting
+# ``exclude``; it is kept only to recognise rows saved by those older
+# versions, so :func:`clear_stale_marking` can repair them on load. Do not
+# reintroduce it as a way of marking a row — that coupling is what produced
+# the whole #65 defect series.
 STALE_ERROR_MESSAGE = "Segmentation modified — recompute needed"
 
 
 def mark_volume_node_stale(volume_node):
-    """Set the stale attribute and force ``exclude`` + a stable error message.
+    """Flag the row as stale. Writes :data:`ATTR_STALE` and nothing else.
 
-    Cheap — no recomputation, no model call. Safe to call from an
-    observer that fires many times per brush stroke (issue #42 explicit
-    requirement: the observer must not trigger a perceptible per-stroke
-    delay).
+    Issue #81: this used to set ``exclude=true`` and
+    ``error=STALE_ERROR_MESSAGE`` as well, borrowing two user-facing fields
+    to make staleness visible without adding a schema column. Both are
+    overloaded — ``exclude`` also means "the user excluded this fish" and
+    ``error`` also means "this image could not be processed" — and that
+    borrowing caused the entire scene-reload defect series in #65: the
+    reload surfaced staleness as "Some images could not be fully restored
+    from the scene", ``overlay.make_full_overlay`` returned the bare image
+    because the row read as excluded, and nothing could tell a stale row
+    apart from a genuinely broken or hand-excluded one.
 
-    The error message is set via ``ZebrafishAnalysis.error`` so it
-    surfaces in the existing error-row auto-exclude path that #41 uses
-    for scene-reload robustness — no new schema column.
+    Staleness is now its own state. It is surfaced by the recompute prompt
+    on module entry (one dialog for the whole batch since #83); the
+    Detail-tab badge from #67 becomes an additional indicator once that
+    work lands.
+
+    Cheap — no recomputation, no model call.
     """
     if volume_node is None or not hasattr(volume_node, "SetAttribute"):
         return
     try:
         volume_node.SetAttribute(ATTR_STALE, "true")
-    except Exception:
-        return
-    # The exclude + error set is what makes the row visibly stale in the
-    # gallery/results table. The user can still see the metric values
-    # (preserved per the "Existing metric values are not deleted, only
-    # flagged" decision).
-    try:
-        volume_node.SetAttribute(ATTR_EXCLUDE, "true")
-    except Exception:
-        pass
-    try:
-        volume_node.SetAttribute(ATTR_PREFIX + "error", STALE_ERROR_MESSAGE)
     except Exception:
         pass
 
@@ -598,8 +598,12 @@ def clear_stale_marking(volume_node):
     recorded digest — i.e. only on proof that the row is not stale, never on
     the mere suspicion that a flag might be left over.
 
-    Gated on the exact stale-error signature so a genuine user exclusion and
-    an unrelated error row (e.g. "Could not read image.") survive verbatim.
+    Also repairs rows written before staleness was decoupled from the
+    user-facing fields: those carry ``exclude=true`` plus the stale error
+    string alongside the flag, which is what made a reloaded scene report
+    "could not be fully restored" and suppressed the overlay. The repair is
+    gated on that exact error signature, so a genuine user exclusion and an
+    unrelated error row (e.g. "Could not read image.") survive verbatim.
     ``exclude`` is reset to ``"false"`` rather than removed, because
     :func:`validate_volume_node`'s "was analysed" check keys on the
     attribute's presence.
@@ -608,23 +612,33 @@ def clear_stale_marking(volume_node):
     """
     if volume_node is None or not hasattr(volume_node, "GetAttribute"):
         return False
-    error_attr = ATTR_PREFIX + "error"
+
+    changed = False
     try:
-        if volume_node.GetAttribute(error_attr) != STALE_ERROR_MESSAGE:
-            return False
-    except Exception:
-        return False
-    for attr in (ATTR_STALE, error_attr):
-        try:
+        if volume_node.GetAttribute(ATTR_STALE) == "true":
+            changed = True
             if hasattr(volume_node, "RemoveAttribute"):
-                volume_node.RemoveAttribute(attr)
-        except Exception:
-            pass
-    try:
-        volume_node.SetAttribute(ATTR_EXCLUDE, "false")
+                volume_node.RemoveAttribute(ATTR_STALE)
     except Exception:
         pass
-    return True
+
+    error_attr = ATTR_PREFIX + "error"
+    try:
+        legacy = volume_node.GetAttribute(error_attr) == STALE_ERROR_MESSAGE
+    except Exception:
+        legacy = False
+    if legacy:
+        changed = True
+        try:
+            if hasattr(volume_node, "RemoveAttribute"):
+                volume_node.RemoveAttribute(error_attr)
+        except Exception:
+            pass
+        try:
+            volume_node.SetAttribute(ATTR_EXCLUDE, "false")
+        except Exception:
+            pass
+    return changed
 
 
 def refresh_stale_flag(volume_node, scene):
