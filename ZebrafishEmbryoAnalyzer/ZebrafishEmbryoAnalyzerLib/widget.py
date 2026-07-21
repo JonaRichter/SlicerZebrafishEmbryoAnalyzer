@@ -1174,6 +1174,19 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             self._excluded.add(filename)
         else:
             self._excluded.discard(filename)
+        # Persist it. The set above is in-memory only, so without this a fish
+        # excluded by hand came back included after save/reload — the scene
+        # had nowhere to carry the decision.
+        for row in self._results or []:
+            if isinstance(row, dict) and row.get("filename") == filename:
+                row["exclude"] = bool(checked)
+                try:
+                    self._logic.set_row_exclusion(row, bool(checked))
+                except Exception:
+                    logging.exception(
+                        "ZebrafishEmbryoAnalyzer: persisting the exclude state failed"
+                    )
+                break
         self._results_tab.sync_exclude(self._excluded)
         self._detail.sync_exclude(filename in self._excluded)
 

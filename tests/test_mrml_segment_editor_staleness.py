@@ -617,3 +617,59 @@ def test_refresh_recompute_button_enables_only_for_stale():
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# --------------------------------------------------------------------------- #
+# Manual exclusion must survive a save/reload
+# --------------------------------------------------------------------------- #
+
+
+def test_set_volume_node_exclude_round_trips_through_the_attribute():
+    """A hand-excluded fish came back included after save/reload because the
+    decision lived only in the widget's in-memory set. It has to reach the
+    node, which is what the scene carries.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import (
+        set_volume_node_exclude, volume_node_to_result_dict, ATTR_EXCLUDE,
+    )
+    n = _make_attr_node("embryo.tif")
+
+    assert set_volume_node_exclude(n, True) is True
+    assert n.GetAttribute(ATTR_EXCLUDE) == "true"
+    assert volume_node_to_result_dict(n)["exclude"] is True
+
+    assert set_volume_node_exclude(n, False) is True
+    # Written as "false", not removed — validate_volume_node's "was analysed"
+    # check keys on the attribute being present.
+    assert n.GetAttribute(ATTR_EXCLUDE) == "false"
+    assert volume_node_to_result_dict(n)["exclude"] is False
+
+
+def test_set_volume_node_exclude_handles_a_missing_node():
+    from ZebrafishEmbryoAnalyzerLib.mrml import set_volume_node_exclude
+    assert set_volume_node_exclude(None, True) is False
+
+
+def test_exclude_change_persists_to_the_volume_node():
+    """The widget handler must write the decision through, not only update its
+    own set — that gap is what made the state session-local.
+    """
+    from ZebrafishEmbryoAnalyzerLib import widget as widget_mod
+
+    w = MagicMock(name="widget")
+    w._excluded = set()
+    w._results = [{"filename": "a.tif"}, {"filename": "b.tif"}]
+    w._logic = MagicMock()
+    w._results_tab = MagicMock()
+    w._detail = MagicMock()
+
+    widget_mod.ZebrafishEmbryoAnalyzerMainWidget._on_exclude_change(w, "b.tif", True)
+
+    assert w._results[1]["exclude"] is True
+    assert w._results[0].get("exclude") is None, "only the named row may change"
+    w._logic.set_row_exclusion.assert_called_once_with(w._results[1], True)
+
+    widget_mod.ZebrafishEmbryoAnalyzerMainWidget._on_exclude_change(w, "b.tif", False)
+
+    assert w._results[1]["exclude"] is False
+    assert w._logic.set_row_exclusion.call_args[0][1] is False

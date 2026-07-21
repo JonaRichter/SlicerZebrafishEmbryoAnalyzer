@@ -854,6 +854,29 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
                     except Exception:
                         pass
 
+    def set_row_exclusion(self, row, excluded):
+        """Persist a row's exclude state onto its volume node.
+
+        The widget keeps the exclude set in memory; without this the decision
+        is lost the moment the scene is saved and reloaded. Resolves the row's
+        volume node the same way the rest of the per-row plumbing does.
+
+        Returns True when the attribute was written. Best-effort: a row with
+        no resolvable node (never analysed, segmentation deleted) is a no-op
+        rather than an error.
+        """
+        try:
+            from ZebrafishEmbryoAnalyzerLib.mrml import set_volume_node_exclude
+        except Exception:
+            return False
+        try:
+            volume_node = self.find_tracked_volume_node_for_row(row)
+        except Exception:
+            return False
+        if volume_node is None:
+            return False
+        return bool(set_volume_node_exclude(volume_node, excluded))
+
     def validate_tracked_row_exclusion(self, volume_node):
         """Issue #56 Mode B follow-up: return ``(error_message, should_exclude)``
         for one volume node by delegating to :func:`mrml.validate_volume_node`.

@@ -720,6 +720,26 @@ def refresh_stale_flag(volume_node, scene):
     return True
 
 
+def set_volume_node_exclude(volume_node, excluded):
+    """Persist the user's exclude decision on the volume node.
+
+    The exclude state used to live only in the widget's in-memory set, so a
+    fish excluded by hand came back included after save/reload — the decision
+    was never written anywhere the scene could carry.
+
+    Written as ``"true"`` / ``"false"`` rather than removed, because
+    :func:`validate_volume_node`'s "was analysed" check keys on the
+    attribute's presence. Returns True when it was written. Never raises.
+    """
+    if volume_node is None or not hasattr(volume_node, "SetAttribute"):
+        return False
+    try:
+        volume_node.SetAttribute(ATTR_EXCLUDE, "true" if excluded else "false")
+    except Exception:
+        return False
+    return True
+
+
 def is_volume_node_stale(volume_node):
     """Return True if the volume node's ``ATTR_STALE`` attribute is "true"."""
     if volume_node is None or not hasattr(volume_node, "GetAttribute"):
