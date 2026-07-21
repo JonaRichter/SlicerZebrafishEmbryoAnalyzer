@@ -962,6 +962,16 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
             "ratio": r.get("ratio"),
             "eye_area": r.get("eye_area"),
             "eye_diameter": r.get("eye_diameter"),
+            # The overlay inputs have to travel with the metrics: the widget
+            # replaces the whole row with this dict, so anything missing here
+            # is gone from the gallery and Detail tab. Leaving them out meant a
+            # recompute silently dropped the user's edited mask from the view
+            # while the metrics next to it described exactly that mask.
+            "mask": r.get("mask"),
+            "eye_mask": r.get("eye_mask"),
+            "path_points": r.get("path_points"),
+            "straight_line_points": r.get("straight_line_points"),
+            "spacing": r.get("spacing"),
             "exclude": False,
             "error": "",
             "_volume_node": volume_node,

@@ -2851,6 +2851,13 @@ def test_recompute_hands_pixels_to_analyse_images_instead_of_a_path():
     assert "read_segment_masks(" in body, (
         "recompute must read the masks off the volume node"
     )
+    # The widget replaces the whole row with the returned dict, so the overlay
+    # inputs must come back with it — otherwise a recompute drops the user's
+    # edited mask out of the gallery and Detail tab.
+    for key in ('"mask"', '"eye_mask"', '"path_points"', '"straight_line_points"'):
+        assert key in body, (
+            f"recompute result must carry {key} so the views keep the mask"
+        )
     assert '"__volume_node__"' not in src, (
         "the sentinel path must not come back — nothing consumes it"
     )
