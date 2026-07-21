@@ -55,6 +55,13 @@ ATTR_EXCLUDE = ATTR_PREFIX + "exclude"
 # mask in the Segment Editor. Cleared on successful recompute.
 ATTR_STALE = ATTR_PREFIX + "stale"
 
+# Issue #81: digest of the segmentation's voxel content at the moment the
+# metrics on this node were last computed. Staleness is "current content
+# differs from this", which is why a digest and not a timestamp: VTK MTimes
+# are per-process counters that restart on every Slicer launch, so nothing
+# derived from them can survive the save/reload cycle this attribute must.
+ATTR_SEG_HASH = ATTR_PREFIX + "segHash"
+
 # Issue #38: batch position, stamped on every image node at eager-creation
 # time. Doubles as this module's ownership marker on a volume node — issue
 # #36 uses it to find our images in a scene that also holds foreign volumes.
@@ -499,77 +506,171 @@ def mark_volume_node_stale(volume_node):
         pass
 
 
-def segment_labelmap_mtimes(seg_node):
-    """Return ``{segment_id: labelmap MTime}`` for every segment on ``seg_node``.
+def segmentation_content_hash(seg_node):
+    """Return a digest of every segment's voxel content, or ``""``.
 
-    This is the only reliable "did the user actually edit this segmentation"
-    signal. Painting in the Segment Editor changes the voxels inside each
-    segment's ``vtkOrientedImageData`` binary-labelmap representation, and
-    that modification does **not** propagate upwards: measured against a live
-    scene, a brush stroke left ``segNode.GetMTime()``,
-    ``segNode.GetSegmentation().GetMTime()`` and ``segment.GetMTime()`` all
-    unchanged while only the representation's MTime advanced (issue #81).
-    Slicer's own ``segNode.GetMTime()`` does advance for display-node and
-    representation-conversion work during scene import, i.e. exactly the
-    events that must *not* count as user edits — so comparing node MTimes
-    gets the answer backwards in both directions.
+    Issue #81: this is what staleness is decided on. Three earlier attempts
+    keyed on modification *times* — the node's, the segmentation's, the
+    labelmap's — and each one failed the same way: VTK timestamps record that
+    an object was *touched*, and Slicer touches segmentations constantly
+    without changing a voxel. Measured against a live scene, saving the scene
+    alone flipped all five images to stale; scene import and display-pipeline
+    work do the same. A digest of the voxels answers the question actually
+    being asked, and it is unaffected by conversion, serialisation and
+    display.
 
-    Mirrors what Slicer does internally in
-    ``qt-scripted-modules/SegmentEditorEffects/AbstractScriptedSegmentEditorAutoCompleteEffect.py``
-    (``selectedSegmentModifiedTimes``), which keeps a per-segment-ID map of
-    exactly this MTime to decide whether a segment really changed.
+    It also survives a save/reload, which no timestamp can: VTK MTimes are
+    per-process counters that start over on every launch.
 
-    Note that Slicer may keep several segments in one shared labelmap, so
-    editing Eye can advance Body's MTime too. For "any edit invalidates this
-    row's metrics" that is correct, if slightly coarse.
+    Segment IDs are folded into the digest in sorted order, so adding or
+    removing a segment registers as a change, and the result does not depend
+    on the order Slicer happens to enumerate them in. Voxels are compared as
+    "set or not set" rather than by label value, so a relabelling that
+    preserves the mask does not read as an edit.
 
-    Returns an empty dict when the node, its segmentation or the Slicer
-    runtime is unavailable — callers treat "no readings" as "cannot tell",
+    Returns ``""`` when nothing could be read (no Slicer runtime, no
+    segmentation, no labelmap yet). Callers must treat that as "unknown" and
     never as "changed". Never raises.
     """
     if seg_node is None:
-        return {}
+        return ""
     try:
+        import hashlib
+        import numpy as np
         import slicer  # lazy: tests never import slicer
     except Exception:
-        return {}
+        return ""
     try:
         segmentation = seg_node.GetSegmentation()
+        segment_ids = sorted(segmentation.GetSegmentIDs())
     except Exception:
-        return {}
-    if segmentation is None:
-        return {}
-    try:
-        representation_name = (
-            slicer.vtkSegmentationConverter
-            .GetSegmentationBinaryLabelmapRepresentationName()
-        )
-    except Exception:
-        return {}
-    try:
-        segment_ids = list(segmentation.GetSegmentIDs())
-    except Exception:
-        return {}
+        return ""
+    read_labelmap = getattr(
+        slicer.util, "arrayFromSegmentBinaryLabelmap", None
+    ) or getattr(slicer.util, "arrayFromSegment", None)
+    if read_labelmap is None:
+        return ""
 
-    mtimes = {}
+    digest = hashlib.blake2b(digest_size=16)
+    read_any = False
     for segment_id in segment_ids:
         try:
-            segment = segmentation.GetSegment(segment_id)
+            arr = read_labelmap(seg_node, segment_id)
         except Exception:
             continue
-        if segment is None:
+        if arr is None:
             continue
         try:
-            labelmap = segment.GetRepresentation(representation_name)
+            occupied = np.ascontiguousarray(arr != 0)
+            digest.update(str(segment_id).encode("utf-8"))
+            digest.update(str(occupied.shape).encode("utf-8"))
+            digest.update(occupied.tobytes())
+            read_any = True
         except Exception:
             continue
-        if labelmap is None:
-            continue
+    return digest.hexdigest() if read_any else ""
+
+
+def record_segmentation_hash(volume_node, seg_node):
+    """Stamp the segmentation's current content digest onto ``volume_node``.
+
+    Called wherever metrics are written, so the attribute always means "the
+    content the current metric values were computed from". Silently does
+    nothing when the digest cannot be computed — a missing stamp makes
+    :func:`refresh_stale_flag` abstain rather than guess.
+    """
+    if volume_node is None or not hasattr(volume_node, "SetAttribute"):
+        return
+    content_hash = segmentation_content_hash(seg_node)
+    if not content_hash:
+        return
+    try:
+        volume_node.SetAttribute(ATTR_SEG_HASH, content_hash)
+    except Exception:
+        pass
+
+
+def clear_stale_marking(volume_node):
+    """Undo the marking that :func:`mark_volume_node_stale` writes.
+
+    Issue #81: unlike the blanket scrub this replaces, it runs only when
+    :func:`refresh_stale_flag` has established that the content matches the
+    recorded digest — i.e. only on proof that the row is not stale, never on
+    the mere suspicion that a flag might be left over.
+
+    Gated on the exact stale-error signature so a genuine user exclusion and
+    an unrelated error row (e.g. "Could not read image.") survive verbatim.
+    ``exclude`` is reset to ``"false"`` rather than removed, because
+    :func:`validate_volume_node`'s "was analysed" check keys on the
+    attribute's presence.
+
+    Returns True when a marking was undone. Never raises.
+    """
+    if volume_node is None or not hasattr(volume_node, "GetAttribute"):
+        return False
+    error_attr = ATTR_PREFIX + "error"
+    try:
+        if volume_node.GetAttribute(error_attr) != STALE_ERROR_MESSAGE:
+            return False
+    except Exception:
+        return False
+    for attr in (ATTR_STALE, error_attr):
         try:
-            mtimes[segment_id] = int(labelmap.GetMTime())
+            if hasattr(volume_node, "RemoveAttribute"):
+                volume_node.RemoveAttribute(attr)
         except Exception:
-            continue
-    return mtimes
+            pass
+    try:
+        volume_node.SetAttribute(ATTR_EXCLUDE, "false")
+    except Exception:
+        pass
+    return True
+
+
+def refresh_stale_flag(volume_node, scene):
+    """Bring ``volume_node``'s stale marking in line with its segmentation.
+
+    Compares the linked segmentation's current content digest against the one
+    recorded when the metrics were last computed, and marks or unmarks the row
+    accordingly. This replaces the event-driven detection entirely: no
+    observers, no baselines, no dependency on *when* it runs — which is what
+    made every earlier attempt fragile.
+
+    Abstains (returns the current flag unchanged) when either digest is
+    missing: an unanalysed row, a segmentation that was deleted, or a scene
+    written before this attribute existed. Guessing in those cases is what
+    produced the per-fish popup storm.
+
+    Returns True when the row is stale afterwards. Never raises.
+    """
+    if volume_node is None:
+        return False
+    try:
+        recorded = volume_node.GetAttribute(ATTR_SEG_HASH)
+    except Exception:
+        recorded = None
+    if not recorded:
+        return is_volume_node_stale(volume_node)
+
+    seg_node = None
+    try:
+        seg_id = volume_node.GetNodeReferenceID(ROLE_ZEBRAFISH_SEGMENTATION)
+        if seg_id and scene is not None:
+            seg_node = scene.GetNodeByID(seg_id)
+    except Exception:
+        seg_node = None
+    if seg_node is None:
+        return is_volume_node_stale(volume_node)
+
+    current = segmentation_content_hash(seg_node)
+    if not current:
+        return is_volume_node_stale(volume_node)
+
+    if current == recorded:
+        clear_stale_marking(volume_node)
+        return False
+    mark_volume_node_stale(volume_node)
+    return True
 
 
 def is_volume_node_stale(volume_node):
@@ -2067,6 +2168,13 @@ def apply_analysis_to_volume_node(result, volume_node, scene, um_per_px):
     # segmentation behind.
     try:
         _write_metric_attributes(result, volume_node)
+        # Issue #81: the metrics just written describe exactly this
+        # segmentation content, so stamp its digest now. Everything the user
+        # changes afterwards differs from it, which is the whole staleness
+        # test. Recorded after the segmentation is in the scene so the digest
+        # is read back through the same path that later checks it.
+        if seg_node is not None:
+            record_segmentation_hash(volume_node, seg_node)
     except Exception:
         logging.exception(
             "apply_analysis_to_volume_node: attribute write failed"

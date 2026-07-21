@@ -1572,8 +1572,8 @@ def test_validate_volume_node_flags_dangling_seg_reference(
     )
 
 
-def test_logic_setup_segmentation_staleness_observers_delegates_to_widget():
-    """Issue #56 follow-up: ``Logic.setup_segmentation_staleness_observers``
+def test_logic_refresh_staleness_flags_delegates_to_widget():
+    """Issue #81: ``Logic.refresh_staleness_flags``
     must delegate to the widget's implementation (since the widget owns
     the ``VTKObservationMixin``). Without a back-pointer, the call is a
     silent no-op.
@@ -1644,19 +1644,19 @@ def test_logic_setup_segmentation_staleness_observers_delegates_to_widget():
 
         called = {"count": 0}
         class _FakeWidget:
-            def setup_segmentation_staleness_observers(self_inner):
+            def refresh_staleness_flags(self_inner):
                 called["count"] += 1
 
         logic = ZebrafishEmbryoAnalyzerLogic()
         # Without _widget_ref: silent no-op (must not raise).
-        logic.setup_segmentation_staleness_observers()
+        logic.refresh_staleness_flags()
         assert called["count"] == 0, called["count"]
 
         logic._widget_ref = _FakeWidget()
-        logic.setup_segmentation_staleness_observers()
+        logic.refresh_staleness_flags()
         assert called["count"] == 1, called["count"]
 
-        logic.setup_segmentation_staleness_observers()
+        logic.refresh_staleness_flags()
         assert called["count"] == 2, called["count"]
         print("OK")
     """)
@@ -1668,7 +1668,7 @@ def test_logic_setup_segmentation_staleness_observers_delegates_to_widget():
     assert "OK" in r.stdout
 
 
-def test_logic_setup_segmentation_staleness_observers_swallows_widget_errors():
+def test_logic_refresh_staleness_flags_swallows_widget_errors():
     """The Logic wrapper must never raise, even when the widget's
     implementation throws — callers in widget.py do not wrap their
     own try/except around this path.
@@ -1732,13 +1732,13 @@ def test_logic_setup_segmentation_staleness_observers_swallows_widget_errors():
         from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
 
         class _BoomWidget:
-            def setup_segmentation_staleness_observers(self_inner):
+            def refresh_staleness_flags(self_inner):
                 raise RuntimeError("scene not ready")
 
         logic = ZebrafishEmbryoAnalyzerLogic()
         logic._widget_ref = _BoomWidget()
         # Must not raise.
-        logic.setup_segmentation_staleness_observers()
+        logic.refresh_staleness_flags()
         print("OK")
     """)
     env = {**os.environ, "ZEA_DIR": _MODULE_DIR}
@@ -1751,7 +1751,7 @@ def test_logic_setup_segmentation_staleness_observers_swallows_widget_errors():
 
 def test_widget_setup_wires_logic_widget_ref():
     """Issue #56 follow-up: ``Widget.setup`` must hand itself to the logic
-    via ``_widget_ref`` so ``Logic.setup_segmentation_staleness_observers``
+    via ``_widget_ref`` so ``Logic.refresh_staleness_flags``
     can delegate back. Without this wiring the per-image ModifiedEvent
     observers are never installed after analysis completes.
     """
@@ -1777,7 +1777,7 @@ def test_widget_setup_wires_logic_widget_ref():
     )
 
 
-def test_widget_enter_calls_setup_segmentation_staleness_observers():
+def test_widget_enter_calls_refresh_staleness_flags():
     """Issue #56 follow-up: ``Widget.enter()`` must re-arm the per-image
     segmentation ModifiedEvent observers on every module entry. Without
     this, observers installed by ``_on_results_ready`` get torn down on
@@ -1796,8 +1796,8 @@ def test_widget_enter_calls_setup_segmentation_staleness_observers():
         r"def enter\(self\):.*?(?=\n    def )", src, flags=re.DOTALL,
     )
     assert enter_block is not None
-    assert "setup_segmentation_staleness_observers" in enter_block.group(0), (
-        "Widget.enter() must call setup_segmentation_staleness_observers "
+    assert "refresh_staleness_flags" in enter_block.group(0), (
+        "Widget.enter() must call refresh_staleness_flags "
         "so observers are live on every module re-entry"
     )
 
@@ -1955,7 +1955,7 @@ def test_logic_find_tracked_volume_node_for_row_prefers_stashed():
         # Real ``ZebrafishEmbryoAnalyzer`` imports vtk at module top; stub
         # the slicer/VTK-heavy transitive imports to bypass that without a
         # Slicer installation. Mirrors the pattern used elsewhere in this
-        # file (e.g. the setup_segmentation_staleness_observers tests).
+        # file (e.g. the refresh_staleness_flags tests).
         sys.modules.setdefault("vtk", types.ModuleType("vtk"))
         sys.modules.setdefault("vtkmodules", types.ModuleType("vtkmodules"))
         sys.modules.setdefault("vtkmodules.vtkCommonCore", types.ModuleType(

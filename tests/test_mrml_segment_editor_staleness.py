@@ -4,9 +4,9 @@ The module covers three layers:
 
 * the helpers in :mod:`ZebrafishEmbryoAnalyzerLib.mrml` — ``mark_volume_node_stale``,
   ``is_volume_node_stale``, ``clear_volume_node_stale``;
-* the Logic class methods on :class:`ZebrafishEmbryoAnalyzerWidget`'s logic —
-  ``setup_segmentation_staleness_observers``, ``list_stale_tracked_volume_nodes``,
-  ``recompute_metrics_for_volume_node``;
+* the content-digest staleness detection in :mod:`ZebrafishEmbryoAnalyzerLib.mrml`
+  — ``segmentation_content_hash``, ``record_segmentation_hash``,
+  ``refresh_stale_flag`` (issue #81);
 * the widget-side glue — ``prompt_recompute_stale_images``,
   ``_stale_recompute_prompt_policy``, ``_on_recompute_current_detail``, and
   ``_refresh_detail_recompute_button`` — all of which rely on a clean
@@ -22,15 +22,7 @@ import sys
 import types
 from unittest.mock import MagicMock
 
-
-# Stand-ins for the Slicer/VTK constants the staleness path needs. The real
-# values are opaque enum ints; only identity between "registered" and "fired"
-# matters here.
-BINARY_LABELMAP_NAME = "Binary labelmap"
-SEGMENT_MODIFIED = 4001
-SOURCE_REPRESENTATION_MODIFIED = 4002
-SEGMENT_ADDED = 4003
-SEGMENT_REMOVED = 4004
+import numpy as np
 
 
 def _install_slicer_stub():
@@ -79,23 +71,6 @@ def _install_slicer_stub():
         ScriptedLoadableModuleLogic=object,
         ScriptedLoadableModuleTest=object,
     )
-
-    # Issue #81: staleness is decided on the binary-labelmap representation,
-    # so the converter (for the representation's name) and the vtkSegmentation
-    # event constants both have to exist outside the Slicer runtime.
-    slicer.vtkSegmentationConverter = types.SimpleNamespace(
-        GetSegmentationBinaryLabelmapRepresentationName=staticmethod(
-            lambda: BINARY_LABELMAP_NAME
-        ),
-    )
-    vtk_seg_core = types.ModuleType("vtkSegmentationCore")
-    vtk_seg_core.vtkSegmentation = types.SimpleNamespace(
-        SegmentModified=SEGMENT_MODIFIED,
-        SourceRepresentationModified=SOURCE_REPRESENTATION_MODIFIED,
-        SegmentAdded=SEGMENT_ADDED,
-        SegmentRemoved=SEGMENT_REMOVED,
-    )
-    sys.modules["vtkSegmentationCore"] = vtk_seg_core
     slicer._zea_stub = True
     sys.modules["slicer"] = slicer
     # `from slicer.ScriptedLoadableModule import (...)` requires an
@@ -169,93 +144,65 @@ class _FakeNodeRef:
         return [nid for r, nid in self._refs if r == role]
 
 
-class _FakeLabelmap:
-    """The ``vtkOrientedImageData`` holding a segment's voxels.
-
-    Issue #81: this is the *only* object whose MTime advances when the user
-    paints in the Segment Editor — measured against a live scene, the node,
-    its segmentation and the segment itself all stayed put.
-    """
-
-    def __init__(self, mtime=1000):
-        self._mtime = mtime
-
-    def GetMTime(self):
-        return self._mtime
-
-    def Modified(self):
-        self._mtime += 1
-
-
-class _FakeSegment:
-    def __init__(self, labelmap):
-        self._labelmap = labelmap
-        self._mtime = 500
-
-    def GetRepresentation(self, name):
-        return self._labelmap if name == BINARY_LABELMAP_NAME else None
-
-    def GetMTime(self):
-        return self._mtime
-
-
 class _FakeSegmentation:
-    """The ``vtkSegmentation`` contained in a segmentation node — this is what
-    the production code observes, not the node itself.
+    """The ``vtkSegmentation`` contained in a segmentation node. Holds one
+    voxel array per segment id — content, not timestamps, is what the
+    staleness check reads (issue #81).
     """
 
     def __init__(self, segments):
         self._segments = dict(segments)
-        self.observers = []
-        self._mtime = 700
 
     def GetSegmentIDs(self):
         return list(self._segments)
 
-    def GetSegment(self, segment_id):
-        return self._segments.get(segment_id)
-
-    def GetMTime(self):
-        return self._mtime
-
-    def AddObserver(self, event, fn):
-        self.observers.append((event, fn))
-        return len(self.observers)
-
-    def InvokeEvent(self, event):
-        """Test helper: fire one registered event, as Slicer would."""
-        for registered_event, fn in list(self.observers):
-            if registered_event == event:
-                fn()
-
 
 class _FakeSegmentationNode:
-    def __init__(self, segment_ids=("Body",)):
-        self._segmentation = _FakeSegmentation(
-            {sid: _FakeSegment(_FakeLabelmap()) for sid in segment_ids}
-        )
-        # Node MTime exists but must never drive the staleness decision.
-        self._mtime = 1000
+    def __init__(self, segments=None):
+        if segments is None:
+            segments = {"Body": np.array([[0, 1], [1, 1]], dtype=np.uint8)}
+        self._segmentation = _FakeSegmentation(segments)
 
     def GetSegmentation(self):
         return self._segmentation
 
-    def GetMTime(self):
-        return self._mtime
-
-    def Modified(self):
-        """Node-level modification — what Slicer's import/display pipeline
-        does. Must NOT read as a user edit.
-        """
-        self._mtime += 1
-        self._segmentation.InvokeEvent(SOURCE_REPRESENTATION_MODIFIED)
-
     def paint(self, segment_id="Body"):
-        """Simulate a Segment Editor brush stroke: only the labelmap moves,
-        then the segmentation announces it.
-        """
-        self._segmentation.GetSegment(segment_id)._labelmap.Modified()
-        self._segmentation.InvokeEvent(SEGMENT_MODIFIED)
+        """Simulate a brush stroke: flip one voxel."""
+        arr = self._segmentation._segments[segment_id].copy()
+        arr[0, 0] = 0 if arr[0, 0] else 1
+        self._segmentation._segments[segment_id] = arr
+
+    def set_segment(self, segment_id, arr):
+        self._segmentation._segments[segment_id] = arr
+
+
+def _stub_labelmap_reader():
+    """Point ``slicer.util.arrayFromSegmentBinaryLabelmap`` at the fakes.
+
+    Installed on whatever ``slicer`` currently sits in ``sys.modules`` —
+    another test file may have swapped in its own stub, and a reader that is
+    missing makes ``segmentation_content_hash`` return "" so every assertion
+    here would silently pass for the wrong reason.
+    """
+    import slicer
+    util = getattr(slicer, "util", None)
+    if util is None:
+        util = types.SimpleNamespace()
+        try:
+            setattr(slicer, "util", util)
+        except (AttributeError, TypeError):
+            return
+
+    def _read(node, segment_id, *_args, **_kwargs):
+        try:
+            return node.GetSegmentation()._segments.get(segment_id)
+        except Exception:
+            return None
+
+    try:
+        setattr(util, "arrayFromSegmentBinaryLabelmap", _read)
+    except (AttributeError, TypeError):
+        pass
 
 
 def _make_attr_node(filename, seg_id=None, **extras):
@@ -310,313 +257,162 @@ def test_clear_volume_node_stale_is_noop_when_not_stale():
 
 
 # --------------------------------------------------------------------------- #
-# Layer 2: Logic class — observer setup + list_stale + recompute plumbing
+# Layer 2: content-digest staleness detection (issue #81)
 # --------------------------------------------------------------------------- #
 
 
-class _FakeSelf:
-    """Stand-in for the Slicer instance slice that the Logic methods use.
+class _FakeScene:
+    def __init__(self, nodes_by_id):
+        self._nodes = dict(nodes_by_id)
 
-    The Logic methods call ``self.getParameterNode()`` and ``self.addObserver`` /
-    ``self.removeObserver`` via the Slicer VTKObservationMixin. We give the
-    fake just those plus a ``_stale_observer_tags`` slot so the setup can run
-    idempotently.
-    """
-
-    def __init__(self, param_node, tracked, seg_nodes_by_id):
-        self._pn = param_node
-        self._tracked = tracked
-        self._seg_nodes_by_id = seg_nodes_by_id
-        self._stale_observer_tags = []
-        self.removed_tags = []
-        self.added = []
-        self._fn_by_tag = {}
-
-    def getParameterNode(self):
-        return self._pn
-
-    def addObserver(self, seg_node, event, fn):
-        # Match Slicer's tag-based mixin: returns an integer tag and
-        # actually registers the callback on the seg_node so firing the
-        # seg node's Modified() invokes our callback.
-        tag = len(self.added) + 1
-        self.added.append((seg_node, event, fn))
-        self._fn_by_tag[tag] = fn
-        # Attach callback to seg_node so Modified() fires it.
-        if hasattr(seg_node, "AddObserver"):
-            seg_node.AddObserver(event, fn)
-        self._stale_observer_tags.append(tag)
-        return tag
-
-    def removeObserver(self, tag):
-        self.removed_tags.append(tag)
-        # mimic Slicer's idempotent remove
-        self._stale_observer_tags = [t for t in self._stale_observer_tags if t != tag]
+    def GetNodeByID(self, node_id):
+        return self._nodes.get(node_id)
 
 
-def _install_logic_methods():
-    """Import the Widget class via the slicer.shadow so the test can call
-    the real ``setup_segmentation_staleness_observers`` method against a
-    stubbed ``self``. The method lives on the Widget, not the Logic —
-    it needs the VTKObservationMixin that the Widget subclasses.
-    """
-    from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerWidget
-    return ZebrafishEmbryoAnalyzerWidget
-
-
-def _ensure_scene_with_getnode(seg_node):
-    """Set ``slicer.mrmlScene.GetNodeByID`` to a MagicMock that returns
-    ``seg_node``. Tolerant of a SimpleNamespace stub left over by
-    another test file (just installs the attribute when possible).
-
-    Returns the (possibly newly-installed) mrmlScene so callers can
-    introspect it.
-    """
-    import slicer
-    scene = getattr(slicer, "mrmlScene", None)
-    if scene is not None and hasattr(scene, "GetNodeByID"):
-        try:
-            scene.GetNodeByID = MagicMock(return_value=seg_node)
-            return scene
-        except (AttributeError, TypeError):
-            pass
-    # Either there was no mrmlScene at all or it was a read-only stub;
-    # install a fresh MagicMock scene directly via setattr (works on
-    # SimpleNamespace too — pytest's ``monkeypatch.setattr`` does not).
-    fake_scene = MagicMock(name="mrmlScene")
-    fake_scene.GetNodeByID = MagicMock(return_value=seg_node)
-    try:
-        setattr(slicer, "mrmlScene", fake_scene)
-    except (AttributeError, TypeError):
-        pass
-    return fake_scene
-
-
-def test_setup_observers_calls_add_observer_for_each_tracked_segment():
-    import slicer
-    from unittest.mock import patch
-    Cls = _install_logic_methods()
-    param = MagicMock(name="parameterNode")
-    seg_node = _FakeSegmentationNode()
-    seg_id = "seg_1"
+def _analysed_row(seg_node, seg_id="seg_1"):
+    """A tracked volume node whose metrics were computed from ``seg_node``."""
+    from ZebrafishEmbryoAnalyzerLib.mrml import record_segmentation_hash
+    _stub_labelmap_reader()
     volume = _make_attr_node("embryo.tif", seg_id=seg_id)
-    self_ = _FakeSelf(param, [volume], {seg_id: seg_node})
-    # Make slicer.mrmlScene.GetNodeByID resolve our fake seg node.
-    # Issue #56 follow-up: use the tolerant helper so the test also
-    # passes when sys.modules["slicer"] was replaced with a
-    # SimpleNamespace stub by an earlier test file.
-    _ensure_scene_with_getnode(seg_node)
-    with patch(
-        "ZebrafishEmbryoAnalyzerLib.mrml.list_tracked_volume_nodes",
-        return_value=[volume],
-    ):
-        Cls.setup_segmentation_staleness_observers(self_)
-    # Issue #81: the observer goes on the vtkSegmentation object, not on the
-    # MRML node — painting never touches the node, so observing it missed
-    # every real edit while firing on every scene import.
-    assert self_.added, "at least one observer must be registered"
-    targets = {id(target) for target, _event, _fn in self_.added}
-    assert targets == {id(seg_node.GetSegmentation())}
-    events = {event for _target, event, _fn in self_.added}
-    assert events == {
-        SEGMENT_MODIFIED, SOURCE_REPRESENTATION_MODIFIED,
-        SEGMENT_ADDED, SEGMENT_REMOVED,
-    }
+    record_segmentation_hash(volume, seg_node)
+    return volume, _FakeScene({seg_id: seg_node})
 
 
-def test_setup_observers_is_idempotent():
-    from unittest.mock import patch
-    Cls = _install_logic_methods()
-    param = MagicMock(name="parameterNode")
+def test_content_hash_is_stable_across_repeated_reads():
+    """The digest must depend only on voxels — reading twice without touching
+    anything has to produce the same value, or every check would report a
+    change.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import segmentation_content_hash
+    _stub_labelmap_reader()
     seg_node = _FakeSegmentationNode()
-    seg_id = "seg_1"
-    volume = _make_attr_node("embryo.tif", seg_id=seg_id)
-    self_ = _FakeSelf(param, [volume], {seg_id: seg_node})
-    # Issue #56 follow-up: ensure mrmlScene is installed before the
-    # second call into setup_segmentation_staleness_observers (the
-    # production impl calls GetNodeByID to verify the seg reference).
-    _ensure_scene_with_getnode(seg_node)
-    with patch(
-        "ZebrafishEmbryoAnalyzerLib.mrml.list_tracked_volume_nodes",
-        return_value=[volume],
-    ):
-        Cls.setup_segmentation_staleness_observers(self_)
-        first_count = len(self_.added)
-        assert first_count == 4  # one per observed vtkSegmentation event
-        # Second call should not stack observers.
-        Cls.setup_segmentation_staleness_observers(self_)
-    # The fake tracks _stale_observer_tags; the production impl calls
-    # removeObserver(tag) before re-adding, so the fake records at least one
-    # removal from the second pass.
-    assert self_.removed_tags
-    # Net observers added: first call +4, second call replaces them.
-    assert len(self_.added) == first_count * 2
+    assert segmentation_content_hash(seg_node) == segmentation_content_hash(seg_node)
 
 
-def test_setup_observers_skips_volume_without_segmentation_ref():
-    from unittest.mock import patch
-    Cls = _install_logic_methods()
-    param = MagicMock(name="parameterNode")
-    # No seg reference on this volume.
-    volume = _make_attr_node("embryo.tif")
-    self_ = _FakeSelf(param, [volume], {})
-    with patch(
-        "ZebrafishEmbryoAnalyzerLib.mrml.list_tracked_volume_nodes",
-        return_value=[volume],
-    ):
-        Cls.setup_segmentation_staleness_observers(self_)
-    assert self_.added == []
-
-
-def test_setup_observers_skips_when_param_node_missing():
-    Cls = _install_logic_methods()
-    self_ = _FakeSelf(None, [], {})
-    # Should not raise.
-    Cls.setup_segmentation_staleness_observers(self_)
-
-
-def _ensure_segmentation_stubs():
-    """Re-install the segmentation stubs on whatever ``slicer`` is currently
-    in ``sys.modules``.
-
-    Another test file may have replaced the module with its own stub that has
-    no ``vtkSegmentationConverter``; ``mrml.segment_labelmap_mtimes`` then
-    reads no MTimes and silently reports "nothing changed", so these tests
-    would pass alone and fail in a full run. Same tolerance rationale as
-    ``_ensure_scene_with_getnode``.
-    """
-    import slicer
-    if getattr(slicer, "vtkSegmentationConverter", None) is None:
-        try:
-            setattr(slicer, "vtkSegmentationConverter", types.SimpleNamespace(
-                GetSegmentationBinaryLabelmapRepresentationName=staticmethod(
-                    lambda: BINARY_LABELMAP_NAME
-                ),
-            ))
-        except (AttributeError, TypeError):
-            pass
-    if "vtkSegmentationCore" not in sys.modules:
-        mod = types.ModuleType("vtkSegmentationCore")
-        mod.vtkSegmentation = types.SimpleNamespace(
-            SegmentModified=SEGMENT_MODIFIED,
-            SourceRepresentationModified=SOURCE_REPRESENTATION_MODIFIED,
-            SegmentAdded=SEGMENT_ADDED,
-            SegmentRemoved=SEGMENT_REMOVED,
-        )
-        sys.modules["vtkSegmentationCore"] = mod
-
-
-def _armed_observer(seg_node, seg_id="seg_1"):
-    """Run the real observer setup against fakes; return (self_, volume)."""
-    from unittest.mock import patch
-    Cls = _install_logic_methods()
-    _ensure_segmentation_stubs()
-    volume = _make_attr_node("embryo.tif", seg_id=seg_id)
-    self_ = _FakeSelf(MagicMock(name="parameterNode"), [volume], {seg_id: seg_node})
-    _ensure_scene_with_getnode(seg_node)
-    with patch(
-        "ZebrafishEmbryoAnalyzerLib.mrml.list_tracked_volume_nodes",
-        return_value=[volume],
-    ):
-        Cls.setup_segmentation_staleness_observers(self_)
-    return self_, volume
-
-
-def test_segment_labelmap_mtimes_reads_the_representation_not_the_node():
-    """The helper must report the binary labelmap's MTime per segment — the
-    only value that moves when the user paints (issue #81).
-    """
-    from ZebrafishEmbryoAnalyzerLib.mrml import segment_labelmap_mtimes
-
-    _ensure_segmentation_stubs()
-    seg_node = _FakeSegmentationNode(segment_ids=("Body", "Eye"))
-    before = segment_labelmap_mtimes(seg_node)
-    assert set(before) == {"Body", "Eye"}
-
-    seg_node.paint("Body")
-    after = segment_labelmap_mtimes(seg_node)
-    assert after["Body"] > before["Body"]
-    assert after["Eye"] == before["Eye"]
-
-
-def test_segment_labelmap_mtimes_returns_empty_for_unusable_input():
-    from ZebrafishEmbryoAnalyzerLib.mrml import segment_labelmap_mtimes
-    assert segment_labelmap_mtimes(None) == {}
-    assert segment_labelmap_mtimes(object()) == {}
-
-
-def test_observer_marks_stale_when_the_labelmap_changes():
-    """A Segment Editor brush stroke moves the labelmap MTime and nothing
-    else — that must flip the row to stale.
-    """
-    from ZebrafishEmbryoAnalyzerLib.mrml import is_volume_node_stale
-
+def test_content_hash_changes_when_voxels_change():
+    from ZebrafishEmbryoAnalyzerLib.mrml import segmentation_content_hash
+    _stub_labelmap_reader()
     seg_node = _FakeSegmentationNode()
-    _self, volume = _armed_observer(seg_node)
-    assert is_volume_node_stale(volume) is False
+    before = segmentation_content_hash(seg_node)
+    seg_node.paint()
+    assert segmentation_content_hash(seg_node) != before
+
+
+def test_content_hash_ignores_label_value_relabelling():
+    """Segments are compared as set/not-set. A conversion that renumbers
+    labels without moving the mask must not read as a user edit.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import segmentation_content_hash
+    _stub_labelmap_reader()
+    seg_node = _FakeSegmentationNode({"Body": np.array([[0, 1], [1, 1]], dtype=np.uint8)})
+    before = segmentation_content_hash(seg_node)
+    seg_node.set_segment("Body", np.array([[0, 7], [7, 7]], dtype=np.uint8))
+    assert segmentation_content_hash(seg_node) == before
+
+
+def test_content_hash_changes_when_a_segment_is_added():
+    from ZebrafishEmbryoAnalyzerLib.mrml import segmentation_content_hash
+    _stub_labelmap_reader()
+    seg_node = _FakeSegmentationNode()
+    before = segmentation_content_hash(seg_node)
+    seg_node.set_segment("Eye", np.array([[1, 0], [0, 0]], dtype=np.uint8))
+    assert segmentation_content_hash(seg_node) != before
+
+
+def test_content_hash_is_empty_without_a_readable_labelmap():
+    """"Cannot tell" must be distinguishable from "unchanged" — callers key on
+    the empty string to abstain rather than guess.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import segmentation_content_hash
+    _stub_labelmap_reader()
+    assert segmentation_content_hash(None) == ""
+    assert segmentation_content_hash(_FakeSegmentationNode({})) == ""
+
+
+def test_refresh_marks_stale_when_the_segmentation_was_edited():
+    from ZebrafishEmbryoAnalyzerLib.mrml import refresh_stale_flag, is_volume_node_stale
+    seg_node = _FakeSegmentationNode()
+    volume, scene = _analysed_row(seg_node)
+    assert refresh_stale_flag(volume, scene) is False
 
     seg_node.paint()
 
+    assert refresh_stale_flag(volume, scene) is True
     assert is_volume_node_stale(volume) is True
 
 
-def test_observer_ignores_node_level_modification_without_a_labelmap_change():
-    """Regression guard for the defect this issue exists for.
-
-    Slicer's scene-import and display pipeline modifies the segmentation node
-    itself without touching any labelmap. The previous implementation keyed on
-    the node's MTime and therefore marked every row stale on every reload —
-    which is what produced the per-fish popup storm — while missing real edits
-    entirely, because painting leaves the node MTime untouched.
+def test_refresh_leaves_an_untouched_row_clean():
+    """The regression this whole issue exists for: saving, importing and
+    redisplaying a scene all move VTK timestamps without changing a voxel.
+    Repeated refreshes on unchanged content must stay silent.
     """
-    from ZebrafishEmbryoAnalyzerLib.mrml import is_volume_node_stale
-
+    from ZebrafishEmbryoAnalyzerLib.mrml import refresh_stale_flag, is_volume_node_stale
     seg_node = _FakeSegmentationNode()
-    _self, volume = _armed_observer(seg_node)
-    mtime_before = seg_node.GetMTime()
+    volume, scene = _analysed_row(seg_node)
 
-    seg_node.Modified()  # pipeline event: node moves, voxels do not
-
-    assert seg_node.GetMTime() > mtime_before, "fake must model the node bump"
+    for _ in range(3):
+        assert refresh_stale_flag(volume, scene) is False
     assert is_volume_node_stale(volume) is False
 
 
-def test_observer_does_not_remark_a_row_that_was_recomputed():
-    """After a real edit the baseline moves forward, so a later pipeline
-    event on the same segmentation must not resurrect the stale flag the
-    recompute just cleared.
+def test_refresh_clears_a_stale_marking_once_the_content_matches_again():
+    """Covers both a recompute and a scene saved with wrongly-set flags by an
+    earlier version — the row must come back clean rather than stay stuck.
     """
     from ZebrafishEmbryoAnalyzerLib.mrml import (
-        is_volume_node_stale, clear_volume_node_stale,
+        refresh_stale_flag, mark_volume_node_stale, is_volume_node_stale,
+        ATTR_EXCLUDE,
     )
-
     seg_node = _FakeSegmentationNode()
-    _self, volume = _armed_observer(seg_node)
-
-    seg_node.paint()
+    volume, scene = _analysed_row(seg_node)
+    mark_volume_node_stale(volume)
     assert is_volume_node_stale(volume) is True
-    clear_volume_node_stale(volume)          # what a recompute does
 
-    seg_node.Modified()
-
+    assert refresh_stale_flag(volume, scene) is False
     assert is_volume_node_stale(volume) is False
+    assert volume.GetAttribute(ATTR_EXCLUDE) == "false"
 
 
-def test_observer_does_not_mark_stale_without_readable_labelmaps():
-    """"Cannot tell" must never mean "changed" — a segmentation whose
-    representation is unavailable must leave the row alone rather than
-    marking it, which is how the reload storm started.
+def test_refresh_preserves_a_genuine_user_exclusion():
+    """A hand-excluded row carries no stale-error signature, so the clear path
+    must leave it excluded.
     """
-    from ZebrafishEmbryoAnalyzerLib.mrml import is_volume_node_stale
-
+    from ZebrafishEmbryoAnalyzerLib.mrml import refresh_stale_flag, ATTR_EXCLUDE
     seg_node = _FakeSegmentationNode()
-    _self, volume = _armed_observer(seg_node)
-    # Drop the representation, then fire an event.
-    seg_node.GetSegmentation()._segments["Body"]._labelmap = None
+    volume, scene = _analysed_row(seg_node)
+    volume.SetAttribute(ATTR_EXCLUDE, "true")
 
-    seg_node.GetSegmentation().InvokeEvent(SEGMENT_MODIFIED)
+    refresh_stale_flag(volume, scene)
 
+    assert volume.GetAttribute(ATTR_EXCLUDE) == "true"
+
+
+def test_refresh_abstains_without_a_recorded_digest():
+    """An unanalysed row, or one from a scene written before this attribute
+    existed, must keep whatever flag it has instead of being guessed at.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import refresh_stale_flag
+    _stub_labelmap_reader()
+    seg_node = _FakeSegmentationNode()
+    volume = _make_attr_node("embryo.tif", seg_id="seg_1")   # no hash recorded
+    scene = _FakeScene({"seg_1": seg_node})
+
+    assert refresh_stale_flag(volume, scene) is False
+    assert volume.GetAttribute("ZebrafishAnalysis.stale") is None
+
+
+def test_refresh_abstains_when_the_segmentation_is_gone():
+    """Data module is ground truth: a deleted segmentation must not be read as
+    an edit.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import refresh_stale_flag, is_volume_node_stale
+    seg_node = _FakeSegmentationNode()
+    volume, _scene = _analysed_row(seg_node)
+
+    assert refresh_stale_flag(volume, _FakeScene({})) is False
     assert is_volume_node_stale(volume) is False
+
+
 
 
 # --------------------------------------------------------------------------- #

@@ -2044,15 +2044,10 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             self._current_detail_idx = 0
             self._detail.show_result(0, self._results)
         self._tabs.setCurrentIndex(0)
-        # Issue #42: wire ModifiedEvent observers on the per-image
-        # segmentation nodes so a later edit in the Segment Editor
-        # marks the row stale. Idempotent — removes previous tags first.
-        try:
-            self._logic.setup_segmentation_staleness_observers()
-        except Exception:
-            logging.exception(
-                "ZebrafishEmbryoAnalyzer: setup_segmentation_staleness_observers failed"
-            )
+        # Issue #81: no observer wiring here any more. ``apply_analysis_to_volume_node``
+        # has just stamped each row's content digest, so every row is by
+        # definition current; staleness is re-evaluated against those digests
+        # on the next module entry.
         # Refresh the detail-button state — newly-built rows are by
         # definition not stale, so the button stays hidden.
         self._refresh_detail_recompute_button()
