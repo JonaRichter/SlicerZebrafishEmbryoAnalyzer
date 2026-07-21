@@ -373,3 +373,92 @@ def test_analyse_images_error_field_contains_message(tmp_path, synthetic_fish_im
     assert len(results) == 1
     assert results[0]["error"] is not None
     assert "GPU out of memory" in results[0]["error"]
+
+
+# ---------------------------------------------------------------------------
+# Issue #82 — recompute works from pixels the caller already holds
+# ---------------------------------------------------------------------------
+
+def test_preloaded_image_is_segmented_without_touching_the_filesystem(
+    synthetic_fish_image, mock_model_paths,
+):
+    """A caller that already has the pixels must be able to analyse them with
+    no file behind the name.
+
+    This is the recompute-from-a-volume-node case. It used to read the pixels,
+    discard them, and pass a sentinel string in the ``image_paths`` position;
+    the analysis then tried to open that as a file and every recompute failed
+    with "Could not read image.". The path below deliberately does not exist —
+    if anything reaches the filesystem, this test fails.
+    """
+    from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
+
+    dummy_mask = np.zeros((256, 256), dtype=np.uint8)
+    name = "fish_000001_from_a_volume_node.jpg"   # no such file anywhere
+
+    with patch("ZebrafishEmbryoAnalyzerCore.seg.segmentation_pipeline") as mock_pipe, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.load_model"), \
+         patch("ZebrafishEmbryoAnalyzerCore.length.tube_length_border2border") as mock_len, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.classification_curvature") as mock_curv, \
+         patch("ZebrafishEmbryoAnalyzerLib.logic.shutil.copy2") as mock_copy:
+
+        mock_pipe.return_value = (
+            [synthetic_fish_image[:, :, ::-1]],
+            [dummy_mask],
+            [dummy_mask.copy()],
+        )
+        mock_len.return_value = (1200.0, 1100.0, np.zeros((2, 2)), ((0, 0), (1, 1)))
+        mock_cls = MagicMock()
+        mock_cls.item.return_value = 2
+        mock_curv.return_value = (None, mock_cls)
+
+        results = analyse_images(
+            [name],
+            {"length": True, "curvature": True, "ratio": True,
+             "eyes": False, "hitl": False, "threshold": 0.85, "um_per_px": 22.99},
+            preloaded_images={name: synthetic_fish_image},
+        )
+
+    assert len(results) == 1
+    assert not results[0].get("error"), results[0].get("error")
+    mock_copy.assert_not_called()
+
+    handed_over = mock_pipe.call_args.kwargs.get("preloaded_images")
+    assert handed_over is not None, "pipeline must receive the pixels directly"
+    assert len(handed_over) == 1
+    assert handed_over[0].shape == synthetic_fish_image.shape
+
+
+def test_paths_without_preloaded_pixels_still_read_from_disk(
+    tmp_path, synthetic_fish_image, mock_model_paths,
+):
+    """The preloaded path is opt-in — Run Analysis must keep reading files."""
+    import cv2
+    from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
+
+    img_path = str(tmp_path / "fish.png")
+    cv2.imwrite(img_path, synthetic_fish_image)
+    dummy_mask = np.zeros((256, 256), dtype=np.uint8)
+
+    with patch("ZebrafishEmbryoAnalyzerCore.seg.segmentation_pipeline") as mock_pipe, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.load_model"), \
+         patch("ZebrafishEmbryoAnalyzerCore.length.tube_length_border2border") as mock_len, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.classification_curvature") as mock_curv:
+
+        mock_pipe.return_value = (
+            [synthetic_fish_image[:, :, ::-1]],
+            [dummy_mask],
+            [dummy_mask.copy()],
+        )
+        mock_len.return_value = (1200.0, 1100.0, np.zeros((2, 2)), ((0, 0), (1, 1)))
+        mock_cls = MagicMock()
+        mock_cls.item.return_value = 2
+        mock_curv.return_value = (None, mock_cls)
+
+        analyse_images(
+            [img_path],
+            {"length": True, "curvature": True, "ratio": True,
+             "eyes": False, "hitl": False, "threshold": 0.85, "um_per_px": 22.99},
+        )
+
+    assert mock_pipe.call_args.kwargs.get("preloaded_images") is None

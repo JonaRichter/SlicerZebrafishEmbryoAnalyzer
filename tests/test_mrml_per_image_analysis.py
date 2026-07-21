@@ -2818,3 +2818,31 @@ def test_populate_row_overlays_leaves_partial_scene_state_partial():
     assert "eye_mask" not in row  # Eye segment missing → no key
     assert "path_points" in row
     assert "straight_line_points" in row
+
+
+def test_recompute_hands_pixels_to_analyse_images_instead_of_a_path():
+    """Issue #82: ``recompute_metrics_for_volume_node`` must pass the pixel
+    data it reads, and no sentinel string may survive anywhere.
+
+    Source-level scan: exercising the method needs the Slicer runtime, and the
+    defect it guards against was precisely that the surrounding tests stubbed
+    ``analyse_images`` wholesale and never looked at what was handed to it.
+    """
+    src = open(
+        os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "ZebrafishEmbryoAnalyzer", "ZebrafishEmbryoAnalyzer.py",
+        )
+    ).read()
+
+    idx = src.find("def recompute_metrics_for_volume_node")
+    assert idx >= 0
+    end = src.find("\n    def ", idx + 1)
+    body = src[idx:end if end != -1 else len(src)]
+
+    assert "preloaded_images=" in body, (
+        "recompute must hand the pixels to analyse_images"
+    )
+    assert '"__volume_node__"' not in src, (
+        "the sentinel path must not come back — nothing consumes it"
+    )

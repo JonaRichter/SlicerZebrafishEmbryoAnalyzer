@@ -888,11 +888,13 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
         """Issue #42: rerun the segmentation→measurement pipeline for one
         volume node and update its attributes + segmentation node.
 
-        Synchronous on the Slicer main thread (no threading — same
-        pattern as the Run Analysis button). Reads pixel data from the
-        volume node (no original-file dependency), runs the same
-        ``analyse_images`` → ``apply_analysis_to_volume_node`` chain that
-        #39 uses, then clears the stale flag.
+        Synchronous on the Slicer main thread (no threading — same pattern as
+        the Run Analysis button). Reads the pixel data from the volume node and
+        passes it to ``analyse_images`` via ``preloaded_images``, so the
+        original file does not have to exist — the scene may have been saved on
+        another machine. Runs the same ``analyse_images`` →
+        ``apply_analysis_to_volume_node`` chain that #39 uses, then clears the
+        stale flag.
 
         Returns the updated result dict (filename + new metric fields),
         or ``None`` if the recompute fails (e.g. model unavailable). The
@@ -912,14 +914,22 @@ class ZebrafishEmbryoAnalyzerLogic(ScriptedLoadableModuleLogic):
         if px is None:
             return None
         params = self._recompute_params()
+        # Issue #82: hand the pixels we just read to the analysis instead of a
+        # path. The previous code read them and then passed a fixed sentinel
+        # string in the image_paths position that nothing consumed — the
+        # analysis tried to open it as a file, so every recompute failed with
+        # "Could not read image.". The name below is only a label for the
+        # result dict; no file is opened.
+        name = volume_node.GetName() if hasattr(volume_node, "GetName") else "image"
         try:
             from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
             results = analyse_images(
-                ["__volume_node__"],
+                [name],
                 params,
                 per_image_callback=lambda _path, r: apply_analysis_to_volume_node(
                     r, volume_node, slicer.mrmlScene, params.get("um_per_px", 22.99)
                 ),
+                preloaded_images={name: px},
             )
         except Exception:
             logging.exception(

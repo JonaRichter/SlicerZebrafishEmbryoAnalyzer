@@ -182,7 +182,8 @@ def detect_scalebar(image_path: str, label_um: float | None = None,
 
 def analyse_images(image_paths: list, params: dict,
                    progress_callback=None,
-                   per_image_callback=None) -> list:
+                   per_image_callback=None,
+                   preloaded_images: dict = None) -> list:
     """
     Run segmentation + measurements on a list of image paths.
 
@@ -200,6 +201,13 @@ def analyse_images(image_paths: list, params: dict,
     progress_callback : callable(current, total) | None
         Called once per image with ``(current, total)`` AFTER the result is
         appended. Used to drive progress UI.
+    preloaded_images : dict[str, ndarray] | None
+        Maps an entry of ``image_paths`` to an already-decoded uint8 RGB array.
+        Entries present here are segmented straight from memory and their path
+        is never touched, so the caller does not need the original file to
+        still exist — the recompute-from-a-volume-node case (issue #82). Same
+        opt-in shape as ``detect_scalebar``'s ``img_rgb``; paths not listed
+        keep the normal read-from-disk behaviour.
     per_image_callback : callable(image_path, result_dict) | None
         Called once per image with the fully-populated result dict BEFORE
         progress_callback fires. Used by the MRML streaming layer
@@ -289,13 +297,23 @@ def analyse_images(image_paths: list, params: dict,
         r = _empty_result(image_path)
 
         try:
-            # Segment this single image — model already cached, no disk reload
-            with tempfile.TemporaryDirectory() as _tmp:
-                # copy2 instead of symlink: os.symlink requires admin rights on
-                # Windows; copy2 is portable and the temp dir is cleaned up
-                # immediately after segmentation_pipeline returns.
-                shutil.copy2(image_path, os.path.join(_tmp, os.path.basename(image_path)))
-                seg_result = segmentation_pipeline(_tmp, **_seg_kwargs)
+            preloaded = (preloaded_images or {}).get(image_path)
+            if preloaded is not None:
+                # Pixels already in hand — hand them to the pipeline directly.
+                # Nothing is read from ``image_path``, which in this case is a
+                # display name rather than a file that has to exist (issue #82).
+                seg_result = segmentation_pipeline(
+                    preloaded_images=[cv2.cvtColor(preloaded, cv2.COLOR_RGB2BGR)],
+                    **_seg_kwargs
+                )
+            else:
+                # Segment this single image — model already cached, no disk reload
+                with tempfile.TemporaryDirectory() as _tmp:
+                    # copy2 instead of symlink: os.symlink requires admin rights on
+                    # Windows; copy2 is portable and the temp dir is cleaned up
+                    # immediately after segmentation_pipeline returns.
+                    shutil.copy2(image_path, os.path.join(_tmp, os.path.basename(image_path)))
+                    seg_result = segmentation_pipeline(_tmp, **_seg_kwargs)
 
             if include_eyes and len(seg_result) == 4:
                 originals_bgr, masks, growns, eyes_list = seg_result
