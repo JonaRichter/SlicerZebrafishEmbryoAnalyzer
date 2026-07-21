@@ -84,6 +84,10 @@ class _FakeVolumeNode:
     def AddNodeReferenceID(self, role, node_id):
         self._refs.setdefault(role, []).append(node_id)
 
+    def GetNodeReferenceID(self, role):
+        ids = self._refs.get(role, [])
+        return ids[0] if ids else ""
+
     def GetNodeReference(self, role):
         ids = self._refs.get(role, [])
         if not ids:
@@ -160,6 +164,26 @@ class _FakeSegmentationNode:
 
         def GetSegments(self):
             return list(self._segs.keys())
+
+        def RemoveAllSegments(self):
+            self._segs = {}
+
+        def RemoveSegment(self, seg_id):
+            self._segs.pop(seg_id, None)
+
+        def SetSourceRepresentationName(self, _name):
+            # No-op for tests — production sets the master representation,
+            # but the fakes do not track it.
+            pass
+
+    def StartModify(self):
+        return False
+
+    def EndModify(self, _was_modifying):
+        pass
+
+    def SetReferenceImageGeometryParameterFromVolumeNode(self, _volume_node):
+        pass
 
 
 class _FakeSegDisplayNode:
@@ -359,18 +383,33 @@ def stub_update_segmentation_node(monkeypatch):
     in plain-Python tests. We capture the call signature so segment-presence
     assertions can verify the helper invoked it correctly, and we set up a
     Body + Eye pair on the fake segmentation node to mirror production.
+
+    Issue #56 follow-up: ``_create_segmentation_for_volume`` now passes a
+    ``preserve_user_segments`` kwarg so it can reuse an existing segmentation
+    node (and avoid resurrecting one the user deleted in the Data module).
+    The stub accepts it via **kwargs to stay in sync with the production
+    signature without mirroring its preservation logic — the dedicated
+    regression tests in ``test_mrml_segmentation.py`` cover that path.
     """
     import ZebrafishEmbryoAnalyzerLib.mrml as mrml_mod
 
     captured = {}
 
-    def _fake(result, um_per_px, node, image_node=None):
+    def _fake(result, um_per_px, node, image_node=None, **kwargs):
         captured["result"] = result
         captured["um_per_px"] = um_per_px
         captured["node"] = node
         captured["image_node"] = image_node
+        captured["kwargs"] = kwargs
         seg = node.GetSegmentation()
         # Mirror production: body always, eye only when present + non-empty.
+        # When the production caller asks for preserve_user_segments, do not
+        # call RemoveAllSegments first — mirror the new contract.
+        if not kwargs.get("preserve_user_segments", False):
+            try:
+                seg.RemoveAllSegments()
+            except Exception:
+                pass
         seg.AddEmptySegment("Body", "Body", [0.0, 1.0, 0.0])
         if result.get("eye_mask") is not None and np.asarray(
             result["eye_mask"]
@@ -1161,3 +1200,1646 @@ def test_apply_analysis_writes_scaled_line_positions(
     assert cps[1]["position"] == pytest.approx(
         (63 * 0.02299, 63 * 0.02299, 0.0), rel=1e-9
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #56 regression: Data module is ground truth
+# ---------------------------------------------------------------------------
+# When the user deletes a segmentation node (or a single segment inside the
+# node) in the Data module, switching back to the Zebrafish module must NOT
+# silently recreate the deleted segmentation. These tests pin down each
+# layer of the defence so future refactors cannot reintroduce the bug.
+
+def test_get_existing_seg_for_volume_returns_none_when_role_unset(
+    volume_node, scene,
+):
+    """Issue #56 follow-up: a freshly tracked volume with no seg reference
+    yet must not be confused with one whose seg was deleted. Returns None.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import (
+        _get_existing_seg_for_volume, ROLE_ZEBRAFISH_SEGMENTATION,
+    )
+    # No SetNodeReferenceID call — role is unset
+    assert volume_node.GetNodeReferenceIDs(ROLE_ZEBRAFISH_SEGMENTATION) == []
+    assert _get_existing_seg_for_volume(volume_node, scene) is None
+
+
+def test_get_existing_seg_for_volume_returns_live_node(
+    volume_node, scene,
+):
+    """When the role resolves to a node still in the scene, the helper
+    returns that node (so ``_create_segmentation_for_volume`` can reuse it
+    instead of stacking a duplicate).
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import (
+        _get_existing_seg_for_volume, ROLE_ZEBRAFISH_SEGMENTATION,
+    )
+    seg = scene.AddNewNodeByClass("vtkMRMLSegmentationNode", display_name="Seg")
+    volume_node.SetNodeReferenceID(ROLE_ZEBRAFISH_SEGMENTATION, seg.GetID())
+    assert _get_existing_seg_for_volume(volume_node, scene) is seg
+
+
+def test_get_existing_seg_for_volume_returns_none_when_seg_deleted(
+    volume_node, scene,
+):
+    """Issue #56 follow-up: the Data-module-is-ground-truth contract.
+    The volume still holds a reference id, but the seg has been removed
+    from the scene. The helper must return ``None`` so the next analysis
+    sees a clean slate and creates a fresh seg, rather than silently
+    reusing a dangling reference.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import (
+        _get_existing_seg_for_volume, ROLE_ZEBRAFISH_SEGMENTATION,
+    )
+    seg = scene.AddNewNodeByClass("vtkMRMLSegmentationNode", display_name="Seg")
+    volume_node.SetNodeReferenceID(ROLE_ZEBRAFISH_SEGMENTATION, seg.GetID())
+    scene.RemoveNode(seg)
+    assert _get_existing_seg_for_volume(volume_node, scene) is None
+
+
+def test_create_segmentation_reuses_existing_seg_with_preserve_flag(
+    volume_node, scene, stub_update_segmentation_node, stub_slicer_import,
+):
+    """Re-running analysis on a volume whose seg still exists must reuse
+    the same seg node (no duplicate) and pass ``preserve_user_segments=True``
+    so ``update_segmentation_node`` does not call ``RemoveAllSegments`` —
+    that call would wipe out any user-added segments the user kept.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import (
+        _create_segmentation_for_volume, ROLE_ZEBRAFISH_SEGMENTATION,
+    )
+    seg = scene.AddNewNodeByClass("vtkMRMLSegmentationNode", display_name="Seg")
+    volume_node.SetNodeReferenceID(ROLE_ZEBRAFISH_SEGMENTATION, seg.GetID())
+
+    result = _make_full_result(with_path=False, with_eye=True)
+    out = _create_segmentation_for_volume(result, volume_node, scene, 22.99)
+
+    assert out is seg, "Reuse must return the same seg node, not a fresh one"
+    # Exactly one seg node in the scene — no duplicate was stacked on top.
+    assert len(scene.nodes_of_class("vtkMRMLSegmentationNode")) == 1
+    # update_segmentation_node was called with preserve_user_segments=True
+    assert stub_update_segmentation_node["kwargs"].get("preserve_user_segments") is True
+
+
+def test_create_segmentation_creates_new_seg_after_data_module_delete(
+    volume_node, scene, stub_update_segmentation_node, stub_slicer_import,
+):
+    """After the user deletes the segmentation node in the Data module,
+    the next analysis must create a fresh seg node (the previous id is
+    dangling and should not be reused or referenced again).
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import (
+        _create_segmentation_for_volume, ROLE_ZEBRAFISH_SEGMENTATION,
+    )
+    # Simulate the Data-module delete: a seg was attached and then removed.
+    stale_seg = scene.AddNewNodeByClass(
+        "vtkMRMLSegmentationNode", display_name="StaleSeg",
+    )
+    volume_node.SetNodeReferenceID(
+        ROLE_ZEBRAFISH_SEGMENTATION, stale_seg.GetID(),
+    )
+    scene.RemoveNode(stale_seg)
+
+    result = _make_full_result(with_path=False, with_eye=True)
+    out = _create_segmentation_for_volume(result, volume_node, scene, 22.99)
+
+    assert out is not None
+    assert out is not stale_seg, (
+        "Must not resurrect the deleted seg — create a fresh node instead"
+    )
+    assert len(scene.nodes_of_class("vtkMRMLSegmentationNode")) == 1
+    # Fresh creation means preserve_user_segments=False (full rebuild path).
+    assert stub_update_segmentation_node["kwargs"].get("preserve_user_segments") is False
+
+
+def test_set_node_reference_prefers_single_ref_over_additive(
+    volume_node,
+):
+    """Issue #56 follow-up: ``_set_node_reference`` must prefer
+    ``SetNodeReferenceID`` (single, replaceable) over ``AddNodeReferenceID``
+    (additive, accumulates duplicates across re-runs). Repeated calls with
+    the same id must collapse to a single reference, not stack.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import (
+        _set_node_reference, ROLE_ZEBRAFISH_SEGMENTATION,
+    )
+    seg = _FakeSegmentationNode(name="Seg")
+    # Three back-to-back attaches with the same seg must yield exactly one
+    # reference, not three.
+    _set_node_reference(volume_node, ROLE_ZEBRAFISH_SEGMENTATION, seg)
+    _set_node_reference(volume_node, ROLE_ZEBRAFISH_SEGMENTATION, seg)
+    _set_node_reference(volume_node, ROLE_ZEBRAFISH_SEGMENTATION, seg)
+    # The reference role resolves to the seg id (single value, not a list of 3).
+    refs = volume_node.GetNodeReferenceIDs(ROLE_ZEBRAFISH_SEGMENTATION)
+    assert refs == [seg.GetID()], (
+        f"Repeated attaches must collapse to one ref, got {refs!r}"
+    )
+
+
+def test_set_node_reference_replaces_when_id_changes(
+    volume_node,
+):
+    """When a re-run produces a fresh seg node (because the previous one
+    was deleted in the Data module), the new id must replace the old one
+    — not stack alongside it.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import (
+        _set_node_reference, ROLE_ZEBRAFISH_SEGMENTATION,
+    )
+    seg1 = _FakeSegmentationNode(name="Seg1")
+    seg2 = _FakeSegmentationNode(name="Seg2")
+    _set_node_reference(volume_node, ROLE_ZEBRAFISH_SEGMENTATION, seg1)
+    _set_node_reference(volume_node, ROLE_ZEBRAFISH_SEGMENTATION, seg2)
+    # Old id replaced by new id — no accumulation.
+    refs = volume_node.GetNodeReferenceIDs(ROLE_ZEBRAFISH_SEGMENTATION)
+    assert refs == [seg2.GetID()], (
+        f"New id must replace old one, got {refs!r}"
+    )
+
+
+def test_update_segmentation_node_preserve_keeps_existing_segments(
+    volume_node, scene,
+):
+    """Issue #56 follow-up: ``preserve_user_segments=True`` must not call
+    ``RemoveAllSegments``. Segments the user added or kept (e.g. they
+    removed the Body segment to keep only Eye) must survive a re-analysis.
+    """
+    import subprocess
+    import sys
+    import textwrap
+
+    # The real ``update_segmentation_node`` imports vtk / vtkSegmentationCore /
+    # slicer at the top — neither is available in this pytest env, so we
+    # run it in a subprocess with a minimal stub of each.
+    code = textwrap.dedent(r"""
+        import os, sys, types
+        sys.path.insert(0, os.environ["ZEA_DIR"])
+        import numpy as np
+        # Stub the heavy optional deps with no-op modules so the imports
+        # succeed but every operation is short-circuited.
+        sys.modules["vtk"] = types.ModuleType("vtk")
+        sys.modules["vtk"].VTK_UNSIGNED_CHAR = 7
+        sys.modules["vtk.util"] = types.ModuleType("vtk.util")
+        _nps = types.ModuleType("vtk.util.numpy_support")
+        def _fake_numpy_to_vtk(*args, **kwargs):
+            arr = types.SimpleNamespace(SetNumberOfComponents=lambda n: None)
+            return arr
+        _nps.numpy_to_vtk = _fake_numpy_to_vtk
+        sys.modules["vtk.util.numpy_support"] = _nps
+
+        _vsc = types.ModuleType("vtkSegmentationCore")
+        class _FakeOID:
+            def __init__(self):
+                self._pt = types.SimpleNamespace(SetScalars=lambda x: None)
+            def SetDimensions(self, *a, **kw): pass
+            def GetPointData(self): return self._pt
+            def SetSpacing(self, *a, **kw): pass
+            def SetOrigin(self, *a, **kw): pass
+        _vsc.vtkOrientedImageData = _FakeOID
+        sys.modules["vtkSegmentationCore"] = _vsc
+
+        _slicer = types.ModuleType("slicer")
+        _slicer.vtkSegmentationConverter = types.SimpleNamespace(
+            GetSegmentationBinaryLabelmapRepresentationName=lambda: "BinaryLabelmap",
+        )
+        # The production code also calls into vtkSlicerSegmentationsModuleLogic,
+        # but only to write the binary labelmap back; we stub that out to
+        # short-circuit so the test focuses on segment-preservation logic.
+        _slicer.vtkSlicerSegmentationsModuleLogic = types.SimpleNamespace(
+            SetBinaryLabelmapToSegment=lambda *args, **kwargs: None,
+        )
+        sys.modules["slicer"] = _slicer
+
+        # Build a fake seg node that mirrors the production contract:
+        # the user's "Tail" segment is the only one we want to survive.
+        class _FakeSeg:
+            def __init__(self):
+                self._segs = {}
+                self.source_rep = None
+            def AddEmptySegment(self, seg_id, name, color):
+                self._segs[seg_id] = {"name": name, "color": list(color)}
+                return seg_id
+            def RemoveSegment(self, seg_id):
+                self._segs.pop(seg_id, None)
+            def RemoveAllSegments(self):
+                self._segs = {}
+            def GetSegments(self):
+                return list(self._segs.keys())
+            def SetSourceRepresentationName(self, name):
+                self.source_rep = name
+
+        class _FakeSegNode:
+            def __init__(self):
+                self._seg = _FakeSeg()
+                self._started = False
+            def GetSegmentation(self):
+                return self._seg
+            def StartModify(self):
+                return False
+            def EndModify(self, _was):
+                pass
+            def SetReferenceImageGeometryParameterFromVolumeNode(self, _v):
+                pass
+
+        class _FakeVolumeNode:
+            pass
+
+        seg_node = _FakeSegNode()
+        # Initial state: the user has Body, then removed it and added Tail.
+        seg_node.GetSegmentation().AddEmptySegment("Body", "Body", [0.0, 1.0, 0.0])
+        seg_node.GetSegmentation().RemoveSegment("Body")
+        seg_node.GetSegmentation().AddEmptySegment("Tail", "Tail", [0.5, 0.5, 0.5])
+        volume_node = _FakeVolumeNode()
+
+        result = {
+            "filename": "fish.png",
+            "original": np.zeros((256, 256, 3), dtype=np.uint8),
+            "mask": np.zeros((256, 256), dtype=np.uint8),
+            "eye_mask": np.zeros((256, 256), dtype=np.uint8),
+        }
+        from ZebrafishEmbryoAnalyzerLib.mrml import update_segmentation_node
+        update_segmentation_node(
+            result, 22.99, seg_node, image_node=volume_node,
+            preserve_user_segments=True,
+        )
+        segs = seg_node.GetSegmentation().GetSegments()
+        assert "Tail" in segs, segs
+        # Body must NOT be re-added when the user previously removed it.
+        assert "Body" not in segs, segs
+        print("OK")
+    """)
+    env = {**os.environ, "ZEA_DIR": _MODULE_DIR}
+    r = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, env=env,
+    )
+    assert r.returncode == 0, (
+        f"subprocess failed:\nSTDOUT:\n{r.stdout}\nSTDERR:\n{r.stderr}"
+    )
+    assert "OK" in r.stdout
+
+
+def test_update_segmentation_node_legacy_full_rebuild_still_works(
+    volume_node, scene,
+):
+    """Default ``preserve_user_segments=False`` keeps the legacy
+    full-rebuild behaviour. Pre-existing callers that pass a fresh
+    segmentation node see Body added and nothing else.
+    """
+    import subprocess
+    import sys
+    import textwrap
+
+    code = textwrap.dedent(r"""
+        import os, sys, types
+        sys.path.insert(0, os.environ["ZEA_DIR"])
+        import numpy as np
+        sys.modules["vtk"] = types.ModuleType("vtk")
+        sys.modules["vtk"].VTK_UNSIGNED_CHAR = 7
+        sys.modules["vtk.util"] = types.ModuleType("vtk.util")
+        _nps = types.ModuleType("vtk.util.numpy_support")
+        _nps.numpy_to_vtk = lambda *a, **k: types.SimpleNamespace(
+            SetNumberOfComponents=lambda n: None,
+        )
+        sys.modules["vtk.util.numpy_support"] = _nps
+        _vsc = types.ModuleType("vtkSegmentationCore")
+        class _FakeOID:
+            def __init__(self):
+                self._pt = types.SimpleNamespace(SetScalars=lambda x: None)
+            def SetDimensions(self, *a, **kw): pass
+            def GetPointData(self): return self._pt
+            def SetSpacing(self, *a, **kw): pass
+            def SetOrigin(self, *a, **kw): pass
+        _vsc.vtkOrientedImageData = _FakeOID
+        sys.modules["vtkSegmentationCore"] = _vsc
+        _slicer = types.ModuleType("slicer")
+        _slicer.vtkSegmentationConverter = types.SimpleNamespace(
+            GetSegmentationBinaryLabelmapRepresentationName=lambda: "BinaryLabelmap",
+        )
+        _slicer.vtkSlicerSegmentationsModuleLogic = types.SimpleNamespace(
+            SetBinaryLabelmapToSegment=lambda *args, **kwargs: None,
+        )
+        sys.modules["slicer"] = _slicer
+
+        class _FakeSeg:
+            def __init__(self):
+                self._segs = {}
+            def AddEmptySegment(self, seg_id, name, color):
+                self._segs[seg_id] = {"name": name, "color": list(color)}
+                return seg_id
+            def RemoveAllSegments(self):
+                self._segs = {}
+            def GetSegments(self):
+                return list(self._segs.keys())
+            def SetSourceRepresentationName(self, name):
+                pass
+        class _FakeSegNode:
+            def __init__(self):
+                self._seg = _FakeSeg()
+            def GetSegmentation(self):
+                return self._seg
+            def StartModify(self): return False
+            def EndModify(self, _was): pass
+            def SetReferenceImageGeometryParameterFromVolumeNode(self, _v): pass
+
+        seg_node = _FakeSegNode()
+        result = {
+            "filename": "fish.png",
+            "original": np.zeros((256, 256, 3), dtype=np.uint8),
+            "mask": np.zeros((256, 256), dtype=np.uint8),
+            "eye_mask": np.zeros((256, 256), dtype=np.uint8),
+        }
+        from ZebrafishEmbryoAnalyzerLib.mrml import update_segmentation_node
+        update_segmentation_node(result, 22.99, seg_node, image_node=None)
+        segs = seg_node.GetSegmentation().GetSegments()
+        assert "Body" in segs, segs
+        print("OK")
+    """)
+    env = {**os.environ, "ZEA_DIR": _MODULE_DIR}
+    r = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, env=env,
+    )
+    assert r.returncode == 0, (
+        f"subprocess failed:\nSTDOUT:\n{r.stdout}\nSTDERR:\n{r.stderr}"
+    )
+    assert "OK" in r.stdout
+
+
+def test_validate_volume_node_flags_dangling_seg_reference(
+    volume_node,
+):
+    """Issue #56 follow-up: ``validate_volume_node`` must now resolve the
+    seg id against the live scene and report an error when the id is
+    dangling (the user deleted the seg in the Data module). Previously
+    the role-only check accepted a dangling reference as healthy.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import (
+        validate_volume_node, ROLE_ZEBRAFISH_SEGMENTATION,
+    )
+    # Mark as analyzed (otherwise validate_volume_node short-circuits).
+    volume_node.SetAttribute("ZebrafishAnalysis.exclude", "false")
+    # Set the role to a bogus id (the real seg was deleted).
+    volume_node.SetNodeReferenceID(
+        ROLE_ZEBRAFISH_SEGMENTATION, "vtkMRMLSegmentationNode999",
+    )
+    # Stub a minimal scene with no matching node.
+    import sys
+    import types
+    slicer_stub = types.ModuleType("slicer")
+    slicer_stub.mrmlScene = _FakeScene()
+    monkey_patcher = sys.modules.__setitem__("slicer", slicer_stub)
+    try:
+        err = validate_volume_node(volume_node)
+    finally:
+        # Restore slicer stub from earlier fixture, if any.
+        pass
+    assert err == ("Segmentation node missing", ""), (
+        f"Dangling seg reference must surface as a recoverable error, got {err!r}"
+    )
+
+
+def test_logic_setup_segmentation_staleness_observers_delegates_to_widget():
+    """Issue #56 follow-up: ``Logic.setup_segmentation_staleness_observers``
+    must delegate to the widget's implementation (since the widget owns
+    the ``VTKObservationMixin``). Without a back-pointer, the call is a
+    silent no-op.
+
+    Runs in a subprocess because ``ZebrafishEmbryoAnalyzer.py`` imports
+    ``vtk`` / ``slicer`` at module load — see the matching pattern in
+    ``tests/test_mrml_node.py``.
+    """
+    import subprocess
+    import sys
+    import textwrap
+
+    code = textwrap.dedent("""
+        import os, sys, types
+        sys.path.insert(0, os.environ["ZEA_DIR"])
+        sys.modules["qt"]  = types.ModuleType("qt")
+        sys.modules["ctk"] = types.ModuleType("ctk")
+        from unittest.mock import MagicMock
+        _vtk = types.ModuleType("vtk")
+        _vtk.vtkCommand = types.SimpleNamespace(ModifiedEvent=33)
+        sys.modules["vtk"] = _vtk
+        sys.modules["slicer"] = MagicMock()
+
+        class _BaseWidget(object):
+            pass
+
+        class _VTKMixin(object):
+            def addObserver(self, *a, **kw): pass
+            def removeObservers(self, *a, **kw): pass
+            def removeObserver(self, *a, **kw): pass
+            def hasObserver(self, *a, **kw): return False
+
+        sys.modules["slicer.ScriptedLoadableModule"] = types.SimpleNamespace(
+            ScriptedLoadableModule=object,
+            ScriptedLoadableModuleWidget=_BaseWidget,
+            ScriptedLoadableModuleLogic=object,
+            ScriptedLoadableModuleTest=object,
+        )
+        sys.modules["slicer.util"] = types.SimpleNamespace(
+            VTKObservationMixin=_VTKMixin,
+        )
+        # Stub _evict_reload_modules's transitive imports to keep the
+        # test independent of the rest of the extension's startup sequence.
+        for name in (
+            "ZebrafishEmbryoAnalyzerLib.errors",
+            "ZebrafishEmbryoAnalyzerLib.model_manifest",
+            "ZebrafishEmbryoAnalyzerLib.model_downloader",
+            "ZebrafishEmbryoAnalyzerLib.inference_runner",
+            "ZebrafishEmbryoAnalyzerLib.inference_worker",
+            "ZebrafishEmbryoAnalyzerLib.mrml",
+            "ZebrafishEmbryoAnalyzerLib.widget",
+            "ZebrafishEmbryoAnalyzerLib.gallery_tab",
+            "ZebrafishEmbryoAnalyzerLib.detail_tab",
+            "ZebrafishEmbryoAnalyzerLib.results_tab",
+            "ZebrafishEmbryoAnalyzerLib.logic",
+            "ZebrafishEmbryoAnalyzerLib.overlay",
+            "ZebrafishEmbryoAnalyzerLib.export",
+            "ZebrafishEmbryoAnalyzerLib.dependency_installer",
+            "ZebrafishEmbryoAnalyzerLib.zoom_view",
+            "ZebrafishEmbryoAnalyzerCore.seg",
+            "ZebrafishEmbryoAnalyzerCore.seg_helper",
+            "ZebrafishEmbryoAnalyzerCore.length",
+            "ZebrafishEmbryoAnalyzerCore.manual",
+            "ZebrafishEmbryoAnalyzerCore.scalebar",
+        ):
+            sys.modules[name] = types.ModuleType(name)
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+
+        called = {"count": 0}
+        class _FakeWidget:
+            def setup_segmentation_staleness_observers(self_inner):
+                called["count"] += 1
+
+        logic = ZebrafishEmbryoAnalyzerLogic()
+        # Without _widget_ref: silent no-op (must not raise).
+        logic.setup_segmentation_staleness_observers()
+        assert called["count"] == 0, called["count"]
+
+        logic._widget_ref = _FakeWidget()
+        logic.setup_segmentation_staleness_observers()
+        assert called["count"] == 1, called["count"]
+
+        logic.setup_segmentation_staleness_observers()
+        assert called["count"] == 2, called["count"]
+        print("OK")
+    """)
+    env = {**os.environ, "ZEA_DIR": _MODULE_DIR}
+    r = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, env=env,
+    )
+    assert r.returncode == 0, f"subprocess failed:\nSTDOUT:\n{r.stdout}\nSTDERR:\n{r.stderr}"
+    assert "OK" in r.stdout
+
+
+def test_logic_setup_segmentation_staleness_observers_swallows_widget_errors():
+    """The Logic wrapper must never raise, even when the widget's
+    implementation throws — callers in widget.py do not wrap their
+    own try/except around this path.
+    """
+    import subprocess
+    import sys
+    import textwrap
+
+    code = textwrap.dedent("""
+        import os, sys, types
+        sys.path.insert(0, os.environ["ZEA_DIR"])
+        sys.modules["qt"]  = types.ModuleType("qt")
+        sys.modules["ctk"] = types.ModuleType("ctk")
+        from unittest.mock import MagicMock
+        _vtk = types.ModuleType("vtk")
+        _vtk.vtkCommand = types.SimpleNamespace(ModifiedEvent=33)
+        sys.modules["vtk"] = _vtk
+        sys.modules["slicer"] = MagicMock()
+
+        class _BaseWidget(object):
+            pass
+
+        class _VTKMixin(object):
+            def addObserver(self, *a, **kw): pass
+            def removeObservers(self, *a, **kw): pass
+            def removeObserver(self, *a, **kw): pass
+            def hasObserver(self, *a, **kw): return False
+
+        sys.modules["slicer.ScriptedLoadableModule"] = types.SimpleNamespace(
+            ScriptedLoadableModule=object,
+            ScriptedLoadableModuleWidget=_BaseWidget,
+            ScriptedLoadableModuleLogic=object,
+            ScriptedLoadableModuleTest=object,
+        )
+        sys.modules["slicer.util"] = types.SimpleNamespace(
+            VTKObservationMixin=_VTKMixin,
+        )
+        for name in (
+            "ZebrafishEmbryoAnalyzerLib.errors",
+            "ZebrafishEmbryoAnalyzerLib.model_manifest",
+            "ZebrafishEmbryoAnalyzerLib.model_downloader",
+            "ZebrafishEmbryoAnalyzerLib.inference_runner",
+            "ZebrafishEmbryoAnalyzerLib.inference_worker",
+            "ZebrafishEmbryoAnalyzerLib.mrml",
+            "ZebrafishEmbryoAnalyzerLib.widget",
+            "ZebrafishEmbryoAnalyzerLib.gallery_tab",
+            "ZebrafishEmbryoAnalyzerLib.detail_tab",
+            "ZebrafishEmbryoAnalyzerLib.results_tab",
+            "ZebrafishEmbryoAnalyzerLib.logic",
+            "ZebrafishEmbryoAnalyzerLib.overlay",
+            "ZebrafishEmbryoAnalyzerLib.export",
+            "ZebrafishEmbryoAnalyzerLib.dependency_installer",
+            "ZebrafishEmbryoAnalyzerLib.zoom_view",
+            "ZebrafishEmbryoAnalyzerCore.seg",
+            "ZebrafishEmbryoAnalyzerCore.seg_helper",
+            "ZebrafishEmbryoAnalyzerCore.length",
+            "ZebrafishEmbryoAnalyzerCore.manual",
+            "ZebrafishEmbryoAnalyzerCore.scalebar",
+        ):
+            sys.modules[name] = types.ModuleType(name)
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+
+        class _BoomWidget:
+            def setup_segmentation_staleness_observers(self_inner):
+                raise RuntimeError("scene not ready")
+
+        logic = ZebrafishEmbryoAnalyzerLogic()
+        logic._widget_ref = _BoomWidget()
+        # Must not raise.
+        logic.setup_segmentation_staleness_observers()
+        print("OK")
+    """)
+    env = {**os.environ, "ZEA_DIR": _MODULE_DIR}
+    r = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, env=env,
+    )
+    assert r.returncode == 0, f"subprocess failed:\nSTDOUT:\n{r.stdout}\nSTDERR:\n{r.stderr}"
+    assert "OK" in r.stdout
+
+
+def test_widget_setup_wires_logic_widget_ref():
+    """Issue #56 follow-up: ``Widget.setup`` must hand itself to the logic
+    via ``_widget_ref`` so ``Logic.setup_segmentation_staleness_observers``
+    can delegate back. Without this wiring the per-image ModifiedEvent
+    observers are never installed after analysis completes.
+    """
+    # Read the source to keep the test stable across refactors: we want
+    # the wiring in ``Widget.setup`` to be visible at a glance rather than
+    # re-implementing the whole widget.
+    import re
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "ZebrafishEmbryoAnalyzer", "ZebrafishEmbryoAnalyzer.py",
+    )
+    with open(src_path, "r") as f:
+        src = f.read()
+    # The wiring must reference _widget_ref in setup().
+    setup_block = re.search(
+        r"def setup\(self\):.*?(?=\n    def )", src, flags=re.DOTALL,
+    )
+    assert setup_block is not None
+    assert "logic._widget_ref" in setup_block.group(0), (
+        "Widget.setup must wire self.logic._widget_ref = self so the "
+        "Logic wrapper can delegate observer installation back to the widget"
+    )
+
+
+def test_widget_enter_calls_setup_segmentation_staleness_observers():
+    """Issue #56 follow-up: ``Widget.enter()`` must re-arm the per-image
+    segmentation ModifiedEvent observers on every module entry. Without
+    this, observers installed by ``_on_results_ready`` get torn down on
+    tab switch and the user's later Segment Editor edits never trigger
+    the recompute prompt.
+    """
+    import re
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "ZebrafishEmbryoAnalyzer", "ZebrafishEmbryoAnalyzer.py",
+    )
+    with open(src_path, "r") as f:
+        src = f.read()
+    enter_block = re.search(
+        r"def enter\(self\):.*?(?=\n    def )", src, flags=re.DOTALL,
+    )
+    assert enter_block is not None
+    assert "setup_segmentation_staleness_observers" in enter_block.group(0), (
+        "Widget.enter() must call setup_segmentation_staleness_observers "
+        "so observers are live on every module re-entry"
+    )
+
+
+def test_widget_enter_calls_refresh_results_against_scene():
+    """Issue #56 Mode B follow-up: ``Widget.enter()`` must call
+    ``refresh_results_against_scene`` so deleted segs surface as
+    auto-excluded rows without requiring a re-run. Without this, the
+    gallery/table keeps showing the image as having a segmentation
+    even when the seg node has been removed from the scene.
+    """
+    import re
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "ZebrafishEmbryoAnalyzer", "ZebrafishEmbryoAnalyzer.py",
+    )
+    with open(src_path, "r") as f:
+        src = f.read()
+    enter_block = re.search(
+        r"def enter\(self\):.*?(?=\n    def )", src, flags=re.DOTALL,
+    )
+    assert enter_block is not None
+    assert "refresh_results_against_scene" in enter_block.group(0), (
+        "Widget.enter() must call self._main.refresh_results_against_scene() "
+        "so the gallery/table picks up deleted segs on every tab switch"
+    )
+
+
+def test_widget_refresh_results_against_scene_auto_excludes_dangling_seg():
+    """Issue #56 Mode B follow-up: ``Widget.refresh_results_against_scene``
+    must mark every existing row whose segmentation node is dangling as
+    auto-excluded, so the gallery/queue list/results table all reflect
+    the deletion immediately on module re-entry.
+
+    Tests the contract that the method depends on — :func:`validate_volume_node`
+    flags dangling refs as recoverable errors, and
+    :func:`volume_node_to_result_dict_with_validation` propagates that
+    into ``row["error"]`` + ``row["exclude"] = True`` — which is exactly
+    what the new ``refresh_results_against_scene`` walks.
+    """
+    # Synthetic volume node with a dangling seg reference:
+    # - was analyzed (ATTR_EXCLUDE is set)
+    # - has a non-empty seg role id that does NOT resolve in the scene
+    import sys
+    import types
+    from unittest.mock import MagicMock
+    # Stub slicer.mrmlScene.GetNodeByID to return None for any id, so
+    # the dangling ref surfaces as "Segmentation node missing".
+    slicer_stub = types.ModuleType("slicer")
+    fake_scene = MagicMock()
+    fake_scene.GetNodeByID.return_value = None
+    slicer_stub.mrmlScene = fake_scene
+    monkey = sys.modules
+    prev_slicer = monkey.get("slicer")
+    monkey["slicer"] = slicer_stub
+    try:
+        from ZebrafishEmbryoAnalyzerLib.mrml import (
+            volume_node_to_result_dict_with_validation,
+        )
+        vol = _FakeVolumeNode(name="dangle.png")
+        vol.SetAttribute("ZebrafishAnalysis.exclude", "false")
+        # Attach a role that points to a non-existent seg id.
+        vol.SetNodeReferenceID(
+            "ZebrafishEmbryoAnalysis.referenceImageSegmentationNode",
+            "vtkMRMLSegmentationNode_dangling",
+        )
+        row = volume_node_to_result_dict_with_validation(vol)
+    finally:
+        if prev_slicer is not None:
+            monkey["slicer"] = prev_slicer
+        else:
+            monkey.pop("slicer", None)
+
+    assert row.get("error") == "Segmentation node missing", row
+    assert row.get("exclude") is True, row
+
+
+def test_validate_volume_node_returns_error_for_dangling_seg():
+    """Companion to ``test_widget_refresh_results_against_scene_auto_excludes_dangling_seg``.
+
+    Pins down the bare validator contract so the Mode B fix layer
+    (refresh_results_against_scene) has a stable lower-bound to depend on.
+    Without this contract, dangling refs would silently be treated as
+    healthy and the Zebra gallery would keep claiming an image has a
+    segmentation after the user removed it in the Data module.
+    """
+    import sys
+    import types
+    from unittest.mock import MagicMock
+    slicer_stub = types.ModuleType("slicer")
+    fake_scene = MagicMock()
+    fake_scene.GetNodeByID.return_value = None
+    slicer_stub.mrmlScene = fake_scene
+    monkey = sys.modules
+    prev_slicer = monkey.get("slicer")
+    monkey["slicer"] = slicer_stub
+    try:
+        from ZebrafishEmbryoAnalyzerLib.mrml import validate_volume_node
+        vol = _FakeVolumeNode(name="dangle.png")
+        vol.SetAttribute("ZebrafishAnalysis.exclude", "false")
+        vol.SetNodeReferenceID(
+            "ZebrafishEmbryoAnalysis.referenceImageSegmentationNode",
+            "vtkMRMLSegmentationNode_dangling",
+        )
+        err = validate_volume_node(vol)
+    finally:
+        if prev_slicer is not None:
+            monkey["slicer"] = prev_slicer
+        else:
+            monkey.pop("slicer", None)
+    assert err == ("Segmentation node missing", ""), err
+
+
+# --- Issue #56 Mode B regression: post-Run-Analysis row resolution ---
+#
+# ``Widget.refresh_results_against_scene`` was skipping every row whose
+# analysis-output controller result lacks a stashed ``_volume_node`` key,
+# so stale segmentation references never surfaced as auto-excluded after
+# a user deleted the seg in the Data module. The fix routes through
+# ``Logic.find_tracked_volume_node_for_row`` which falls back to a scene
+# lookup by filename. These tests pin both branches.
+
+def test_logic_find_tracked_volume_node_for_row_prefers_stashed():
+    import sys as _sys
+    _saved = {}
+    for _n in (
+        "vtk", "vtkmodules", "vtkmodules.vtkCommonCore",
+        "slicer", "slicer.util", "slicer.ScriptedLoadableModule",
+        "ZebrafishEmbryoAnalyzerLib.errors",
+        "ZebrafishEmbryoAnalyzerLib.model_manifest",
+        "ZebrafishEmbryoAnalyzerLib.model_downloader",
+        "ZebrafishEmbryoAnalyzerLib.inference_runner",
+        "ZebrafishEmbryoAnalyzerLib.inference_worker",
+        "ZebrafishEmbryoAnalyzerLib.mrml",
+        "ZebrafishEmbryoAnalyzerLib.widget",
+        "ZebrafishEmbryoAnalyzerLib.gallery_tab",
+        "ZebrafishEmbryoAnalyzerLib.detail_tab",
+        "ZebrafishEmbryoAnalyzerLib.zoom_view",
+        "ZebrafishEmbryoAnalyzerCore.seg",
+        "ZebrafishEmbryoAnalyzerCore.seg_helper",
+        "ZebrafishEmbryoAnalyzerCore.length",
+        "ZebrafishEmbryoAnalyzerCore.manual",
+        "ZebrafishEmbryoAnalyzerCore.scalebar",
+    ):
+        if _n in _sys.modules:
+            _saved[_n] = _sys.modules[_n]
+    try:
+        """When the row carries ``_volume_node`` (scene-reload path), the
+        method uses it directly without touching the scene. Pinned by
+        raising inside ``getParameterNode`` to prove the scene lookup never
+        runs in this branch."""
+        import types
+        from unittest.mock import MagicMock
+        # Real ``ZebrafishEmbryoAnalyzer`` imports vtk at module top; stub
+        # the slicer/VTK-heavy transitive imports to bypass that without a
+        # Slicer installation. Mirrors the pattern used elsewhere in this
+        # file (e.g. the setup_segmentation_staleness_observers tests).
+        sys.modules.setdefault("vtk", types.ModuleType("vtk"))
+        sys.modules.setdefault("vtkmodules", types.ModuleType("vtkmodules"))
+        sys.modules.setdefault("vtkmodules.vtkCommonCore", types.ModuleType(
+            "vtkmodules.vtkCommonCore"))
+        class _VTKMixin:
+            pass
+        class _BaseModule:
+            pass
+        sys.modules["slicer"] = types.SimpleNamespace(
+            VTKObservationMixin=_VTKMixin,
+        )
+        sys.modules["slicer.ScriptedLoadableModule"] = types.SimpleNamespace(
+            ScriptedLoadableModule=_BaseModule,
+            ScriptedLoadableModuleWidget=_BaseModule,
+            ScriptedLoadableModuleLogic=_BaseModule,
+        )
+        sys.modules["slicer.util"] = types.SimpleNamespace(
+            VTKObservationMixin=_VTKMixin,
+        )
+        for name in (
+            "ZebrafishEmbryoAnalyzerLib.errors",
+            "ZebrafishEmbryoAnalyzerLib.model_manifest",
+            "ZebrafishEmbryoAnalyzerLib.model_downloader",
+            "ZebrafishEmbryoAnalyzerLib.inference_runner",
+            "ZebrafishEmbryoAnalyzerLib.inference_worker",
+            "ZebrafishEmbryoAnalyzerLib.mrml",
+            "ZebrafishEmbryoAnalyzerLib.widget",
+            "ZebrafishEmbryoAnalyzerLib.gallery_tab",
+            "ZebrafishEmbryoAnalyzerLib.detail_tab",
+            "ZebrafishEmbryoAnalyzerLib.zoom_view",
+            "ZebrafishEmbryoAnalyzerCore.seg",
+            "ZebrafishEmbryoAnalyzerCore.seg_helper",
+            "ZebrafishEmbryoAnalyzerCore.length",
+            "ZebrafishEmbryoAnalyzerCore.manual",
+            "ZebrafishEmbryoAnalyzerCore.scalebar",
+        ):
+            sys.modules.setdefault(name, types.ModuleType(name))
+
+        from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+        logic = ZebrafishEmbryoAnalyzerLogic.__new__(ZebrafishEmbryoAnalyzerLogic)
+        fake_vol = _FakeVolumeNode(name="reload.png")
+        row = {
+            "filename": "reload.png",
+            "error": "",
+            "exclude": False,
+            "_volume_node": fake_vol,
+        }
+        def _raise():
+            raise AssertionError(
+                "scene lookup must not be invoked when _volume_node is set"
+            )
+        logic.getParameterNode = _raise
+        assert logic.find_tracked_volume_node_for_row(row) is fake_vol
+
+
+    finally:
+        for _n in (
+            "vtk", "vtkmodules", "vtkmodules.vtkCommonCore",
+            "slicer", "slicer.util", "slicer.ScriptedLoadableModule",
+            "ZebrafishEmbryoAnalyzerLib.errors",
+            "ZebrafishEmbryoAnalyzerLib.model_manifest",
+            "ZebrafishEmbryoAnalyzerLib.model_downloader",
+            "ZebrafishEmbryoAnalyzerLib.inference_runner",
+            "ZebrafishEmbryoAnalyzerLib.inference_worker",
+            "ZebrafishEmbryoAnalyzerLib.mrml",
+            "ZebrafishEmbryoAnalyzerLib.widget",
+            "ZebrafishEmbryoAnalyzerLib.gallery_tab",
+            "ZebrafishEmbryoAnalyzerLib.detail_tab",
+            "ZebrafishEmbryoAnalyzerLib.zoom_view",
+            "ZebrafishEmbryoAnalyzerCore.seg",
+            "ZebrafishEmbryoAnalyzerCore.seg_helper",
+            "ZebrafishEmbryoAnalyzerCore.length",
+            "ZebrafishEmbryoAnalyzerCore.manual",
+            "ZebrafishEmbryoAnalyzerCore.scalebar",
+        ):
+            _sys.modules.pop(_n, None)
+        for _n, _m in _saved.items():
+            _sys.modules[_n] = _m
+
+
+def test_logic_find_tracked_volume_node_for_row_falls_back_to_filename():
+    import sys as _sys
+    _saved = {}
+    for _n in (
+        "vtk", "vtkmodules", "vtkmodules.vtkCommonCore",
+        "slicer", "slicer.util", "slicer.ScriptedLoadableModule",
+        "ZebrafishEmbryoAnalyzerLib.errors",
+        "ZebrafishEmbryoAnalyzerLib.model_manifest",
+        "ZebrafishEmbryoAnalyzerLib.model_downloader",
+        "ZebrafishEmbryoAnalyzerLib.inference_runner",
+        "ZebrafishEmbryoAnalyzerLib.inference_worker",
+        "ZebrafishEmbryoAnalyzerLib.mrml",
+        "ZebrafishEmbryoAnalyzerLib.widget",
+        "ZebrafishEmbryoAnalyzerLib.gallery_tab",
+        "ZebrafishEmbryoAnalyzerLib.detail_tab",
+        "ZebrafishEmbryoAnalyzerLib.zoom_view",
+        "ZebrafishEmbryoAnalyzerCore.seg",
+        "ZebrafishEmbryoAnalyzerCore.seg_helper",
+        "ZebrafishEmbryoAnalyzerCore.length",
+        "ZebrafishEmbryoAnalyzerCore.manual",
+        "ZebrafishEmbryoAnalyzerCore.scalebar",
+    ):
+        if _n in _sys.modules:
+            _saved[_n] = _sys.modules[_n]
+    try:
+        """When the row lacks ``_volume_node`` (post-Run-Analysis path:
+        controller results carry mask/eye_mask/path_points but no
+        _volume_node), the method resolves via scene lookup keyed on
+        ``row['filename']``."""
+        import types
+        from unittest.mock import MagicMock
+        sys.modules.setdefault("vtk", types.ModuleType("vtk"))
+        sys.modules.setdefault("vtkmodules", types.ModuleType("vtkmodules"))
+        sys.modules.setdefault("vtkmodules.vtkCommonCore", types.ModuleType(
+            "vtkmodules.vtkCommonCore"))
+        class _VTKMixin:
+            pass
+        fake_scene = MagicMock()
+        fake_vol = _FakeVolumeNode(name="post_run_analysis.png")
+        fake_scene.GetNodeByID.return_value = fake_vol
+        sys.modules["slicer"] = types.SimpleNamespace(
+            mrmlScene=fake_scene, VTKObservationMixin=_VTKMixin,
+        )
+        sys.modules["slicer.util"] = types.SimpleNamespace(
+            VTKObservationMixin=_VTKMixin,
+        )
+        for name in (
+            "ZebrafishEmbryoAnalyzerLib.errors",
+            "ZebrafishEmbryoAnalyzerLib.model_manifest",
+            "ZebrafishEmbryoAnalyzerLib.model_downloader",
+            "ZebrafishEmbryoAnalyzerLib.inference_runner",
+            "ZebrafishEmbryoAnalyzerLib.inference_worker",
+            "ZebrafishEmbryoAnalyzerLib.mrml",
+            "ZebrafishEmbryoAnalyzerLib.widget",
+            "ZebrafishEmbryoAnalyzerLib.gallery_tab",
+            "ZebrafishEmbryoAnalyzerLib.detail_tab",
+            "ZebrafishEmbryoAnalyzerLib.zoom_view",
+            "ZebrafishEmbryoAnalyzerCore.seg",
+            "ZebrafishEmbryoAnalyzerCore.seg_helper",
+            "ZebrafishEmbryoAnalyzerCore.length",
+            "ZebrafishEmbryoAnalyzerCore.manual",
+            "ZebrafishEmbryoAnalyzerCore.scalebar",
+        ):
+            sys.modules.setdefault(name, types.ModuleType(name))
+
+        mrml_mod = sys.modules["ZebrafishEmbryoAnalyzerLib.mrml"]
+        # Restore the original function on exit so subsequent tests in
+        # this file (and downstream files like test_mrml_node) still
+        # import the real function via sys.modules entry restoration —
+        # a bare sys.modules.pop/restore does NOT undo attribute-level
+        # mutations, this guard does.
+        _saved_attr = getattr(mrml_mod, "find_tracked_volume_node_by_filename", None)
+        mrml_mod.find_tracked_volume_node_by_filename = (
+            lambda _pn, _sc, _fn: fake_vol
+        )
+        try:
+            from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+            logic = ZebrafishEmbryoAnalyzerLogic.__new__(ZebrafishEmbryoAnalyzerLogic)
+            logic.getParameterNode = lambda: MagicMock()
+            row = {
+                "filename": "post_run_analysis.png",
+                "error": "",
+                "exclude": False,
+                # NB: no _volume_node key at all — fallback path.
+            }
+            result = logic.find_tracked_volume_node_for_row(row)
+            assert result is fake_vol, (
+                "find_tracked_volume_node_for_row must look up by filename when "
+                "row._volume_node is missing — got %r" % (result,)
+            )
+        finally:
+            if _saved_attr is not None:
+                mrml_mod.find_tracked_volume_node_by_filename = _saved_attr
+    finally:
+        for _n in (
+            "vtk", "vtkmodules", "vtkmodules.vtkCommonCore",
+            "slicer", "slicer.util", "slicer.ScriptedLoadableModule",
+            "ZebrafishEmbryoAnalyzerLib.errors",
+            "ZebrafishEmbryoAnalyzerLib.model_manifest",
+            "ZebrafishEmbryoAnalyzerLib.model_downloader",
+            "ZebrafishEmbryoAnalyzerLib.inference_runner",
+            "ZebrafishEmbryoAnalyzerLib.inference_worker",
+            "ZebrafishEmbryoAnalyzerLib.mrml",
+            "ZebrafishEmbryoAnalyzerLib.widget",
+            "ZebrafishEmbryoAnalyzerLib.gallery_tab",
+            "ZebrafishEmbryoAnalyzerLib.detail_tab",
+            "ZebrafishEmbryoAnalyzerLib.zoom_view",
+            "ZebrafishEmbryoAnalyzerCore.seg",
+            "ZebrafishEmbryoAnalyzerCore.seg_helper",
+            "ZebrafishEmbryoAnalyzerCore.length",
+            "ZebrafishEmbryoAnalyzerCore.manual",
+            "ZebrafishEmbryoAnalyzerCore.scalebar",
+        ):
+            _sys.modules.pop(_n, None)
+        for _n, _m in _saved.items():
+            _sys.modules[_n] = _m
+
+
+
+
+# --- Issue #56 Mode B follow-up: scrub cached overlay inputs from
+# auto-excluded rows so the gallery thumbnail doesn't draw a stale
+# segmentation from a node the user removed in the Data module.
+
+def test_logic_scrub_excluded_row_overlays_drops_cached_inputs():
+    """``Logic.scrub_excluded_row_overlays`` must pop ``mask`` /
+    ``eye_mask`` / ``path_points`` / ``straight_line_points`` from rows
+    whose ``error`` is non-empty or ``exclude`` is truthy, and leave
+    rows without that state alone. Idempotent — calling twice is a
+    no-op the second time."""
+    import types
+    sys.modules.setdefault("vtk", types.ModuleType("vtk"))
+    sys.modules.setdefault("vtkmodules", types.ModuleType("vtkmodules"))
+    sys.modules.setdefault("vtkmodules.vtkCommonCore", types.ModuleType(
+        "vtkmodules.vtkCommonCore"))
+    class _VTKMixin:
+        pass
+    class _BaseModule:
+        pass
+    sys.modules["slicer"] = types.SimpleNamespace(VTKObservationMixin=_VTKMixin)
+    sys.modules["slicer.util"] = types.SimpleNamespace(
+        VTKObservationMixin=_VTKMixin,
+    )
+    sys.modules["slicer.ScriptedLoadableModule"] = types.SimpleNamespace(
+        ScriptedLoadableModule=_BaseModule,
+        ScriptedLoadableModuleWidget=_BaseModule,
+        ScriptedLoadableModuleLogic=_BaseModule,
+    )
+    for name in (
+        "ZebrafishEmbryoAnalyzerLib.errors",
+        "ZebrafishEmbryoAnalyzerLib.model_manifest",
+        "ZebrafishEmbryoAnalyzerLib.model_downloader",
+        "ZebrafishEmbryoAnalyzerLib.inference_runner",
+        "ZebrafishEmbryoAnalyzerLib.inference_worker",
+        "ZebrafishEmbryoAnalyzerLib.mrml",
+        "ZebrafishEmbryoAnalyzerLib.widget",
+        "ZebrafishEmbryoAnalyzerLib.gallery_tab",
+        "ZebrafishEmbryoAnalyzerLib.detail_tab",
+        "ZebrafishEmbryoAnalyzerLib.zoom_view",
+        "ZebrafishEmbryoAnalyzerCore.seg",
+        "ZebrafishEmbryoAnalyzerCore.seg_helper",
+        "ZebrafishEmbryoAnalyzerCore.length",
+        "ZebrafishEmbryoAnalyzerCore.manual",
+        "ZebrafishEmbryoAnalyzerCore.scalebar",
+    ):
+        sys.modules.setdefault(name, types.ModuleType(name))
+
+    from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+    logic = ZebrafishEmbryoAnalyzerLogic.__new__(ZebrafishEmbryoAnalyzerLogic)
+
+    # Healthy row (no error/exclude) — every cached overlay input must
+    # survive. Mirrors a row whose segmentation is still in the scene.
+    healthy = {
+        "filename":  "healthy.png",
+        "mask":      "should-stay",
+        "eye_mask":  "should-stay",
+        "path_points": "should-stay",
+        "straight_line_points": "should-stay",
+        "error":     "",
+        "exclude":   False,
+    }
+    # Deleted-seg row — every cached overlay input must be removed.
+    deleted = {
+        "filename":  "deleted.png",
+        "mask":      "should-go",
+        "eye_mask":  "should-go",
+        "path_points": "should-go",
+        "straight_line_points": "should-go",
+        "error":     "Segmentation node missing",
+        "exclude":   True,
+    }
+    rows = [healthy, deleted]
+    logic.scrub_excluded_row_overlays(rows)
+
+    for key in ("mask", "eye_mask", "path_points", "straight_line_points"):
+        assert healthy[key] == "should-stay", key
+        assert key not in deleted, (
+            "deleted-seg row must have %r scrubbed; row=%r" % (key, deleted)
+        )
+
+    # Idempotency: a second call with no overlay inputs left on the
+    # deleted row must not raise and must not re-introduce them.
+    logic.scrub_excluded_row_overlays(rows)
+    for key in ("mask", "eye_mask", "path_points", "straight_line_points"):
+        assert healthy[key] == "should-stay"
+        assert key not in deleted
+
+    # Non-dict rows and missing-key rows must not raise.
+    rows_misc = [None, "not-a-dict", {"filename": "ok"}, deleted]
+    logic.scrub_excluded_row_overlays(rows_misc)
+
+
+def test_logic_scrub_excluded_row_overlays_handles_exclude_without_error():
+    """Even when only ``exclude`` is truthy (no ``error`` message), the
+    overlay inputs must still be scrubbed — e.g. a future "user
+    unchecked this row manually" path uses ``exclude=True`` without
+    setting ``error``."""
+    import types
+    sys.modules.setdefault("vtk", types.ModuleType("vtk"))
+    sys.modules.setdefault("vtkmodules", types.ModuleType("vtkmodules"))
+    sys.modules.setdefault("vtkmodules.vtkCommonCore", types.ModuleType(
+        "vtkmodules.vtkCommonCore"))
+    class _VTKMixin:
+        pass
+    class _BaseModule:
+        pass
+    sys.modules["slicer"] = types.SimpleNamespace(VTKObservationMixin=_VTKMixin)
+    sys.modules["slicer.util"] = types.SimpleNamespace(
+        VTKObservationMixin=_VTKMixin,
+    )
+    sys.modules["slicer.ScriptedLoadableModule"] = types.SimpleNamespace(
+        ScriptedLoadableModule=_BaseModule,
+        ScriptedLoadableModuleWidget=_BaseModule,
+        ScriptedLoadableModuleLogic=_BaseModule,
+    )
+    for name in (
+        "ZebrafishEmbryoAnalyzerLib.errors",
+        "ZebrafishEmbryoAnalyzerLib.model_manifest",
+        "ZebrafishEmbryoAnalyzerLib.model_downloader",
+        "ZebrafishEmbryoAnalyzerLib.inference_runner",
+        "ZebrafishEmbryoAnalyzerLib.inference_worker",
+        "ZebrafishEmbryoAnalyzerLib.mrml",
+        "ZebrafishEmbryoAnalyzerLib.widget",
+        "ZebrafishEmbryoAnalyzerLib.gallery_tab",
+        "ZebrafishEmbryoAnalyzerLib.detail_tab",
+        "ZebrafishEmbryoAnalyzerLib.zoom_view",
+        "ZebrafishEmbryoAnalyzerCore.seg",
+        "ZebrafishEmbryoAnalyzerCore.seg_helper",
+        "ZebrafishEmbryoAnalyzerCore.length",
+        "ZebrafishEmbryoAnalyzerCore.manual",
+        "ZebrafishEmbryoAnalyzerCore.scalebar",
+    ):
+        sys.modules.setdefault(name, types.ModuleType(name))
+
+    from ZebrafishEmbryoAnalyzer import ZebrafishEmbryoAnalyzerLogic
+    logic = ZebrafishEmbryoAnalyzerLogic.__new__(ZebrafishEmbryoAnalyzerLogic)
+
+    row = {
+        "filename":  "manual-exclude.png",
+        "mask":      "should-go",
+        "eye_mask":  "should-go",
+        "path_points": "should-go",
+        "straight_line_points": "should-go",
+        "error":     "",
+        "exclude":   True,
+    }
+    logic.scrub_excluded_row_overlays([row])
+    for _key in ("mask", "eye_mask", "path_points", "straight_line_points"):
+        assert _key not in row, _key
+
+
+# ---------------------------------------------------------------------------
+# Issue #56 follow-up: scene-reload overlay reconstruction
+# ---------------------------------------------------------------------------
+#
+# ``volume_node_to_result_dict`` only restores scalar metric attributes —
+# the segmentation-overlay inputs (mask, eye_mask, path_points,
+# straight_line_points) come from the seg/markup nodes linked via the
+# ``ROLE_ZEBRAFISH_SEGMENTATION`` / ``ROLE_ZEBRAFISH_MARKUPS_CURVE`` /
+# ``ROLE_ZEBRAFISH_MARKUPS_LINE`` references. ``rebuild_results_from_scene``
+# now calls ``_populate_row_overlays_from_scene`` to pull them back so the
+# gallery renders the analyzed overlay after a saved-scene reload instead
+# of a bare original.
+#
+# These tests stub ``slicer.util.arrayFromSegment`` and the markups
+# read-back API on lightweight fakes — no real Slicer runtime required.
+
+
+def _stub_slicer_array_from_segment(seg_node, segment_id, labelmap):
+    """Helper: stub the segment-labelmap readers on ``slicer.util`` to
+    return ``labelmap`` for a single ``(seg_node, segment_id)`` pair.
+
+    Both ``arrayFromSegmentBinaryLabelmap`` (what production code calls) and
+    the deprecated ``arrayFromSegment`` (the fallback for older Slicer) are
+    installed, so the stub covers whichever branch ``_extract_segment_mask``
+    takes.
+
+    Returns ``(slicer_util, restore)`` — call ``restore()`` in a ``finally``
+    block to put both attributes back the way they were. Also installs a
+    ``slicer.util`` namespace if the test runner left ``slicer`` as a bare
+    stub without ``util``.
+    """
+    slicer, util, _prev_util = _ensure_slicer_module()
+    names = ("arrayFromSegmentBinaryLabelmap", "arrayFromSegment")
+    prev = {name: getattr(util, name, None) for name in names}
+
+    def _fake(sn, sid, *_args, **_kwargs):
+        if sn is seg_node and sid == segment_id:
+            return labelmap
+        return None
+
+    for name in names:
+        setattr(util, name, _fake)
+
+    def restore():
+        for name in names:
+            if prev[name] is not None:
+                setattr(util, name, prev[name])
+            else:
+                try:
+                    delattr(util, name)
+                except AttributeError:
+                    pass
+
+    return util, restore
+
+
+class _FakeSegWithLabelmap(_FakeSegmentationNode):
+    """Segmentation fake that holds a binary labelmap per segment id."""
+
+    def __init__(self, name="SegWithMask"):
+        super().__init__(name=name)
+        self._labelmaps = {}   # segment_id -> ndarray
+
+    def SetSegmentLabelmap(self, segment_id, labelmap):
+        self._labelmaps[segment_id] = labelmap
+
+
+class _FakeMarkupsNodeWithRead(_FakeMarkupsCurveNode):
+    """Markups fake that exposes the read-back API the helpers use."""
+
+    def GetNumberOfControlPoints(self):
+        return len(self._control_points)
+
+    def GetNthControlPointPosition(self, i, out):
+        try:
+            x, y, z = self._control_points[i]["position"]
+        except (IndexError, KeyError, TypeError):
+            return
+        out[0], out[1], out[2] = float(x), float(y), float(z)
+
+
+class _FakeMarkupsLineWithRead(_FakeMarkupsLineNode):
+    def GetNumberOfControlPoints(self):
+        return len(self._control_points)
+
+    def GetNthControlPointPosition(self, i, out):
+        try:
+            x, y, z = self._control_points[i]["position"]
+        except (IndexError, KeyError, TypeError):
+            return
+        out[0], out[1], out[2] = float(x), float(y), float(z)
+
+
+def _ensure_slicer_module():
+    """Lazy-install a minimal ``slicer`` module so the lazy import in
+    ``_extract_segment_mask`` succeeds outside the Slicer runtime.
+
+    Several tests in this file stub ``slicer`` as a bare ``SimpleNamespace``
+    / ``MagicMock`` — those stubs do not carry a ``util`` attribute. This
+    helper installs a ``slicer`` module (and a ``slicer.util`` namespace)
+    on the ``sys.modules`` entry if either is missing, so per-test
+    monkey-patching of ``slicer.util.arrayFromSegment`` just works.
+
+    Returns ``(slicer, slicer_util, prev_util)`` so the caller can
+    restore both in a ``finally`` block. The caller is responsible for
+    restoring the ``slicer`` entry to its previous state when this helper
+    installs a fresh one.
+    """
+    prev_slicer = sys.modules.get("slicer")
+    if prev_slicer is None:
+        slicer = types.SimpleNamespace()
+        sys.modules["slicer"] = slicer
+    else:
+        slicer = prev_slicer
+    util = getattr(slicer, "util", None)
+    prev_util = None
+    if util is None:
+        util = types.SimpleNamespace()
+        prev_util = getattr(slicer, "util", None)
+        slicer.util = util
+    return slicer, util, prev_util
+
+
+def test_extract_segment_mask_returns_uint8_for_body_segment():
+    from ZebrafishEmbryoAnalyzerLib.mrml import _extract_segment_mask
+
+    seg = _FakeSegWithLabelmap()
+    seg.GetSegmentation().AddEmptySegment("Body", "Body", [0.0, 1.0, 0.0])
+    labelmap = np.array(
+        [
+            [0, 0, 1, 1, 0],
+            [0, 1, 1, 1, 1],
+            [0, 0, 1, 1, 0],
+        ],
+        dtype=np.uint8,
+    )
+    seg.SetSegmentLabelmap("Body", labelmap)
+
+    _util, restore = _stub_slicer_array_from_segment(seg, "Body", labelmap)
+    try:
+        mask = _extract_segment_mask(seg, "Body")
+    finally:
+        restore()
+
+    assert mask is not None
+    assert mask.shape == labelmap.shape
+    assert mask.dtype == np.uint8
+    assert set(np.unique(mask).tolist()).issubset({0, 1})
+    assert int(mask.sum()) == int((labelmap > 0).sum())
+
+
+def test_extract_segment_mask_undoes_the_stored_180_degree_rotation():
+    """The stored labelmap is flipud+fliplr of the image-space mask
+    (``_make_oriented_image``), so extraction must rotate it back or the
+    restored overlay lands mirrored about the image centre instead of on
+    the fish.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import _extract_segment_mask
+
+    seg = _FakeSegWithLabelmap()
+    seg.GetSegmentation().AddEmptySegment("Body", "Body", [0.0, 1.0, 0.0])
+    # Asymmetric in both axes, so a missing flip on either one shows up.
+    stored = np.array(
+        [
+            [0, 0, 0, 0, 0],
+            [0, 0, 0, 1, 1],
+            [0, 0, 0, 0, 1],
+        ],
+        dtype=np.uint8,
+    )
+    seg.SetSegmentLabelmap("Body", stored)
+
+    _util, restore = _stub_slicer_array_from_segment(seg, "Body", stored)
+    try:
+        mask = _extract_segment_mask(seg, "Body")
+    finally:
+        restore()
+
+    assert mask is not None
+    assert np.array_equal(mask, np.flipud(np.fliplr(stored)))
+
+
+def test_extract_segment_mask_prefers_the_non_deprecated_reader():
+    """``arrayFromSegment`` logs a deprecation warning on every call — two
+    per restored row, so a scene reload spams the Python console. Production
+    must call ``arrayFromSegmentBinaryLabelmap`` when it exists.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import _extract_segment_mask
+
+    seg = _FakeSegWithLabelmap()
+    seg.GetSegmentation().AddEmptySegment("Body", "Body", [0.0, 1.0, 0.0])
+    labelmap = np.array([[0, 1], [1, 1]], dtype=np.uint8)
+    seg.SetSegmentLabelmap("Body", labelmap)
+
+    _util, restore = _stub_slicer_array_from_segment(seg, "Body", labelmap)
+    _slicer, util, _prev = _ensure_slicer_module()
+    calls = []
+
+    def _deprecated(sn, sid, *_args, **_kwargs):
+        calls.append(sid)
+        return labelmap
+
+    try:
+        util.arrayFromSegment = _deprecated
+        mask = _extract_segment_mask(seg, "Body")
+    finally:
+        restore()
+
+    assert mask is not None
+    assert calls == [], "deprecated arrayFromSegment was called"
+
+
+def test_extract_segment_mask_returns_none_for_missing_segment():
+    from ZebrafishEmbryoAnalyzerLib.mrml import _extract_segment_mask
+
+    seg = _FakeSegWithLabelmap()
+    # No "Eye" segment added.
+    _slicer, util, _ = _ensure_slicer_module()
+    saved = getattr(util, "arrayFromSegment", None)
+    try:
+        util.arrayFromSegment = lambda *a, **kw: None
+        assert _extract_segment_mask(seg, "Eye") is None
+        assert _extract_segment_mask(None, "Body") is None
+        assert _extract_segment_mask(seg, "") is None
+    finally:
+        if saved is not None:
+            util.arrayFromSegment = saved
+        else:
+            try:
+                del util.arrayFromSegment
+            except AttributeError:
+                pass
+
+
+def test_extract_markups_curve_points_roundtrips_with_add_curve_points():
+    """Issue #56 follow-up: markups written by ``_add_curve_points`` (write
+    path) and read back by ``_extract_markups_curve_points`` (read path)
+    must agree to within rounding for a representative path.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import (
+        _add_curve_points,
+        _extract_markups_curve_points,
+        _vec3,
+    )
+
+    volume_node = _FakeVolumeNode(name="img")
+    # Geometry matching a 800x600 original at 22.99 µm/px, 256x256 mask.
+    volume_node.GetSpacing = lambda: (22.99 / 1000.0, 22.99 / 1000.0, 1.0)
+    volume_node.GetDimensions = lambda: (800, 600, 1)
+
+    # Source path_points in mask (row, col) coords.
+    src = np.array(
+        [
+            [10.0, 20.0],
+            [64.0, 128.0],
+            [128.0, 200.0],
+            [192.0, 350.0],
+            [240.0, 500.0],
+        ],
+        dtype=float,
+    )
+    result = {
+        "mask": np.zeros((256, 256), dtype=np.uint8),
+        "spacing": (22.99 * 600 / 256.0, 22.99 * 800 / 256.0),
+    }
+    curve = _FakeMarkupsNodeWithRead(name="curve")
+    _add_curve_points(curve, src, result)
+
+    pts = _extract_markups_curve_points(curve, volume_node)
+    assert pts is not None
+    assert pts.shape == src.shape
+    np.testing.assert_allclose(pts, src, atol=1e-6)
+
+
+def test_extract_markups_curve_points_returns_none_below_two_points():
+    from ZebrafishEmbryoAnalyzerLib.mrml import _extract_markups_curve_points
+
+    volume_node = _FakeVolumeNode(name="img")
+    volume_node.GetSpacing = lambda: (0.02299, 0.02299, 1.0)
+    volume_node.GetDimensions = lambda: (800, 600, 1)
+    curve = _FakeMarkupsNodeWithRead(name="curve")  # no control points
+
+    assert _extract_markups_curve_points(curve, volume_node) is None
+    assert _extract_markups_curve_points(None, volume_node) is None
+    assert _extract_markups_curve_points(curve, None) is None
+
+
+def test_extract_markups_line_endpoints_roundtrips():
+    from ZebrafishEmbryoAnalyzerLib.mrml import (
+        _add_line_endpoints,
+        _extract_markups_line_endpoints,
+    )
+
+    volume_node = _FakeVolumeNode(name="img")
+    volume_node.GetSpacing = lambda: (22.99 / 1000.0, 22.99 / 1000.0, 1.0)
+    volume_node.GetDimensions = lambda: (800, 600, 1)
+
+    src = ((10.0, 20.0), (240.0, 500.0))
+    result = {
+        "mask": np.zeros((256, 256), dtype=np.uint8),
+        "spacing": (22.99 * 600 / 256.0, 22.99 * 800 / 256.0),
+    }
+    line = _FakeMarkupsLineWithRead(name="line")
+    _add_line_endpoints(line, src, result, volume_node)
+
+    out = _extract_markups_line_endpoints(line, volume_node)
+    assert out is not None
+    (r0, c0), (r1, c1) = out
+    assert abs(r0 - src[0][0]) < 1e-6
+    assert abs(c0 - src[0][1]) < 1e-6
+    assert abs(r1 - src[1][0]) < 1e-6
+    assert abs(c1 - src[1][1]) < 1e-6
+
+
+def test_populate_row_overlays_from_scene_pulls_all_four_keys():
+    """Integration: a row whose volume node references Body + Eye segs and
+    curve + line markups ends up with mask / eye_mask / path_points /
+    straight_line_points populated on the row dict, with the original
+    metrics untouched.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import (
+        _add_curve_points,
+        _add_line_endpoints,
+        _populate_row_overlays_from_scene,
+    )
+
+    volume_node = _FakeVolumeNode(name="embryo")
+    volume_node.GetSpacing = lambda: (22.99 / 1000.0, 22.99 / 1000.0, 1.0)
+    volume_node.GetDimensions = lambda: (800, 600, 1)
+
+    # Seg node with Body + Eye labelmaps.
+    seg = _FakeSegWithLabelmap(name="embryo-seg")
+    seg.GetSegmentation().AddEmptySegment("Body", "Body", [0.0, 1.0, 0.0])
+    seg.GetSegmentation().AddEmptySegment("Eye", "Eye", [1.0, 0.0, 0.0])
+    body_arr = np.zeros((256, 256), dtype=np.uint8)
+    body_arr[100:200, 80:240] = 1
+    eye_arr = np.zeros((256, 256), dtype=np.uint8)
+    eye_arr[110:130, 120:140] = 1
+    seg.SetSegmentLabelmap("Body", body_arr)
+    seg.SetSegmentLabelmap("Eye", eye_arr)
+
+    # Curve + line with control points.
+    curve = _FakeMarkupsNodeWithRead(name="embryo-curve")
+    line = _FakeMarkupsLineWithRead(name="embryo-line")
+    result_for_write = {
+        "mask": body_arr,
+        "spacing": (22.99 * 600 / 256.0, 22.99 * 800 / 256.0),
+    }
+    src_path = np.array(
+        [[10.0, 20.0], [128.0, 128.0], [240.0, 250.0]], dtype=float
+    )
+    _add_curve_points(curve, src_path, result_for_write)
+    src_sl = ((10.0, 20.0), (240.0, 250.0))
+    _add_line_endpoints(line, src_sl, result_for_write, volume_node)
+
+    # Wire the references on the volume node.
+    volume_node.SetNodeReferenceID("ZebrafishSegmentation", seg.GetID())
+    volume_node.SetNodeReferenceID("ZebrafishMarkupsCurve", curve.GetID())
+    volume_node.SetNodeReferenceID("ZebrafishMarkupsLine", line.GetID())
+
+    scene = _FakeScene()
+    scene._nodes[seg.GetID()] = seg
+    scene._nodes[curve.GetID()] = curve
+    scene._nodes[line.GetID()] = line
+
+    row = {
+        "filename":  "embryo.png",
+        "length":    1200.0,
+        "curvature": 2,
+        "ratio":     1.05,
+        "exclude":   False,
+        "error":     "",
+    }
+
+    _slicer, util, _ = _ensure_slicer_module()
+    saved = getattr(util, "arrayFromSegment", None)
+    try:
+        def _fake(sn, sid):
+            return {"Body": body_arr, "Eye": eye_arr}.get(sid)
+        util.arrayFromSegment = _fake
+
+        _populate_row_overlays_from_scene(row, volume_node, scene)
+    finally:
+        if saved is not None:
+            util.arrayFromSegment = saved
+        else:
+            try:
+                del util.arrayFromSegment
+            except AttributeError:
+                pass
+
+    assert "mask" in row and row["mask"].sum() == body_arr.sum()
+    assert "eye_mask" in row and row["eye_mask"].sum() == eye_arr.sum()
+    assert "path_points" in row and row["path_points"].shape == (3, 2)
+    np.testing.assert_allclose(row["path_points"], src_path, atol=1e-6)
+    assert "straight_line_points" in row
+    (r0, c0), (r1, c1) = row["straight_line_points"]
+    assert abs(r0 - src_sl[0][0]) < 1e-6
+    assert abs(c0 - src_sl[0][1]) < 1e-6
+    assert abs(r1 - src_sl[1][0]) < 1e-6
+    assert abs(c1 - src_sl[1][1]) < 1e-6
+    # Existing metrics untouched.
+    assert row["length"] == 1200.0
+    assert row["curvature"] == 2
+    assert row["ratio"] == 1.05
+
+
+def test_populate_row_overlays_skips_row_with_error():
+    """Rows already flagged ``error`` must not have overlay inputs pulled:
+    ``make_full_overlay`` short-circuits to bare original anyway, and the
+    defensive guard means the row would not benefit from re-derivation.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import _populate_row_overlays_from_scene
+
+    volume_node = _FakeVolumeNode(name="img")
+    seg = _FakeSegWithLabelmap(name="seg")
+    seg.GetSegmentation().AddEmptySegment("Body", "Body", [0.0, 1.0, 0.0])
+    seg.SetSegmentLabelmap("Body", np.zeros((256, 256), dtype=np.uint8))
+    volume_node.SetNodeReferenceID("ZebrafishSegmentation", seg.GetID())
+    scene = _FakeScene()
+    scene._nodes[seg.GetID()] = seg
+
+    row = {"filename": "x.png", "error": "Segmentation node missing"}
+
+    _slicer, util, _ = _ensure_slicer_module()
+    saved = getattr(util, "arrayFromSegment", None)
+    called = {"n": 0}
+    try:
+        def _fake(*a, **kw):
+            called["n"] += 1
+            return None
+        util.arrayFromSegment = _fake
+
+        _populate_row_overlays_from_scene(row, volume_node, scene)
+    finally:
+        if saved is not None:
+            util.arrayFromSegment = saved
+        else:
+            try:
+                del util.arrayFromSegment
+            except AttributeError:
+                pass
+
+    assert "mask" not in row
+    assert "eye_mask" not in row
+    assert "path_points" not in row
+    assert "straight_line_points" not in row
+    assert called["n"] == 0  # never even queried
+
+
+def test_populate_row_overlays_leaves_partial_scene_state_partial():
+    """If the user removed the Eye segment but kept Body, ``eye_mask``
+    stays unset on the row (overlay just silently skips that layer) and
+    the other three keys still populate.
+    """
+    from ZebrafishEmbryoAnalyzerLib.mrml import (
+        _add_curve_points,
+        _add_line_endpoints,
+        _populate_row_overlays_from_scene,
+    )
+
+    volume_node = _FakeVolumeNode(name="img")
+    volume_node.GetSpacing = lambda: (22.99 / 1000.0, 22.99 / 100.0, 1.0)
+    volume_node.GetDimensions = lambda: (800, 600, 1)
+
+    seg = _FakeSegWithLabelmap(name="seg")
+    seg.GetSegmentation().AddEmptySegment("Body", "Body", [0.0, 1.0, 0.0])
+    body_arr = np.zeros((256, 256), dtype=np.uint8)
+    body_arr[100:200, 80:240] = 1
+    seg.SetSegmentLabelmap("Body", body_arr)
+
+    curve = _FakeMarkupsNodeWithRead(name="curve")
+    line = _FakeMarkupsLineWithRead(name="line")
+    result_for_write = {
+        "mask": body_arr,
+        "spacing": (22.99 * 600 / 256.0, 22.99 * 800 / 256.0),
+    }
+    src_path = np.array([[10.0, 20.0], [128.0, 128.0]], dtype=float)
+    _add_curve_points(curve, src_path, result_for_write)
+    _add_line_endpoints(line, ((10.0, 20.0), (240.0, 250.0)), result_for_write, volume_node)
+
+    volume_node.SetNodeReferenceID("ZebrafishSegmentation", seg.GetID())
+    volume_node.SetNodeReferenceID("ZebrafishMarkupsCurve", curve.GetID())
+    volume_node.SetNodeReferenceID("ZebrafishMarkupsLine", line.GetID())
+    scene = _FakeScene()
+    scene._nodes[seg.GetID()] = seg
+    scene._nodes[curve.GetID()] = curve
+    scene._nodes[line.GetID()] = line
+
+    row = {"filename": "x.png", "exclude": False, "error": ""}
+
+    _slicer, util, _ = _ensure_slicer_module()
+    saved = getattr(util, "arrayFromSegment", None)
+    try:
+        util.arrayFromSegment = lambda sn, sid: (
+            body_arr if sid == "Body" else None
+        )
+        _populate_row_overlays_from_scene(row, volume_node, scene)
+    finally:
+        if saved is not None:
+            util.arrayFromSegment = saved
+        else:
+            try:
+                del util.arrayFromSegment
+            except AttributeError:
+                pass
+
+    assert "mask" in row
+    assert "eye_mask" not in row  # Eye segment missing → no key
+    assert "path_points" in row
+    assert "straight_line_points" in row

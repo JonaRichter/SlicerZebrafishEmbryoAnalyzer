@@ -1108,28 +1108,29 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 5000,
             )
 
-    def _try_update_mrml_image(self, result):
-        # NOTE: _on_detect_scale / show_raw_image does NOT call this method (E2b scope).
-        # The MRML node intentionally reflects the last gallery selection, not the
-        # scalebar debug overlay. Re-sync by clicking any gallery item.
-        try:
-            self._logic.update_current_image_node(result, self._um_per_px.value)
-        except MRMLAdapterError as exc:
-            logging.warning("ZebrafishEmbryoAnalyzer: MRML image node update failed: %s", exc)
-            slicer.util.showStatusMessage(
-                "Image node update failed. Check the application log.",
-                5000,
-            )
+    def _try_show_gallery_selection_in_slice_view(self, result):
+        """Issue #56: mirror the gallery selection into Slicer's slice views.
 
-    def _try_update_mrml_segmentation(self, result):
+        Delegates to :meth:`ZebrafishEmbryoAnalyzerLogic.show_gallery_selection_in_slice_view`,
+        which sets the selected image's per-image volume node as the
+        slice-view background and toggles its segmentation display visibility
+        on. The logic method never raises, so this wrapper only catches the
+        unlikely case where the logic layer itself is unavailable so it can
+        surface a status message instead of crashing the gallery click.
+        """
         try:
-            self._logic.update_current_segmentation_node(result, self._um_per_px.value)
-        except MRMLAdapterError as exc:
-            logging.warning("ZebrafishEmbryoAnalyzer: MRML segmentation node update failed: %s", exc)
-            slicer.util.showStatusMessage(
-                "Segmentation node update failed. Check the application log.",
-                5000,
+            self._logic.show_gallery_selection_in_slice_view(result)
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: slice-view mirror for gallery selection failed"
             )
+            try:
+                slicer.util.showStatusMessage(
+                    "Slice-view mirror failed. Check the application log.",
+                    5000,
+                )
+            except Exception:
+                pass
 
     def _get_correction_params(self):
         """Return current hitl/threshold settings for manual correction curvature recompute."""
@@ -1154,8 +1155,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             self._detail.sync_exclude(self._results[index]["filename"] in self._excluded)
         self._detail.setFocus()
         if index < len(self._results):
-            self._try_update_mrml_image(self._results[index])
-            self._try_update_mrml_segmentation(self._results[index])
+            self._try_show_gallery_selection_in_slice_view(self._results[index])
         self._refresh_detail_recompute_button()
 
     def _navigate_detail(self, delta: int):
@@ -1650,6 +1650,122 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             )
 
     # ----------------------------------------------------------------- #
+    # Issue #56 Mode B follow-up: lightweight revalidation of the
+    # already-populated ``self._results`` against the live MRML scene.
+    # ----------------------------------------------------------------- #
+    def refresh_results_against_scene(self):
+        """Re-validate every populated row's per-image MRML state and
+        refresh the visible widgets — cheap enough to run on every
+        ``enter()``.
+
+        Unlike :meth:`rebuild_from_scene` (used only when the widget is
+        empty), this does NOT read pixel arrays or rebuild thumbnails:
+        ``self._results`` is already populated from the previous run, so
+        the only thing that can drift between module entries is the row's
+        ``error`` / ``exclude`` state (e.g. a segmentation node the user
+        just removed in the Data module → dangling ref → "Segmentation
+        node missing" auto-exclude).
+
+        Honours "Data module is ground truth": rows whose segmentation
+        node was removed surface as auto-excluded immediately, so the
+        gallery, results table, queue list, and detail view all show the
+        deletion without needing a re-run.
+        """
+        if not getattr(self, "_results", None):
+            return
+        if not hasattr(self, "_logic") or self._logic is None:
+            return
+        if not hasattr(self._logic, "validate_tracked_row_exclusion"):
+            return
+
+        changed = False
+        for i, row in enumerate(self._results):
+            try:
+                vol = self._logic.find_tracked_volume_node_for_row(row)
+            except Exception:
+                continue
+            if vol is None or not hasattr(vol, "GetID"):
+                continue
+            try:
+                new_error, should_exclude = self._logic.validate_tracked_row_exclusion(vol)
+            except Exception:
+                continue
+            new_error = new_error or ""
+            prev_error = row.get("error") or ""
+            prev_exclude = bool(row.get("exclude"))
+            new_exclude = bool(should_exclude) or prev_exclude
+            if new_error != prev_error or new_exclude != prev_exclude:
+                row["error"] = new_error
+                row["exclude"] = new_exclude
+                changed = True
+
+        if not changed:
+            return
+
+        # Issue #56 follow-up: scrub cached segmentation-overlay inputs
+        # from rows that were just auto-excluded. See
+        # ``Logic.scrub_excluded_row_overlays`` for why this matters.
+        try:
+            self._logic.scrub_excluded_row_overlays(self._results)
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: row overlay-input scrub failed"
+            )
+
+        # Re-derive excluded set from the updated rows so the gallery's
+        # eye-icons, queue list strikethrough, and results tab match.
+        try:
+            self._excluded = {
+                r["filename"]
+                for r in self._results
+                if r.get("exclude") or r.get("error")
+            }
+        except Exception:
+            pass
+
+        # Refresh every visible widget whose state depends on
+        # ``self._results`` / ``self._excluded``. Same surface as
+        # :meth:`rebuild_from_scene` but WITHOUT the thumbnail rebuild
+        # (``update_thumb_prebuilt`` is skipped so the per-row cv2.resize
+        # cost does not hit every tab switch).
+        try:
+            self._gallery.populate(self._results)
+        except Exception:
+            pass
+        try:
+            self._results_tab.populate(self._results, self._excluded)
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: results-tab refresh on enter() failed"
+            )
+        try:
+            self._logic.update_results_table_from_tracked_nodes()
+        except Exception:
+            logging.exception(
+                "ZebrafishEmbryoAnalyzer: table refresh on enter() failed"
+            )
+        try:
+            self._queue_list.clear()
+            for r in self._results:
+                self._queue_list.addItem(r.get("filename") or "")
+        except Exception:
+            pass
+        try:
+            if (
+                0 <= getattr(self, "_current_detail_idx", -1) < len(self._results)
+            ):
+                self._detail.invalidate_cache()
+                self._detail.show_result(self._current_detail_idx, self._results)
+                sync_excl = bool(
+                    self._results[self._current_detail_idx].get("filename")
+                    in self._excluded
+                )
+                self._detail.sync_exclude(sync_excl)
+                self._refresh_detail_recompute_button()
+        except Exception:
+            pass
+
+    # ----------------------------------------------------------------- #
     # Issue #42: prompt + recompute for stale segment-editor edits.
     # ----------------------------------------------------------------- #
     def prompt_recompute_stale_images(self):
@@ -1661,6 +1777,13 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         so the per-image decision logic is unit-testable without a Qt
         message box. This method only handles the UI loop and the
         recompute call.
+
+        Issue #56 follow-up: drops any volume whose segmentation node
+        no longer exists in the scene — the Data module is treated as
+        ground truth, so a deletion there is respected and never
+        resurrected by a recompute answer here. The stale flag is
+        cleared in that case so a later enter() is silent instead of
+        re-prompting.
         """
         if not getattr(self, "_logic", None):
             return
@@ -1674,7 +1797,32 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         if not stale_nodes:
             return
 
+        seg_still_present = getattr(
+            self._logic, "volume_node_references_existing_seg", lambda _v: True
+        )
+
         for vol in stale_nodes:
+            # Honour "Data module is ground truth": if the user deleted
+            # the segmentation in the Data module, drop the stale flag
+            # silently instead of asking the user a question whose
+            # default-Yes would resurrect the segmentation.
+            if not seg_still_present(vol):
+                try:
+                    getattr(
+                        self._logic, "clear_stale_flag_for_volume_node", lambda _v: None
+                    )(vol)
+                except Exception:
+                    pass
+                try:
+                    vol.RemoveAttribute("ZebrafishAnalysis.exclude")
+                except Exception:
+                    pass
+                try:
+                    vol.SetAttribute("ZebrafishAnalysis.error", "")
+                except Exception:
+                    pass
+                continue
+
             name = ""
             try:
                 name = vol.GetName() if hasattr(vol, "GetName") else ""
@@ -1696,6 +1844,17 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         ``"dismiss"``. ``"dismiss"`` is treated like ``"no"`` but
         stops the prompt loop (lets a user "ask no to all" by closing
         one prompt with the close button).
+
+        Issue #56 follow-up: this prompt is now safe to answer "Yes" to
+        unconditionally. ``_recompute_for_volume_node`` →
+        ``apply_analysis_to_volume_node`` → ``_create_segmentation_for_volume``
+        reuses an existing segmentation node when one resolves for the
+        volume (the typical case after a Segment Editor edit), so the
+        recompute refreshes Body/Eye in place without stacking a
+        duplicate node. Volumes whose segmentation the user deleted in
+        the Data module are filtered out earlier in the loop via
+        ``Logic.volume_node_references_existing_seg`` and never reach
+        this prompt.
         """
         try:
             import qt
@@ -1823,6 +1982,12 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         based on whether the currently shown row's segmentation is
         marked stale. No-op when the button has not been created yet
         (older builds / tests without the widget fully set up).
+
+        Issue #56 follow-up: also hides the button when the row's
+        segmentation node no longer exists in the scene — the user
+        deleted it from the Data module and clicking "Recompute" here
+        would resurrect it, defeating their delete. Honour the deletion
+        silently.
         """
         btn = getattr(self, "_recompute_btn", None)
         if btn is None:
@@ -1831,12 +1996,21 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         try:
             if 0 <= self._current_detail_idx < len(self._results):
                 vol = self._results[self._current_detail_idx].get("_volume_node")
-                is_stale = bool(
-                    vol is not None
-                    and getattr(
-                        self._logic, "is_volume_node_stale", lambda _v: False
-                    )(vol)
-                )
+                if vol is not None:
+                    is_stale = bool(
+                        getattr(self._logic, "is_volume_node_stale", lambda _v: False)(vol)
+                    )
+                    if is_stale:
+                        # Suppress the button when the seg node the stale
+                        # flag points at has been removed — Data-module
+                        # delete is ground truth and a manual "Recompute"
+                        # click here would resurrect the segmentation.
+                        seg_present = getattr(
+                            self._logic,
+                            "volume_node_references_existing_seg",
+                            lambda _v: True,
+                        )(vol)
+                        is_stale = bool(seg_present)
         except Exception:
             is_stale = False
         try:

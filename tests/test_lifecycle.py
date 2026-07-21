@@ -574,9 +574,9 @@ def test_observer_registration_is_idempotent():
         w._register_scene_observers()
         count_after_second = len(w._obs)
 
-        # StartCloseEvent + EndCloseEvent + EndImportEvent = 3 observers
-        assert count_after_first == 3, f"Expected 3 observers after first call, got {count_after_first}"
-        assert count_after_second == 3, (
+        # StartCloseEvent + EndCloseEvent + StartImportEvent + EndImportEvent
+        assert count_after_first == 4, f"Expected 4 observers after first call, got {count_after_first}"
+        assert count_after_second == 4, (
             f"Second call must not add duplicates; got {count_after_second} observers"
         )
         print("OK")
@@ -604,9 +604,9 @@ def test_cleanup_resets_observer_registration_flag():
         )
         # Re-registration must work exactly once after a cleanup
         w._register_scene_observers()
-        # StartCloseEvent + EndCloseEvent + EndImportEvent = 3 observers
-        assert len(w._obs) == 3, (
-            f"Re-registration should add 3 observers; got {len(w._obs)}"
+        # StartCloseEvent + EndCloseEvent + StartImportEvent + EndImportEvent
+        assert len(w._obs) == 4, (
+            f"Re-registration should add 4 observers; got {len(w._obs)}"
         )
         assert w._sceneObserversRegistered is True
         print("OK")
