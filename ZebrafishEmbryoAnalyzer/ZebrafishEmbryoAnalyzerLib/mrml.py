@@ -1599,9 +1599,24 @@ def _reparent_in_subject_hierarchy(scene, child_node, parent_node):
         sh_node = slicer.vtkMRMLSubjectHierarchyNode.GetSubjectHierarchyNode(scene)
         if sh_node is None:
             return
+        scene_item = sh_node.GetSceneItemID()
         parent_item = sh_node.GetItemByDataNode(parent_node)
         child_item = sh_node.GetItemByDataNode(child_node)
-        if parent_item and child_item:
+        # Issue #85: a freshly added node does not necessarily have a Subject
+        # Hierarchy item yet — the plugin that owns it may not have run. The
+        # previous ``if parent_item and child_item`` then silently did nothing,
+        # which is why segmentations sat at the scene root while the markups
+        # created moments later were nested correctly. Create the item rather
+        # than skipping.
+        if not child_item:
+            child_item = sh_node.CreateItem(scene_item, child_node)
+        if not parent_item or not child_item:
+            return
+        # Only claim a node that is still at the scene root. Re-running an
+        # analysis must not drag a node the user deliberately filed somewhere
+        # else back under the volume — and this way the call is idempotent, so
+        # it is safe on the reuse paths too.
+        if sh_node.GetItemParent(child_item) == scene_item:
             sh_node.SetItemParent(child_item, parent_item)
     except Exception:
         pass
@@ -1679,8 +1694,8 @@ def _create_segmentation_for_volume(result, volume_node, scene, um_per_px):
         preserve_user_segments=not created_here,
     )
     _set_node_reference(volume_node, ROLE_ZEBRAFISH_SEGMENTATION, seg_node)
+    _reparent_in_subject_hierarchy(scene, seg_node, volume_node)
     if created_here:
-        _reparent_in_subject_hierarchy(scene, seg_node, volume_node)
         # Every per-image segmentation is created hidden — without this, a
         # multi-image batch shows every segmentation stacked on top of each
         # other in the slice view regardless of which volume is the current
@@ -1777,8 +1792,7 @@ def _create_markups_line_for_volume(result, volume_node, scene):
     _add_line_endpoints(line, sl_pts, result, volume_node)
     _lock_markups_node(line)
     _set_node_reference(volume_node, ROLE_ZEBRAFISH_MARKUPS_LINE, line)
-    if created_here:
-        _reparent_in_subject_hierarchy(scene, line, volume_node)
+    _reparent_in_subject_hierarchy(scene, line, volume_node)
     return line
 
 
@@ -2082,8 +2096,7 @@ def _create_markups_curve_for_volume(result, volume_node, scene):
     _add_curve_points(curve, path_pts, result)
     _lock_markups_node(curve)
     _set_node_reference(volume_node, ROLE_ZEBRAFISH_MARKUPS_CURVE, curve)
-    if created_here:
-        _reparent_in_subject_hierarchy(scene, curve, volume_node)
+    _reparent_in_subject_hierarchy(scene, curve, volume_node)
     return curve
 
 
