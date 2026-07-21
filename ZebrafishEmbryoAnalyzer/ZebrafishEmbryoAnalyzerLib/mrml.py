@@ -50,7 +50,6 @@ ATTR_RATIO = ATTR_PREFIX + "ratio"
 ATTR_EYE_AREA = ATTR_PREFIX + "eye_area"
 ATTR_EYE_DIAMETER = ATTR_PREFIX + "eye_diameter"
 ATTR_EXCLUDE = ATTR_PREFIX + "exclude"
-ATTR_SEG_MTIME = ATTR_PREFIX + "segMTime"
 # Issue #42: a segmentation node's ``ModifiedEvent`` observer sets
 # ``ZebrafishAnalysis.stale = "true"`` whenever the user edits a Body
 # mask in the Segment Editor. Cleared on successful recompute.
@@ -268,8 +267,6 @@ def volume_node_to_result_dict(node):
       gallery rebuilds must read it from the volume node directly via
       issue #41's reload path; this helper only covers the
       table-derivation contract.
-    * ``segMTime`` is intentionally not propagated to the result dict —
-      it is metadata for issue #5, not a metric.
     """
     length = _coerce_attr_float(node, ATTR_LENGTH)
     ratio = _coerce_attr_float(node, ATTR_RATIO)
@@ -502,6 +499,79 @@ def mark_volume_node_stale(volume_node):
         pass
 
 
+def segment_labelmap_mtimes(seg_node):
+    """Return ``{segment_id: labelmap MTime}`` for every segment on ``seg_node``.
+
+    This is the only reliable "did the user actually edit this segmentation"
+    signal. Painting in the Segment Editor changes the voxels inside each
+    segment's ``vtkOrientedImageData`` binary-labelmap representation, and
+    that modification does **not** propagate upwards: measured against a live
+    scene, a brush stroke left ``segNode.GetMTime()``,
+    ``segNode.GetSegmentation().GetMTime()`` and ``segment.GetMTime()`` all
+    unchanged while only the representation's MTime advanced (issue #81).
+    Slicer's own ``segNode.GetMTime()`` does advance for display-node and
+    representation-conversion work during scene import, i.e. exactly the
+    events that must *not* count as user edits — so comparing node MTimes
+    gets the answer backwards in both directions.
+
+    Mirrors what Slicer does internally in
+    ``qt-scripted-modules/SegmentEditorEffects/AbstractScriptedSegmentEditorAutoCompleteEffect.py``
+    (``selectedSegmentModifiedTimes``), which keeps a per-segment-ID map of
+    exactly this MTime to decide whether a segment really changed.
+
+    Note that Slicer may keep several segments in one shared labelmap, so
+    editing Eye can advance Body's MTime too. For "any edit invalidates this
+    row's metrics" that is correct, if slightly coarse.
+
+    Returns an empty dict when the node, its segmentation or the Slicer
+    runtime is unavailable — callers treat "no readings" as "cannot tell",
+    never as "changed". Never raises.
+    """
+    if seg_node is None:
+        return {}
+    try:
+        import slicer  # lazy: tests never import slicer
+    except Exception:
+        return {}
+    try:
+        segmentation = seg_node.GetSegmentation()
+    except Exception:
+        return {}
+    if segmentation is None:
+        return {}
+    try:
+        representation_name = (
+            slicer.vtkSegmentationConverter
+            .GetSegmentationBinaryLabelmapRepresentationName()
+        )
+    except Exception:
+        return {}
+    try:
+        segment_ids = list(segmentation.GetSegmentIDs())
+    except Exception:
+        return {}
+
+    mtimes = {}
+    for segment_id in segment_ids:
+        try:
+            segment = segmentation.GetSegment(segment_id)
+        except Exception:
+            continue
+        if segment is None:
+            continue
+        try:
+            labelmap = segment.GetRepresentation(representation_name)
+        except Exception:
+            continue
+        if labelmap is None:
+            continue
+        try:
+            mtimes[segment_id] = int(labelmap.GetMTime())
+        except Exception:
+            continue
+    return mtimes
+
+
 def is_volume_node_stale(volume_node):
     """Return True if the volume node's ``ATTR_STALE`` attribute is "true"."""
     if volume_node is None or not hasattr(volume_node, "GetAttribute"):
@@ -526,54 +596,6 @@ def clear_volume_node_stale(volume_node):
         volume_node.RemoveAttribute(ATTR_STALE)
     except Exception:
         pass
-
-
-def clear_stale_marking(volume_node):
-    """Undo the full stale marking that :func:`mark_volume_node_stale` writes.
-
-    ``mark_volume_node_stale`` sets ``stale=true``, ``exclude=true`` and
-    ``error=STALE_ERROR_MESSAGE`` together, and Slicer serialises all three
-    into the saved scene. On reload the saved segmentation *is* the current
-    state (Data module is ground truth), so a row flagged stale in the
-    previous session must come back clean — otherwise the reload replays the
-    recompute prompt, the "could not be restored" warning, and
-    :func:`overlay.make_full_overlay` suppresses the overlay because the row
-    is excluded.
-
-    Only rows carrying the exact stale-error signature are touched, so a
-    genuine user exclusion (which never carries the stale error) and
-    unrelated error rows (e.g. "Could not read image.") are left verbatim.
-    ``exclude`` is reset to ``"false"`` rather than removed so
-    :func:`validate_volume_node`'s "was analysed" check — keyed on the
-    attribute's presence — still holds.
-
-    Returns True when a stale marking was undone, False otherwise. Never
-    raises: safe to call over every tracked node on the scene-reload path.
-    """
-    if volume_node is None or not hasattr(volume_node, "GetAttribute"):
-        return False
-    error_attr = ATTR_PREFIX + "error"
-    try:
-        if volume_node.GetAttribute(error_attr) != STALE_ERROR_MESSAGE:
-            return False
-    except Exception:
-        return False
-    try:
-        if hasattr(volume_node, "RemoveAttribute"):
-            volume_node.RemoveAttribute(ATTR_STALE)
-    except Exception:
-        pass
-    try:
-        if hasattr(volume_node, "RemoveAttribute"):
-            volume_node.RemoveAttribute(error_attr)
-    except Exception:
-        pass
-    try:
-        if hasattr(volume_node, "SetAttribute"):
-            volume_node.SetAttribute(ATTR_EXCLUDE, "false")
-    except Exception:
-        pass
-    return True
 
 
 def volume_nodes_to_results(volume_nodes):
@@ -1356,9 +1378,6 @@ def _write_metric_attributes(result, volume_node):
     * ``ZebrafishAnalysis.eye_diameter``  — float µm or ""
     * ``ZebrafishAnalysis.exclude``       — "true" / "false" (always present;
       defaults to "false" when the key is missing on the result dict)
-    * ``ZebrafishAnalysis.segMTime``      — float, segmentation node
-      ``GetMTime()`` at the moment the attributes were written; used by
-      sub-issue #5 to detect external edits.
 
     All attributes are written unconditionally so the reader can distinguish
     "the value is the empty string because length was disabled" from "the
@@ -1380,23 +1399,6 @@ def _write_metric_attributes(result, volume_node):
         ATTR_EYE_DIAMETER, _format_attr(result.get("eye_diameter"))
     )
     volume_node.SetAttribute(ATTR_EXCLUDE, "true" if exclude_val else "false")
-    # segMTime is supplied by the per-image helper once the segmentation node
-    # is created. The writer sets it via SetAttribute(ATTR_SEG_MTIME, ...)
-    # immediately after ``update_segmentation_node`` returns.
-
-
-def _seg_mtime(seg_node) -> str:
-    """Return ``GetMTime()`` as a string, or "" if unavailable.
-
-    Stored on the volume node so sub-issue #5 can compare against the current
-    segmentation node MTime and detect external Segment Editor edits.
-    """
-    if seg_node is None or not hasattr(seg_node, "GetMTime"):
-        return ""
-    try:
-        return repr(float(seg_node.GetMTime()))
-    except Exception:
-        return ""
 
 
 def _set_node_reference(volume_node, role, child_node):
@@ -2003,9 +2005,7 @@ def apply_analysis_to_volume_node(result, volume_node, scene, um_per_px):
     3. A ``vtkMRMLMarkupsCurveNode`` built from ``path_points``, attached
        via ``ROLE_ZEBRAFISH_MARKUPS_CURVE`` — only when ``path_points`` has
        at least two entries.
-    4. Metric attributes under the ``ZebrafishAnalysis.`` prefix, including
-       ``segMTime`` recorded right after step 1 (sub-issue #5 compares this
-       against the segmentation node's current MTime).
+    4. Metric attributes under the ``ZebrafishAnalysis.`` prefix.
 
     Must be called on the Slicer main thread; MRML / vtk objects live there.
     Returns ``None`` silently if ``volume_node`` or ``scene`` is ``None`` or
@@ -2063,13 +2063,10 @@ def apply_analysis_to_volume_node(result, volume_node, scene, um_per_px):
             "apply_analysis_to_volume_node: MarkupsCurveNode creation failed"
         )
 
-    # Attributes last so segMTime can be recorded after the segmentation node
-    # has actually been written (sub-issue #5 compares this MTime against the
-    # segmentation node's current GetMTime() to detect external edits).
+    # Attributes last, so a failure here cannot leave a half-written
+    # segmentation behind.
     try:
         _write_metric_attributes(result, volume_node)
-        if seg_node is not None:
-            volume_node.SetAttribute(ATTR_SEG_MTIME, _seg_mtime(seg_node))
     except Exception:
         logging.exception(
             "apply_analysis_to_volume_node: attribute write failed"

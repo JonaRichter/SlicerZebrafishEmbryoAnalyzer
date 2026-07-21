@@ -618,7 +618,6 @@ def test_per_image_writes_metric_attributes(
         ATTR_LENGTH,
         ATTR_PREFIX,
         ATTR_RATIO,
-        ATTR_SEG_MTIME,
         apply_analysis_to_volume_node,
     )
 
@@ -639,7 +638,6 @@ def test_per_image_writes_metric_attributes(
         assert volume_node.GetAttribute(name) == expected, (
             f"{name}: expected {expected!r}, got {volume_node.GetAttribute(name)!r}"
         )
-    assert ATTR_SEG_MTIME in volume_node._attrs
 
 
 def test_per_attribute_exclude_true_is_recorded(
@@ -655,27 +653,6 @@ def test_per_attribute_exclude_true_is_recorded(
     result["exclude"] = True
     apply_analysis_to_volume_node(result, volume_node, scene, 22.99)
     assert volume_node.GetAttribute(ATTR_EXCLUDE) == "true"
-
-
-# ---------------------------------------------------------------------------
-# Acceptance criterion 8 — segMTime round-trips segmentation node MTime
-# ---------------------------------------------------------------------------
-
-def test_attribute_segMTime_matches_segmentation_getmtime(
-    volume_node, scene, stub_update_segmentation_node, stub_slicer_import,
-):
-    """``ZebrafishAnalysis.segMTime`` must equal str(segNode.GetMTime())."""
-    from ZebrafishEmbryoAnalyzerLib.mrml import (
-        ATTR_SEG_MTIME,
-        apply_analysis_to_volume_node,
-    )
-
-    result = _make_full_result()
-    seg_node = apply_analysis_to_volume_node(result, volume_node, scene, 22.99)
-    assert seg_node is not None, "seg node must exist for this assertion"
-
-    expected = repr(float(seg_node.GetMTime()))
-    assert volume_node.GetAttribute(ATTR_SEG_MTIME) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -1016,7 +993,6 @@ def test_module_exports_attr_namespace_constants():
         "ATTR_EYE_AREA",
         "ATTR_EYE_DIAMETER",
         "ATTR_EXCLUDE",
-        "ATTR_SEG_MTIME",
     ):
         assert hasattr(mrml, name), f"mrml.py must expose {name}"
     # Namespacing invariant: every ATTR_* must start with ATTR_PREFIX.
@@ -1027,7 +1003,6 @@ def test_module_exports_attr_namespace_constants():
         "ATTR_EYE_AREA",
         "ATTR_EYE_DIAMETER",
         "ATTR_EXCLUDE",
-        "ATTR_SEG_MTIME",
     ):
         value = getattr(mrml, name)
         assert value.startswith(mrml.ATTR_PREFIX), (
