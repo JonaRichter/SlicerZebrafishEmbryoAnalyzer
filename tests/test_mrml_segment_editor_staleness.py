@@ -441,6 +441,29 @@ def _build_widget_prompt_double(policy_result):
     return w
 
 
+def test_elide_filename_keeps_short_names_untouched():
+    from ZebrafishEmbryoAnalyzerLib.widget import elide_filename
+    assert elide_filename("short.png") == "short.png"
+    assert elide_filename("") == ""
+    assert elide_filename(None) == ""
+
+
+def test_elide_filename_drops_from_the_middle_within_the_budget():
+    """Both ends carry information — the head tells two dataset images apart,
+    the tail holds the extension — so the cut goes in the middle.
+    """
+    from ZebrafishEmbryoAnalyzerLib.widget import elide_filename
+    a = "fish_000001_jpg.rf.f9e4338f9fdce1d85c4fdbe1e177ecce.jpg"
+    b = "fish_000002_jpg.rf.29a95f68033583013088fc4f25d98967.jpg"
+
+    ea, eb = elide_filename(a), elide_filename(b)
+
+    assert len(ea) == 44 and len(eb) == 44
+    assert ea.startswith("fish_000001") and eb.startswith("fish_000002")
+    assert ea.endswith(".jpg") and eb.endswith(".jpg")
+    assert ea != eb, "elided names must stay distinguishable"
+
+
 def test_prompt_recompute_asks_once_and_recomputes_every_stale_row():
     """Issue #83: two edited images must produce one dialog, not two, and a
     yes must cover both.

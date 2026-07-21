@@ -26,6 +26,36 @@ _MODEL_ENTRIES = [
 _MODEL_BY_ID  = {mid: data for _, mid, data in _MODEL_ENTRIES}
 _DEFAULT_MODEL_ID = "general"
 
+# Longest filename kept intact in a message-box listing. Dataset names like
+# ``fish_000001_jpg.rf.f9e4338f9fdce1d85c4fdbe1e177ecce.jpg`` wrap onto a
+# second line otherwise, which turns a list of a few images into a wall of
+# text.
+_FILENAME_DISPLAY_LIMIT = 44
+
+
+def elide_filename(name, limit=_FILENAME_DISPLAY_LIMIT):
+    """Shorten ``name`` to ``limit`` characters, dropping from the middle.
+
+    The gallery elides with ``fontMetrics().elidedText`` (see
+    ``gallery_tab.py``), which needs a widget and a pixel width. A message
+    box's text has neither, so this uses a character budget instead —
+    deterministic and unit-testable.
+
+    Dropped from the middle rather than the end because both ends carry
+    information: the head distinguishes images from one another, the tail
+    holds the extension. Cutting the tail would leave a list of names that
+    all look alike apart from a truncation marker.
+    """
+    try:
+        text = str(name or "")
+    except Exception:
+        return ""
+    if limit < 8 or len(text) <= limit:
+        return text
+    tail = min(14, (limit - 1) // 2)
+    head = limit - tail - 1
+    return text[:head] + "…" + text[-tail:]
+
 
 # ---------------------------------------------------------------------------
 # Parameter node schema — names and string-encoded defaults
@@ -1868,14 +1898,14 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             import qt
             if len(names) == 1:
                 text = (
-                    f"Segmentation for {names[0]} has been edited in the "
-                    f"Segment Editor.\n\nRecompute metrics now?"
+                    f"Segmentation for {elide_filename(names[0])} has been "
+                    f"edited in the Segment Editor.\n\nRecompute metrics now?"
                 )
             else:
                 # Cap the list so a large batch cannot produce a dialog taller
                 # than the screen.
                 shown = names[:10]
-                listing = "\n".join(f"\u2022 {n}" for n in shown)
+                listing = "\n".join(f"\u2022 {elide_filename(n)}" for n in shown)
                 if len(names) > len(shown):
                     listing += f"\n\u2022 and {len(names) - len(shown)} more"
                 text = (
