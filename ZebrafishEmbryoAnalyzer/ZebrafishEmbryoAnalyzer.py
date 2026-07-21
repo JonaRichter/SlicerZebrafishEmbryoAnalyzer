@@ -311,6 +311,7 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
             from ZebrafishEmbryoAnalyzerLib.mrml import (
                 list_tracked_volume_nodes,
                 refresh_stale_flag,
+                renest_segmentation_under_volume,
             )
         except Exception:
             return
@@ -326,6 +327,17 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
             except Exception:
                 logging.exception(
                     "ZebrafishEmbryoAnalyzer: staleness refresh failed for one row"
+                )
+            # Issue #85: the Segment Editor leaves the segmentation it just
+            # edited parented to the scene root. Repair it here, where we are
+            # already walking every tracked node, so the Data tree is tidy
+            # again as soon as the user comes back — not only after the next
+            # analysis write.
+            try:
+                renest_segmentation_under_volume(vol, scene)
+            except Exception:
+                logging.exception(
+                    "ZebrafishEmbryoAnalyzer: re-nesting a segmentation failed"
                 )
 
     def _on_scene_start_import(self, caller=None, event=None):

@@ -1622,6 +1622,36 @@ def _reparent_in_subject_hierarchy(scene, child_node, parent_node):
         pass
 
 
+def renest_segmentation_under_volume(volume_node, scene):
+    """Put the volume's segmentation back under it in the Data tree.
+
+    Issue #85: Slicer's Segment Editor re-homes a segmentation while it is
+    being edited — measured on a live scene, only the fish that had just been
+    edited showed ``SH-Parent = Scene`` while every other segmentation was
+    still nested. That is Slicer's own behaviour and cannot be prevented from
+    here, so the module repairs it the next time it looks at the node.
+
+    Delegates to :func:`_reparent_in_subject_hierarchy`, which only claims a
+    node still sitting at the scene root — so a segmentation the user
+    deliberately filed elsewhere stays where they put it. Never raises.
+    """
+    if volume_node is None or scene is None:
+        return
+    try:
+        seg_id = volume_node.GetNodeReferenceID(ROLE_ZEBRAFISH_SEGMENTATION)
+    except Exception:
+        return
+    if not seg_id:
+        return
+    try:
+        seg_node = scene.GetNodeByID(seg_id)
+    except Exception:
+        return
+    if seg_node is None:
+        return
+    _reparent_in_subject_hierarchy(scene, seg_node, volume_node)
+
+
 def _get_existing_seg_for_volume(volume_node, scene):
     """Return the segmentation node already attached to ``volume_node``, if any.
 

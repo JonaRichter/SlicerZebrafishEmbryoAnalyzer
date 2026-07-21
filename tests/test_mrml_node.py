@@ -1356,3 +1356,39 @@ def test_reparent_leaves_a_node_the_user_filed_elsewhere_alone():
     _reparent_with(sh, seg, volume)
 
     assert sh.GetItemParent(sh.GetItemByDataNode(seg)) == folder_item
+
+
+def test_renest_segmentation_under_volume_repairs_a_root_parented_node():
+    """Issue #85: the Segment Editor leaves the segmentation it just edited at
+    the scene root. The module repairs that the next time it walks the node.
+    """
+    from ZebrafishEmbryoAnalyzerLib import mrml
+
+    volume, seg = MagicMock(name="volume"), MagicMock(name="seg")
+    volume.GetNodeReferenceID.return_value = "segNodeId"
+    scene = MagicMock(name="scene")
+    scene.GetNodeByID.return_value = seg
+    sh = _FakeSubjectHierarchy(known=[volume, seg])
+
+    fake_slicer = MagicMock()
+    fake_slicer.vtkMRMLSubjectHierarchyNode.GetSubjectHierarchyNode.return_value = sh
+    with patch.dict("sys.modules", {"slicer": fake_slicer}):
+        mrml.renest_segmentation_under_volume(volume, scene)
+
+    assert sh.GetItemParent(sh.GetItemByDataNode(seg)) == sh.GetItemByDataNode(volume)
+
+
+def test_renest_segmentation_is_a_noop_without_a_segmentation():
+    """A volume that never got a segmentation, or whose segmentation the user
+    deleted, must not raise or invent one.
+    """
+    from ZebrafishEmbryoAnalyzerLib import mrml
+
+    volume = MagicMock(name="volume")
+    volume.GetNodeReferenceID.return_value = ""
+    mrml.renest_segmentation_under_volume(volume, MagicMock(name="scene"))
+
+    volume.GetNodeReferenceID.return_value = "danglingId"
+    scene = MagicMock(name="scene")
+    scene.GetNodeByID.return_value = None
+    mrml.renest_segmentation_under_volume(volume, scene)   # must not raise
