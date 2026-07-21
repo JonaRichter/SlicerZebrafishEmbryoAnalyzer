@@ -1863,6 +1863,12 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         # Auto-exclude error rows so the visual state and export filter are consistent.
         self._excluded = {r["filename"] for r in self._results if r.get("error")}
         self._results_tab.populate(self._results, self._excluded)
+        if self._results:
+            # Keep the Detail tab in sync even if the user reaches it via
+            # the tab bar instead of a gallery click — otherwise it shows
+            # whatever stale/placeholder state it was last left in.
+            self._current_detail_idx = 0
+            self._detail.show_result(0, self._results)
         self._tabs.setCurrentIndex(0)
         # Issue #42: wire ModifiedEvent observers on the per-image
         # segmentation nodes so a later edit in the Segment Editor
