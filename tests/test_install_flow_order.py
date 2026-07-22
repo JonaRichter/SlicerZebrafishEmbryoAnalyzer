@@ -9,6 +9,7 @@ Verifies:
   - install replacing something already imported → restart dialog, caller stops
   - a failed install is reported and does not proceed
   - the confirmation and the restart use Slicer's standard dialogs
+  - a failing pip install is left to Slicer's own dialog, which carries the full log
 
 Pure Python — no Slicer, Qt, or torch required.
 """
@@ -211,17 +212,6 @@ def test_declining_the_restart_refreshes_status_instead():
 
         slicer.util.restart.assert_not_called()
         w.refresh_dependency_status.assert_called_once()
-
-
-def test_add_log_tolerates_missing_panel():
-    """Logic-side callbacks must not have to know how far construction has progressed."""
-    with _stub_slicer_env():
-        cls = _widget_class()
-        w = object.__new__(cls)
-        cls.add_log(w, "anything")      # no _status_log attribute at all
-        w._status_log = None
-        cls.add_log(w, "anything")
-        cls.clear_log(w)
 
 
 def test_no_custom_restart_dialog_remains():

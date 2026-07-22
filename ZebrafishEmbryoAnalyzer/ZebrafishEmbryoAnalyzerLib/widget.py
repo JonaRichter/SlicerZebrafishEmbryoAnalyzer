@@ -387,18 +387,6 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         ex_layout.addWidget(self._btn_excel)
         ex_layout.addWidget(self._btn_csv)
 
-        # Status area. Installation steps, download progress and per-image analysis errors
-        # go here rather than only to the Python console, which users do not open.
-        status_box = ctk.ctkCollapsibleButton()
-        status_box.text = "Status"
-        status_box.collapsed = False
-        vbox.addWidget(status_box)
-        st_layout = qt.QVBoxLayout(status_box)
-        self._status_log = qt.QPlainTextEdit()
-        self._status_log.setReadOnly(True)
-        self._status_log.setMaximumHeight(140)
-        st_layout.addWidget(self._status_log)
-
 
     def _build_right_panel(self, splitter):
         self._tabs = qt.QTabWidget()
@@ -580,7 +568,6 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         if not slicer.util.confirmOkCancelDisplay(
             summary, "Download required models", detailedText=body
         ):
-            self.add_log("Model download declined.")
             return False
 
         return True
@@ -638,8 +625,6 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             )
 
     def _on_run(self):
-        self.clear_log()
-
         if not self.ensure_dependencies("analysis"):
             return
 
@@ -664,11 +649,9 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             if missing:
                 if not self._prompt_download_models(missing):
                     return
-                self.add_log(f"Downloading {len(missing)} model file(s)…")
                 self._start_model_download(missing, model_id, params, token)
                 return
 
-            self.add_log(f"Analysing {len(self._image_paths)} image(s)…")
             self._start_inference_process(model_id, params, token)
 
     def _start_model_download(self, missing, model_id, params, token):
@@ -932,23 +915,6 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         finally:
             node.EndModify(wasModified)
 
-    def add_log(self, text):
-        """Append a line to the Status area of the module panel.
-
-        Tolerates being called before the panel exists, so logic-side callbacks do not
-        have to know how far construction has progressed.
-        """
-        log = getattr(self, "_status_log", None)
-        if log is None:
-            return
-        log.appendPlainText(text)
-        log.ensureCursorVisible()
-
-    def clear_log(self):
-        log = getattr(self, "_status_log", None)
-        if log is not None:
-            log.clear()
-
     def _refresh_run_button(self):
         """Enable Run as soon as images are queued.
 
@@ -994,8 +960,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         notice.setVisible(True)
 
     def _on_install_deps_clicked(self):
-        if self.ensure_dependencies("analysis"):
-            self.add_log("All required packages are present.")
+        self.ensure_dependencies("analysis")
 
     def _categorize_inference_error(self, message, controller):
         """Return a user-facing error string based on exit_code; suppress raw tracebacks."""
@@ -1062,18 +1027,17 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             "Confirm Python package installation",
             detailedText=detail,
         ):
-            self.add_log("Installation declined. " + ", ".join(items) + " still missing.")
             return False
 
         import qt
-        self.add_log("Installing: " + ", ".join(items))
         slicer.app.setOverrideCursor(qt.Qt.WaitCursor)
         try:
+            # install_packages reports the failures it knows about and returns "failed";
+            # anything reaching here is an unexpected defect worth surfacing.
             outcome = dependency_installer.install_packages(missing)
         except Exception as exc:
             import logging
             logging.exception("Dependency install failed: %s", exc)
-            self.add_log(f"Installation failed: {exc}")
             slicer.util.errorDisplay(f"Installation failed: {exc}")
             return False
         finally:
@@ -1082,7 +1046,6 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self.refresh_dependency_status()
 
         if outcome == "ready":
-            self.add_log("Installation finished. Continuing.")
             return True
         if outcome == "restart":
             self._show_restart_dialog()
@@ -1090,7 +1053,6 @@ class ZebrafishEmbryoAnalyzerMainWidget:
 
     def _show_restart_dialog(self):
         """Ask to restart after a package installation, the way Slicer does it elsewhere."""
-        self.add_log("Installation complete. Slicer must be restarted.")
         if slicer.util.confirmOkCancelDisplay(
             "Application restart is required to complete the installation of the required "
             "Python packages.\nPress OK to restart.",
@@ -1153,19 +1115,17 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._tabs.setCurrentIndex(0)
         errors = [r for r in self._results if r.get("error")]
         if errors:
-            # Full text — including tracebacks — into the Status area, so it stays readable
-            # and available without opening the Python console. The dialog only summarises.
-            for r in errors:
-                self.add_log(f"{r['filename']}: {r['error']}")
+            # Short summary in the message, full text including tracebacks behind the
+            # dialog's "Details" — readable without opening the Python console, which the
+            # previous version required.
             names = "\n".join(f"• {r['filename']}" for r in errors[:10])
             if len(errors) > 10:
                 names += f"\n… and {len(errors) - 10} more"
+            detail = "\n\n".join(f"{r['filename']}:\n{r['error']}" for r in errors)
             slicer.util.warningDisplay(
-                f"{len(errors)} of {len(self._results)} image(s) could not be analysed:\n\n"
-                f"{names}\n\nDetails are in the Status area of the module panel."
+                f"{len(errors)} of {len(self._results)} image(s) could not be analysed:\n\n{names}",
+                detailedText=detail,
             )
-        else:
-            self.add_log(f"Analysis finished: {len(self._results)} image(s).")
 
     def _on_export_excel(self):
         from ZebrafishEmbryoAnalyzerLib.export import export_excel

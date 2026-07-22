@@ -223,10 +223,10 @@ def install_packages(missing: dict, pip_fn=None, torch_fn=None) -> str:
         try:
             pip_fn(" ".join(requirements))
         except Exception as exc:
+            # No dialog here: slicer.util.pip_install already showed one containing the
+            # full pip log before raising. Ours would be a second, worse dialog — the
+            # exception text alone is just "non-zero exit status".
             logging.exception("Failed to install Python packages: %s", exc)
-            slicer.util.errorDisplay(
-                f"The required Python packages could not be installed:\n\n{exc}"
-            )
             return "failed"
 
     # numpy is the one package Slicer has already imported by the time we get here, so a

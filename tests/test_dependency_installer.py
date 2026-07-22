@@ -175,15 +175,17 @@ def test_install_reports_restart_when_numpy_version_changed(monkeypatch):
                                pip_fn=MagicMock(), torch_fn=MagicMock()) == "restart"
 
 
-def test_install_packages_reports_failure_of_the_batch(monkeypatch):
+def test_pip_failure_is_left_to_slicers_own_dialog(monkeypatch):
+    """slicer.util.pip_install already shows an error dialog containing the full pip log
+    before it raises. A second dialog from us would only add the exception text, which is
+    just "non-zero exit status"."""
     di, mock_slicer = _reload_with_slicer(monkeypatch)
     pip_fn = MagicMock(side_effect=RuntimeError("simulated failure"))
 
     assert di.install_packages({"torch": [], "general": ["timm", "openpyxl"]},
                                pip_fn=pip_fn, torch_fn=MagicMock()) == "failed"
 
-    mock_slicer.util.errorDisplay.assert_called_once()
-    assert "simulated failure" in mock_slicer.util.errorDisplay.call_args.args[0]
+    mock_slicer.util.errorDisplay.assert_not_called()
 
 
 def test_install_packages_aborts_remaining_when_torch_fails(monkeypatch):
