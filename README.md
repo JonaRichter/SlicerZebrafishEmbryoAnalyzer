@@ -74,11 +74,15 @@ On first open you will be prompted to install:
 
 | Package | Purpose |
 |---------|---------|
-| `torch`, `torchvision`, `timm`, `segmentation-models-pytorch` | ML inference |
+| `torch`, `torchvision` | ML inference — installed through the [PyTorch extension](https://github.com/Slicer/SlicerPyTorch), not by this extension |
+| `timm`, `segmentation-models-pytorch` | ML inference |
 | `opencv-python`, `scipy`, `scikit-image`, `pillow` | Image processing |
 | `openpyxl`, `matplotlib` | Export |
-| `numpy<2` | Pinned for torch compatibility |
 | `platformdirs` | Cache path lookup (soft dependency, falls back gracefully) |
+
+Torch comes from the PyTorch extension so that the build matching your hardware
+(CUDA, MPS or CPU) is selected. If that extension is not installed yet, it is
+installed first and Slicer needs a second restart before torch itself follows.
 
 Total download is several GB (PyTorch alone ~2 GB). Takes several minutes.
 

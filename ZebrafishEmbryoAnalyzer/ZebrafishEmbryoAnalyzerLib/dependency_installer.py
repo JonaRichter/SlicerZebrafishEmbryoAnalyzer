@@ -3,6 +3,10 @@ Dependency status check and install helpers for ZebrafishEmbryoAnalyzer.
 
 get_missing_packages()  -- pure Python, safe to call anywhere
 install_packages()      -- Slicer-only, called only from explicit user action
+
+Torch is never pip-installed from here. It comes from the PyTorch extension via
+PyTorchUtils, which selects the build matching the user's hardware; installing it
+ourselves from a fixed wheel index forced a CPU-only build on every platform.
 """
 
 REQUIRED_PACKAGES = [
@@ -15,8 +19,10 @@ REQUIRED_PACKAGES = [
     "pytesseract",
 ]
 
+# Detection only — provided by the PyTorch extension, never installed via pip here.
 TORCH_PACKAGES = ["torch", "torchvision"]
-TORCH_INDEX    = "https://download.pytorch.org/whl/cpu"
+
+PYTORCH_EXTENSION_NAME = "PyTorch"
 
 
 def _is_importable(name: str) -> bool:
@@ -30,174 +36,113 @@ def _is_importable(name: str) -> bool:
     return importlib.util.find_spec(import_name) is not None
 
 
-def _numpy_major() -> int:
-    """Return installed numpy major version, or 0 on failure."""
-    try:
-        import numpy as np
-        return int(np.__version__.split(".")[0])
-    except Exception:
-        return 0
-
-
 def get_missing_packages() -> dict:
     """
-    Return {"torch": [...], "general": [...], "numpy_pin": ["numpy<2"] | []}.
+    Return {"torch": [...], "general": [...]}.
     Pure Python — no slicer/qt import. Safe at any call site.
     """
     return {
-        "torch":     [p for p in TORCH_PACKAGES   if not _is_importable(p)],
-        "general":   [p for p in REQUIRED_PACKAGES if not _is_importable(p)],
-        "numpy_pin": ["numpy<2"] if _numpy_major() >= 2 else [],
+        "torch":   [p for p in TORCH_PACKAGES    if not _is_importable(p)],
+        "general": [p for p in REQUIRED_PACKAGES if not _is_importable(p)],
     }
 
 
-def _pip_install(args_str: str, cancel_check=None) -> None:
-    """Run pip install via subprocess, keeping the Qt event loop alive.
-
-    Uses Popen + polling so the progress dialog stays responsive during long
-    installs (Windows hides frozen dialogs; Linux shows 'not responding').
-    Outside Slicer (unit tests), falls back to a blocking wait.
-    Raises RuntimeError on non-zero exit or when cancel_check() returns True.
-    """
-    import subprocess
-    import sys
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "pip", "install"] + args_str.split(),
-        stdout=subprocess.DEVNULL,  # discard pip progress output; prevents pipe-buffer deadlock
-        stderr=subprocess.PIPE,
-    )
+def _pytorch_utils_logic():
+    """PyTorchUtils logic from the PyTorch extension, or None if it is not installed."""
     try:
-        import slicer as _slicer
-        import time
-        while proc.poll() is None:
-            _slicer.app.processEvents()
-            if cancel_check and cancel_check():
-                proc.terminate()
-                raise RuntimeError("Installation cancelled by user.")
-            time.sleep(0.05)
-    except ImportError:
-        proc.wait()  # outside Slicer (unit tests) — blocking wait is fine
-    out, err = proc.communicate()
-    if proc.returncode != 0:
-        detail = (err or b"").decode(errors="replace")
-        raise RuntimeError(detail[-2000:])
+        import PyTorchUtils
+    except ModuleNotFoundError:
+        return None
+    return PyTorchUtils.PyTorchUtilsLogic()
 
 
-def install_packages(missing: dict, pip_fn=None) -> bool:
+def install_pytorch_extension() -> bool:
+    """Install the PyTorch extension from the extension server.
+
+    Returns True once it is installed. Slicer must be restarted before
+    PyTorchUtils becomes importable.
     """
-    Install missing packages via subprocess pip, showing only our custom progress dialog.
-    Only called from an explicit user action. Never called at setup time.
-    missing: dict from get_missing_packages()
-    pip_fn: injectable for testing (default: _pip_install)
+    import slicer
+    manager = slicer.app.extensionsManagerModel()
+    if manager.isExtensionInstalled(PYTORCH_EXTENSION_NAME):
+        return True
+    return bool(manager.installExtensionFromServer(PYTORCH_EXTENSION_NAME))
+
+
+def _install_torch() -> str:
+    """Install torch and torchvision through the PyTorch extension.
+
+    Returns "ok" when torch is installed, or "restart" when the PyTorch extension
+    itself had to be installed first — PyTorchUtils only becomes importable after
+    a Slicer restart, so torch follows on the next run.
+    Raises RuntimeError if neither can be installed.
+    """
+    torch_logic = _pytorch_utils_logic()
+    if torch_logic is None:
+        if not install_pytorch_extension():
+            raise RuntimeError(
+                "The PyTorch extension could not be installed from the extension server. "
+                "Install it manually via the Extensions Manager and restart Slicer."
+            )
+        return "restart"
+
+    if torch_logic.installTorch(askConfirmation=False) is None:
+        raise RuntimeError("PyTorch could not be installed through the PyTorch extension.")
+    return "ok"
+
+
+def install_packages(missing: dict, pip_fn=None, torch_fn=None) -> bool:
+    """
+    Install missing packages. Only called from an explicit user action.
+
+    missing:  dict from get_missing_packages()
+    pip_fn:   injectable for testing (default: slicer.util.pip_install)
+    torch_fn: injectable for testing (default: _install_torch)
+
+    Returns True when the install ran, False when it was skipped in testing mode.
     """
     import slicer
     if slicer.app.testingEnabled():
-        return
+        return False
 
-    if pip_fn is None:
-        pip_fn = _pip_install
-
-    import qt
     import logging
 
-    # Build step list for progress dialog
-    steps = []
-    if missing.get("torch"):
-        steps.append(("torch+torchvision", "torch torchvision --index-url " + TORCH_INDEX))
-    for pkg in missing.get("general", []):
-        steps.append((pkg, pkg))
-    # numpy_pin step added conditionally at the end
-
-    total = len(steps)  # numpy pin added below if applicable
-
-    prog_dlg = qt.QDialog(slicer.util.mainWindow())
-    prog_dlg.setWindowTitle("ZebrafishEmbryoAnalyzer — Dependency Setup")
-    prog_dlg.setWindowFlags(
-        prog_dlg.windowFlags()
-        & ~qt.Qt.WindowContextHelpButtonHint
-        & ~qt.Qt.WindowCloseButtonHint
-    )
-    prog_dlg.setMinimumWidth(400)
-    _prog_layout = qt.QVBoxLayout(prog_dlg)
-    prog_label = qt.QLabel("Installing dependencies…")
-    _prog_layout.addWidget(prog_label)
-    prog_bar = qt.QProgressBar()
-    prog_bar.setRange(0, total + 1)
-    prog_bar.setValue(0)
-    _prog_layout.addWidget(prog_bar)
-
-    cancelled = [False]
-
-    def _on_cancel():
-        cancelled[0] = True
-
-    _btn_box = qt.QDialogButtonBox(prog_dlg)
-    _btn_box.addButton("Cancel", qt.QDialogButtonBox.RejectRole)
-    _btn_box.connect("rejected()", _on_cancel)
-    _prog_layout.addWidget(_btn_box)
-
-    prog_dlg.show()
-    slicer.app.processEvents()
+    if pip_fn is None:
+        pip_fn = slicer.util.pip_install
+    if torch_fn is None:
+        torch_fn = _install_torch
 
     errors = []
-    torch_ok = False
+    torch_needs_restart = False
 
-    step = 0
     if missing.get("torch"):
-        prog_label.setText(f"Installing PyTorch (CPU)… ({step + 1}/{total + 1})")
-        prog_bar.setValue(step)
-        slicer.app.processEvents()
+        slicer.util.showStatusMessage("ZebrafishEmbryoAnalyzer: installing PyTorch…")
         try:
-            pip_fn("torch torchvision --index-url " + TORCH_INDEX,
-                   cancel_check=lambda: cancelled[0])
-            torch_ok = True
+            torch_needs_restart = torch_fn() == "restart"
         except Exception as exc:
-            logging.exception("Failed to install torch: %s", exc)
-            errors.append(f"torch/torchvision: {exc}")
-        step += 1
-        slicer.app.processEvents()
-        if cancelled[0]:
-            prog_dlg.close()
-            return False
+            logging.exception("Failed to install PyTorch: %s", exc)
+            errors.append(f"PyTorch: {exc}")
 
     for pkg in missing.get("general", []):
-        prog_label.setText(f"Installing {pkg}… ({step + 1}/{total + 1})")
-        prog_bar.setValue(step)
-        slicer.app.processEvents()
+        slicer.util.showStatusMessage(f"ZebrafishEmbryoAnalyzer: installing {pkg}…")
         try:
-            pip_fn(pkg, cancel_check=lambda: cancelled[0])
+            pip_fn(pkg)
         except Exception as exc:
             logging.exception("Failed to install %s: %s", pkg, exc)
             errors.append(f"{pkg}: {exc}")
-        step += 1
-        slicer.app.processEvents()
-        if cancelled[0]:
-            break
-
-    # Pin numpy<2 if torch was just installed successfully OR was already present
-    if cancelled[0]:
-        prog_dlg.close()
-        return False
-    already_has_torch = _is_importable("torch")
-    if missing.get("numpy_pin") and (torch_ok or already_has_torch):
-        prog_label.setText(f"Pinning NumPy<2 for PyTorch compatibility… ({step + 1}/{total + 1})")
-        prog_bar.setValue(step)
-        slicer.app.processEvents()
-        try:
-            pip_fn('numpy<2', cancel_check=lambda: cancelled[0])
-        except Exception as exc:
-            logging.exception("Failed to pin numpy<2: %s", exc)
-            errors.append(f"numpy<2: {exc}")
-        step += 1
-
-    prog_bar.setValue(total + 1)
-    prog_dlg.close()
 
     if errors:
         slicer.util.errorDisplay(
             "Some packages could not be installed:\n" + "\n".join(f"  • {e}" for e in errors)
         )
+    elif torch_needs_restart:
+        slicer.util.showStatusMessage(
+            "ZebrafishEmbryoAnalyzer: PyTorch extension installed — restart Slicer, "
+            "then reopen this module to install PyTorch itself."
+        )
     else:
-        slicer.util.showStatusMessage("ZebrafishEmbryoAnalyzer: dependencies installed — restart required.")
+        slicer.util.showStatusMessage(
+            "ZebrafishEmbryoAnalyzer: dependencies installed — restart required."
+        )
 
     return True

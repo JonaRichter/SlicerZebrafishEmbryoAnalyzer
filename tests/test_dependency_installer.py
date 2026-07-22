@@ -2,6 +2,8 @@ import importlib
 import sys
 from unittest.mock import MagicMock
 
+import pytest
+
 from ZebrafishEmbryoAnalyzerLib.dependency_installer import _is_importable, get_missing_packages
 
 
@@ -16,201 +18,208 @@ def test_is_importable_misses_nonexistent():
 def test_is_importable_does_not_trigger_import():
     """find_spec must not cause the module to appear in sys.modules."""
     pkg = "skimage"
-    was_present = pkg in sys.modules
     sys.modules.pop(pkg, None)  # ensure not already loaded
     _is_importable("scikit-image")
-    after = pkg in sys.modules
-    assert after is False, "find_spec must not import the package"
+    assert pkg not in sys.modules, "find_spec must not import the package"
 
 
 # ---------------------------------------------------------------------------
-# T1 — get_missing_packages: all present, numpy<2
+# get_missing_packages
 # ---------------------------------------------------------------------------
 
 def test_get_missing_packages_all_present(monkeypatch):
     monkeypatch.setattr("ZebrafishEmbryoAnalyzerLib.dependency_installer._is_importable", lambda n: True)
-    monkeypatch.setattr("ZebrafishEmbryoAnalyzerLib.dependency_installer._numpy_major", lambda: 1)
     result = get_missing_packages()
     assert result["torch"] == []
     assert result["general"] == []
-    assert result["numpy_pin"] == []
 
-
-# ---------------------------------------------------------------------------
-# T2 — numpy>=2 triggers pin
-# ---------------------------------------------------------------------------
-
-def test_get_missing_packages_numpy_pin_when_numpy2(monkeypatch):
-    monkeypatch.setattr("ZebrafishEmbryoAnalyzerLib.dependency_installer._is_importable", lambda n: True)
-    monkeypatch.setattr("ZebrafishEmbryoAnalyzerLib.dependency_installer._numpy_major", lambda: 2)
-    result = get_missing_packages()
-    assert result["numpy_pin"] == ["numpy<2"]
-
-
-# ---------------------------------------------------------------------------
-# T3 — torch packages detected as missing
-# ---------------------------------------------------------------------------
 
 def test_get_missing_packages_torch_missing(monkeypatch):
     def fake_importable(name):
         return name not in ("torch", "torchvision")
     monkeypatch.setattr("ZebrafishEmbryoAnalyzerLib.dependency_installer._is_importable", fake_importable)
-    monkeypatch.setattr("ZebrafishEmbryoAnalyzerLib.dependency_installer._numpy_major", lambda: 1)
     result = get_missing_packages()
-    assert "torch" in result["torch"]
-    assert "torchvision" in result["torch"]
+    assert result["torch"] == ["torch", "torchvision"]
     assert result["general"] == []
 
 
+def test_get_missing_packages_reports_no_numpy_pin(monkeypatch):
+    """The global numpy<2 pin is gone — it changed the environment for every
+    other extension in the same Slicer installation."""
+    monkeypatch.setattr("ZebrafishEmbryoAnalyzerLib.dependency_installer._is_importable", lambda n: True)
+    assert "numpy_pin" not in get_missing_packages()
+
+
+def test_get_missing_packages_imports_no_slicer():
+    """Must stay pure Python so it is safe to call at any site, including setup()."""
+    import ZebrafishEmbryoAnalyzerLib.dependency_installer as di
+    source = open(di.__file__).read()
+    header = source.split("def _pytorch_utils_logic")[0]
+    assert "import slicer" not in header
+    assert "import qt" not in header
+
+
 # ---------------------------------------------------------------------------
-# T4 — testingEnabled guard: pip_fn never called in testing mode
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _reload_with_slicer(monkeypatch, testing_enabled=False):
+    """Install a slicer mock and reload the module against it. Returns (module, mock)."""
+    mock_slicer = MagicMock()
+    mock_slicer.app.testingEnabled.return_value = testing_enabled
+    monkeypatch.setitem(sys.modules, "slicer", mock_slicer)
+    from ZebrafishEmbryoAnalyzerLib import dependency_installer
+    importlib.reload(dependency_installer)
+    return dependency_installer, mock_slicer
+
+
+# ---------------------------------------------------------------------------
+# install_packages
 # ---------------------------------------------------------------------------
 
 def test_install_packages_skipped_in_testing_mode(monkeypatch):
-    mock_slicer = MagicMock()
-    mock_slicer.app.testingEnabled.return_value = True
-    monkeypatch.setitem(sys.modules, "slicer", mock_slicer)
-    pip_fn = MagicMock()
-    from ZebrafishEmbryoAnalyzerLib import dependency_installer
-    importlib.reload(dependency_installer)
-    dependency_installer.install_packages(
-        {"torch": ["torch"], "general": [], "numpy_pin": []}, pip_fn=pip_fn
-    )
+    di, _ = _reload_with_slicer(monkeypatch, testing_enabled=True)
+    pip_fn, torch_fn = MagicMock(), MagicMock()
+    assert di.install_packages({"torch": ["torch"], "general": ["timm"]},
+                               pip_fn=pip_fn, torch_fn=torch_fn) is False
     pip_fn.assert_not_called()
+    torch_fn.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# Helpers for T5–T7: build a full slicer/qt mock environment
-# ---------------------------------------------------------------------------
-
-def _make_slicer_mock():
-    mock_slicer = MagicMock()
-    mock_slicer.app.testingEnabled.return_value = False
-    return mock_slicer
-
-
-def _make_qt_mock():
-    mock_qt = MagicMock()
-    mock_qt.Qt.WindowContextHelpButtonHint = 0x4000000
-    mock_qt.Qt.WindowCloseButtonHint = 0x200
-    mock_qt.QDialogButtonBox.RejectRole = 1
-    return mock_qt
-
-
-def _make_logic_mock(torch_present: bool):
-    mock_logic = MagicMock()
-    mock_logic.dependency_status.return_value = {"torch": torch_present, "cv2": True,
-                                                  "segmentation_models_pytorch": True, "timm": True}
-    return mock_logic
-
-
-# ---------------------------------------------------------------------------
-# T5 — numpy<2 pinned when torch just installed successfully
-# ---------------------------------------------------------------------------
-
-def test_install_packages_pins_numpy_when_torch_ok(monkeypatch):
-    mock_slicer = _make_slicer_mock()
-    mock_qt = _make_qt_mock()
-    mock_logic = _make_logic_mock(torch_present=False)
-
-    monkeypatch.setitem(sys.modules, "slicer", mock_slicer)
-    monkeypatch.setitem(sys.modules, "qt", mock_qt)
-    monkeypatch.setitem(sys.modules, "ZebrafishEmbryoAnalyzerLib.logic", mock_logic)
-
-    pip_fn = MagicMock()  # succeeds (no raise) → torch_ok = True
-
-    from ZebrafishEmbryoAnalyzerLib import dependency_installer
-    importlib.reload(dependency_installer)
-
-    dependency_installer.install_packages(
-        {"torch": ["torch"], "general": [], "numpy_pin": ["numpy<2"]}, pip_fn=pip_fn
-    )
-
-    calls = [str(c) for c in pip_fn.call_args_list]
-    assert any("numpy<2" in c for c in calls), (
-        f"Expected pip_fn called with 'numpy<2', got: {calls}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# T6 — numpy<2 NOT pinned when torch fails and already absent
-# ---------------------------------------------------------------------------
-
-def test_install_packages_no_numpy_pin_when_torch_fails_and_absent(monkeypatch):
-    mock_slicer = _make_slicer_mock()
-    mock_qt = _make_qt_mock()
-
-    monkeypatch.setitem(sys.modules, "slicer", mock_slicer)
-    monkeypatch.setitem(sys.modules, "qt", mock_qt)
-
-    def pip_fn_side_effect(pkg_str, cancel_check=None):
-        if "torch" in pkg_str:
-            raise RuntimeError("simulated torch install failure")
-        # other packages succeed (return None)
-
-    pip_fn = MagicMock(side_effect=pip_fn_side_effect)
-
-    from ZebrafishEmbryoAnalyzerLib import dependency_installer
-    importlib.reload(dependency_installer)
-
-    # Simulate torch absent on disk so already_has_torch is False
-    monkeypatch.setattr(dependency_installer, "_is_importable", lambda name: name != "torch")
-
-    dependency_installer.install_packages(
-        {"torch": ["torch"], "general": [], "numpy_pin": ["numpy<2"]},
-        pip_fn=pip_fn,
-    )
-
-    # torch install failed and torch is absent → numpy<2 must NOT be pinned
-    call_args_flat = [str(c) for c in pip_fn.call_args_list]
-    assert not any("numpy<2" in arg for arg in call_args_flat), (
-        "numpy<2 must not be pinned when torch install failed and torch is absent"
-    )
-
-
-# ---------------------------------------------------------------------------
-# T7 — numpy<2 pinned when torch already present (no new install needed)
-# ---------------------------------------------------------------------------
-
-def test_install_packages_numpy_pin_when_torch_preexisting(monkeypatch):
-    mock_slicer = _make_slicer_mock()
-    mock_qt = _make_qt_mock()
-
-    monkeypatch.setitem(sys.modules, "slicer", mock_slicer)
-    monkeypatch.setitem(sys.modules, "qt", mock_qt)
-
+def test_install_packages_never_pip_installs_torch(monkeypatch):
+    """Torch must go through the PyTorch extension, never through pip."""
+    di, _ = _reload_with_slicer(monkeypatch)
     pip_fn = MagicMock()
+    torch_fn = MagicMock(return_value="ok")
 
-    from ZebrafishEmbryoAnalyzerLib import dependency_installer
-    importlib.reload(dependency_installer)
+    di.install_packages({"torch": ["torch", "torchvision"], "general": ["timm"]},
+                        pip_fn=pip_fn, torch_fn=torch_fn)
 
-    # Simulate torch already present on disk so already_has_torch is True.
-    # install_packages() checks _is_importable("torch") directly, not logic.dependency_status().
-    monkeypatch.setattr(dependency_installer, "_is_importable", lambda name: name == "torch")
+    torch_fn.assert_called_once()
+    pip_args = [c.args[0] for c in pip_fn.call_args_list]
+    assert pip_args == ["timm"]
+    assert not any("torch" in a for a in pip_args)
 
-    # torch not in missing (already installed); numpy_pin present
-    dependency_installer.install_packages(
-        {"torch": [], "general": [], "numpy_pin": ["numpy<2"]}, pip_fn=pip_fn
-    )
 
-    calls = [str(c) for c in pip_fn.call_args_list]
-    assert any("numpy<2" in c for c in calls), (
-        f"Expected pip_fn called with 'numpy<2', got: {calls}"
-    )
+def test_install_packages_installs_each_general_package(monkeypatch):
+    di, _ = _reload_with_slicer(monkeypatch)
+    pip_fn = MagicMock()
+    di.install_packages({"torch": [], "general": ["timm", "openpyxl"]},
+                        pip_fn=pip_fn, torch_fn=MagicMock())
+    assert [c.args[0] for c in pip_fn.call_args_list] == ["timm", "openpyxl"]
+
+
+def test_install_packages_continues_after_single_failure(monkeypatch):
+    """One failing package must not abort the rest; the error is surfaced."""
+    di, mock_slicer = _reload_with_slicer(monkeypatch)
+
+    def pip_side_effect(pkg):
+        if pkg == "timm":
+            raise RuntimeError("simulated failure")
+
+    pip_fn = MagicMock(side_effect=pip_side_effect)
+    di.install_packages({"torch": [], "general": ["timm", "openpyxl"]},
+                        pip_fn=pip_fn, torch_fn=MagicMock())
+
+    assert [c.args[0] for c in pip_fn.call_args_list] == ["timm", "openpyxl"]
+    mock_slicer.util.errorDisplay.assert_called_once()
+    assert "timm" in mock_slicer.util.errorDisplay.call_args.args[0]
+
+
+def test_install_packages_reports_torch_failure(monkeypatch):
+    di, mock_slicer = _reload_with_slicer(monkeypatch)
+    torch_fn = MagicMock(side_effect=RuntimeError("no extension server"))
+    di.install_packages({"torch": ["torch"], "general": []},
+                        pip_fn=MagicMock(), torch_fn=torch_fn)
+    mock_slicer.util.errorDisplay.assert_called_once()
+    assert "PyTorch" in mock_slicer.util.errorDisplay.call_args.args[0]
+
+
+def test_install_packages_signals_second_restart(monkeypatch):
+    """When the PyTorch extension had to be installed first, the user is told a
+    second restart is needed before torch itself follows."""
+    di, mock_slicer = _reload_with_slicer(monkeypatch)
+    di.install_packages({"torch": ["torch"], "general": []},
+                        pip_fn=MagicMock(), torch_fn=MagicMock(return_value="restart"))
+
+    mock_slicer.util.errorDisplay.assert_not_called()
+    messages = " ".join(str(c) for c in mock_slicer.util.showStatusMessage.call_args_list)
+    assert "restart" in messages.lower()
+
+
+def test_install_packages_defaults_to_slicer_pip_install(monkeypatch):
+    """Without injection, the default must be slicer.util.pip_install — not a
+    custom subprocess call."""
+    di, mock_slicer = _reload_with_slicer(monkeypatch)
+    di.install_packages({"torch": [], "general": ["timm"]}, torch_fn=MagicMock())
+    mock_slicer.util.pip_install.assert_called_once_with("timm")
+
+
+def test_no_custom_pip_helper_remains():
+    """_pip_install and the hard-coded CPU wheel index are gone."""
+    import ZebrafishEmbryoAnalyzerLib.dependency_installer as di
+    assert not hasattr(di, "_pip_install")
+    assert not hasattr(di, "TORCH_INDEX")
+    assert "download.pytorch.org" not in open(di.__file__).read()
 
 
 # ---------------------------------------------------------------------------
-# T8 — prewarm guard verified via get_missing_packages structure
-#       (actual thread-spawn test requires Slicer; verified structurally here)
+# PyTorch extension handling
 # ---------------------------------------------------------------------------
 
-def test_prewarm_guard_structure_when_torch_missing(monkeypatch):
-    # prewarm guard verified via get_missing_packages structure test
-    monkeypatch.setattr("ZebrafishEmbryoAnalyzerLib.dependency_installer._is_importable",
-                        lambda n: n not in ("torch", "torchvision"))
-    monkeypatch.setattr("ZebrafishEmbryoAnalyzerLib.dependency_installer._numpy_major", lambda: 1)
-    result = get_missing_packages()
-    # Guard condition: if result["torch"] is truthy → _prewarm_imports returns early
-    assert bool(result["torch"]) is True, "torch missing → guard fires → no thread spawned"
-    assert "torch" in result["torch"]
-    assert "torchvision" in result["torch"]
+def test_install_torch_requests_extension_when_missing(monkeypatch):
+    """Without PyTorchUtils, the extension is installed and a restart signalled."""
+    di, mock_slicer = _reload_with_slicer(monkeypatch)
+    monkeypatch.setattr(di, "_pytorch_utils_logic", lambda: None)
+    manager = mock_slicer.app.extensionsManagerModel.return_value
+    manager.isExtensionInstalled.return_value = False
+    manager.installExtensionFromServer.return_value = True
+
+    assert di._install_torch() == "restart"
+    manager.installExtensionFromServer.assert_called_once_with("PyTorch")
+
+
+def test_install_torch_raises_when_extension_unavailable(monkeypatch):
+    di, mock_slicer = _reload_with_slicer(monkeypatch)
+    monkeypatch.setattr(di, "_pytorch_utils_logic", lambda: None)
+    manager = mock_slicer.app.extensionsManagerModel.return_value
+    manager.isExtensionInstalled.return_value = False
+    manager.installExtensionFromServer.return_value = False
+
+    with pytest.raises(RuntimeError, match="Extensions Manager"):
+        di._install_torch()
+
+
+def test_install_torch_uses_pytorch_utils_when_available(monkeypatch):
+    di, _ = _reload_with_slicer(monkeypatch)
+    torch_logic = MagicMock()
+    torch_logic.installTorch.return_value = object()
+    monkeypatch.setattr(di, "_pytorch_utils_logic", lambda: torch_logic)
+
+    assert di._install_torch() == "ok"
+    torch_logic.installTorch.assert_called_once_with(askConfirmation=False)
+
+
+def test_install_torch_raises_when_pytorch_utils_fails(monkeypatch):
+    di, _ = _reload_with_slicer(monkeypatch)
+    torch_logic = MagicMock()
+    torch_logic.installTorch.return_value = None  # PyTorchUtils failure contract
+    monkeypatch.setattr(di, "_pytorch_utils_logic", lambda: torch_logic)
+
+    with pytest.raises(RuntimeError, match="PyTorch"):
+        di._install_torch()
+
+
+def test_pytorch_utils_logic_returns_none_without_extension(monkeypatch):
+    di, _ = _reload_with_slicer(monkeypatch)
+    monkeypatch.setitem(sys.modules, "PyTorchUtils", None)  # forces ModuleNotFoundError
+    assert di._pytorch_utils_logic() is None
+
+
+def test_install_pytorch_extension_skips_when_already_installed(monkeypatch):
+    di, mock_slicer = _reload_with_slicer(monkeypatch)
+    manager = mock_slicer.app.extensionsManagerModel.return_value
+    manager.isExtensionInstalled.return_value = True
+
+    assert di.install_pytorch_extension() is True
+    manager.installExtensionFromServer.assert_not_called()

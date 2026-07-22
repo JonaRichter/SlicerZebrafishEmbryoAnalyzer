@@ -953,10 +953,8 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         # Build package item list
         items = []
         if missing["torch"]:
-            items.append("torch + torchvision (CPU build from pytorch.org)")
+            items.append("torch + torchvision (via the PyTorch extension)")
         items.extend(missing["general"])
-        if missing["numpy_pin"]:
-            items.append("numpy<2 (pin for PyTorch compatibility)")
 
         import qt
         from ZebrafishEmbryoAnalyzerLib.model_manifest import collect_all_model_entries, get_missing_models
@@ -968,11 +966,21 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         layout = qt.QVBoxLayout(dlg)
 
         # Packages section
+        restart_note = (
+            "\n\nInstallation requires an internet connection and takes a few minutes. "
+            "Slicer must be restarted afterwards."
+        )
+        if missing["torch"]:
+            # PyTorchUtils only becomes importable after a restart, so torch itself
+            # can only be installed on the following run.
+            restart_note += (
+                " If the PyTorch extension is not installed yet, it is installed first "
+                "and a second restart is required before PyTorch itself follows."
+            )
         pkg_label = qt.QLabel(
             "The following packages are required and not yet installed:\n\n"
             + "\n".join(f"  • {i}" for i in items)
-            + "\n\nInstallation requires an internet connection and takes a few minutes. "
-            "Slicer must be restarted afterwards."
+            + restart_note
         )
         pkg_label.setWordWrap(True)
         layout.addWidget(pkg_label)
