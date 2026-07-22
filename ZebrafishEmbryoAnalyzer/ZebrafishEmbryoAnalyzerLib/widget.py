@@ -70,6 +70,8 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._disposed = False
         self._run_token = 0
         self._deps_ok = True
+        self._loading = False          # a load is in progress; the load buttons act as Cancel
+        self._load_cancelled = False
 
         self._saved_layout_id = None
         self._saved_central_visible = None
@@ -435,6 +437,8 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._model_combo.currentIndexChanged.connect(self._notify_settings_changed)
 
     def _on_load_folder(self):
+        if self._cancel_load_if_running():
+            return
         if not self.ensure_dependencies("images"):
             return
         settings = qt.QSettings()
@@ -454,6 +458,8 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._set_queue(paths, self._btn_folder)
 
     def _on_load_files(self):
+        if self._cancel_load_if_running():
+            return
         if not self.ensure_dependencies("images"):
             return
         paths = qt.QFileDialog.getOpenFileNames(
@@ -522,17 +528,22 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             return
 
         # Progress is reported on the button that started the load, so the feedback appears
-        # where the user just clicked. Thumbnails filling in one by one shows that something
-        # is happening but not when it ends — on a large folder there would be no way to
-        # tell a finished load from a stalled one. Both buttons are disabled meanwhile, so
-        # the restored label is the signal that it is done.
+        # where the user just clicked, and the restored label is the signal that it is done —
+        # thumbnails filling in one by one shows activity but not completion.
+        #
+        # That button stays enabled and doubles as Cancel: its handler sees _loading and
+        # treats the click as an abort instead of starting a second load. The other button
+        # is disabled so there is only one way to interrupt.
         buttons = [b for b in (self._btn_folder, self._btn_files) if b is not None]
         labels = [b.text for b in buttons]
         for b in buttons:
-            b.setEnabled(False)
+            b.setEnabled(b is button)
+
+        self._loading = True
+        self._load_cancelled = False
         try:
             for i, p in enumerate(paths):
-                if stubs is not self._results:
+                if stubs is not self._results or self._load_cancelled:
                     return
                 img = cv2.imread(p)
                 if img is not None:
@@ -543,12 +554,24 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                     thumb = cv2.resize(rgb, (max(1, int(w * scale)), max(1, int(h * scale))))
                     self._gallery.update_thumb_prebuilt(i, thumb)
                 if button is not None:
-                    button.setText(f"Loading… {i + 1}/{len(paths)}")
+                    button.setText(f"Cancel ({i + 1}/{len(paths)})")
                 slicer.app.processEvents()
         finally:
+            self._loading = False
             for b, text in zip(buttons, labels):
                 b.setText(text)
                 b.setEnabled(True)
+
+    def _cancel_load_if_running(self) -> bool:
+        """Turn a click on the loading button into an abort. True when it was handled.
+
+        Cancelling stops the thumbnails from loading; the images stay queued, so an analysis
+        can still be started — it reads the files itself and does not need the previews.
+        """
+        if not getattr(self, "_loading", False):
+            return False
+        self._load_cancelled = True
+        return True
 
     def _required_model_entries(self, model_id):
         """Return the model entries required by the current settings."""

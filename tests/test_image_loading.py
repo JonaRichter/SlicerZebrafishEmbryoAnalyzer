@@ -48,6 +48,8 @@ def _widget(cls, stubs):
     w._btn_folder.text = "Load Folder…"
     w._btn_files = MagicMock()
     w._btn_files.text = "Load Images…"
+    w._loading = False
+    w._load_cancelled = False
     return w
 
 
@@ -129,12 +131,13 @@ def test_progress_is_reported_on_the_button_that_started_the_load():
         W._load_originals(w, ["a.png", "b.png", "c.png"], stubs, w._btn_folder)
 
         texts = [c.args[0] for c in w._btn_folder.setText.call_args_list]
-        assert texts[:3] == ["Loading… 1/3", "Loading… 2/3", "Loading… 3/3"]
+        assert texts[:3] == ["Cancel (1/3)", "Cancel (2/3)", "Cancel (3/3)"]
         assert texts[-1] == "Load Folder…"          # original label restored
         w._btn_files.setText.assert_called_once_with("Load Images…")
 
 
-def test_both_buttons_are_disabled_while_loading_and_restored_after():
+def test_the_pressed_button_stays_clickable_so_it_can_cancel():
+    """The other button is disabled, so there is exactly one way to interrupt."""
     with _stub_env() as (_slicer, _cv2):
         from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget as W
         stubs = _stubs(2)
@@ -142,8 +145,8 @@ def test_both_buttons_are_disabled_while_loading_and_restored_after():
 
         W._load_originals(w, ["a.png", "b.png"], stubs, w._btn_files)
 
-        for btn in (w._btn_folder, w._btn_files):
-            assert [c.args[0] for c in btn.setEnabled.call_args_list] == [False, True]
+        assert [c.args[0] for c in w._btn_files.setEnabled.call_args_list] == [True, True]
+        assert [c.args[0] for c in w._btn_folder.setEnabled.call_args_list] == [False, True]
 
 
 def test_buttons_are_restored_even_when_the_load_is_aborted():
@@ -165,3 +168,41 @@ def test_empty_selection_touches_no_button():
         w = _widget(W, [])
         W._load_originals(w, [], [], w._btn_folder)
         w._btn_folder.setEnabled.assert_not_called()
+
+
+def test_cancelling_stops_the_load_and_keeps_what_was_read():
+    with _stub_env() as (slicer, _cv2):
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget as W
+        stubs = _stubs(6)
+        w = _widget(W, stubs)
+
+        # The user presses the button again after the second image.
+        def maybe_cancel():
+            if w._btn_folder.setText.call_count >= 2:
+                W._cancel_load_if_running(w)
+        slicer.app.processEvents.side_effect = maybe_cancel
+
+        W._load_originals(w, [f"{i}.png" for i in range(6)], stubs, w._btn_folder)
+
+        assert all(s["original"] is not None for s in stubs[:2])
+        assert all(s["original"] is None for s in stubs[2:])
+        assert w._loading is False
+        assert w._btn_folder.setText.call_args_list[-1].args[0] == "Load Folder…"
+
+
+def test_a_click_while_loading_cancels_instead_of_starting_a_second_load():
+    with _stub_env() as (_slicer, _cv2):
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget as W
+        w = _widget(W, [])
+        w._loading = True
+
+        assert W._cancel_load_if_running(w) is True
+        assert w._load_cancelled is True
+
+
+def test_a_click_when_idle_starts_a_normal_load():
+    with _stub_env() as (_slicer, _cv2):
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget as W
+        w = _widget(W, [])
+        assert W._cancel_load_if_running(w) is False
+        assert w._load_cancelled is False

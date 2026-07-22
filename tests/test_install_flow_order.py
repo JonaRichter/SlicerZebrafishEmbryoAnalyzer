@@ -239,3 +239,6 @@ def test_image_loading_checks_dependencies_first():
     for handler in ("_on_load_folder", "_on_load_files"):
         body = src.split(f"def {handler}(self)")[1].split("\n    def ")[0]
         assert 'ensure_dependencies("images")' in body, f"{handler} loads images unguarded"
+        # The cancel check must come first — while a load runs the button is an abort,
+        # and asking to install packages at that moment would make no sense.
+        assert body.index("_cancel_load_if_running") < body.index("ensure_dependencies")
