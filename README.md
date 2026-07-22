@@ -92,6 +92,17 @@ itself can follow, and the remaining packages are installed on that next run.
 
 Total download is several GB (PyTorch alone ~2 GB). Takes several minutes.
 
+### A note on NumPy for macOS users
+
+The newest PyTorch build available for macOS is 2.2, which is compiled against the NumPy 1
+C API. The PyTorch extension therefore holds NumPy below 2 on that platform, and the
+remaining packages are installed in the same step so that pip picks versions that fit.
+On Linux and Windows a current PyTorch is used and NumPy is left alone.
+
+During installation pip prints a warning that `pyjpegls` requires `numpy>=2.0`. This is a
+metadata-level conflict only — `pyjpegls`, which Slicer ships for JPEG-LS DICOM decoding,
+was verified to work with NumPy 1.26.
+
 <img src="Documentation_images/setup_dialog.png" width="500" alt="Setup dialog showing packages and optional model download">
 
 You can also pre-download models here to skip the prompt on first run.
