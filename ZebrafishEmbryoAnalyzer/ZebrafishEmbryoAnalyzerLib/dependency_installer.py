@@ -24,11 +24,10 @@ TORCH_PACKAGES = ["torch", "torchvision"]
 
 PYTORCH_EXTENSION_NAME = "PyTorch"
 
-# opencv-python-headless 4.12 and newer require numpy>=2. On macOS torch caps out at
-# 2.2 (the last release with a macOS wheel), which needs numpy<2 — so on that platform
-# the two cannot coexist. 4.11.0.86 is the last release built against the NumPy 1 API.
-OPENCV_PACKAGE = "opencv-python-headless"
-OPENCV_NUMPY1_SPEC = "opencv-python-headless<4.12"
+# On macOS the newest torch build available is 2.2, which is compiled against the NumPy 1
+# C API. Anything resolved alongside it has to fit that, so numpy is capped in the same pip
+# invocation and pip picks matching versions of the rest by itself.
+NUMPY_TORCH_SPEC = "numpy<2"
 
 
 def _is_importable(name: str) -> bool:
@@ -67,24 +66,18 @@ def _numpy_major() -> int:
         return 0
 
 
-def _constrain_numpy_for_torch(pip_fn) -> bool:
-    """Hold numpy at 1.x on macOS, where the available torch build requires it.
+def _numpy_must_stay_v1() -> bool:
+    """True where the available torch build is compiled against the NumPy 1 C API.
 
-    Returns True if numpy is at 1.x afterwards. torch 2.2 is the last release with a
-    macOS wheel and is built against the NumPy 1 C API; against NumPy 2 it imports with
-    only a warning and then fails at the first array conversion with "Numpy is not
-    available". Slicer's own PyTorch extension applies the same constraint during its
-    install. Deliberately not done on other platforms, where a current torch supports
-    NumPy 2 and downgrading would needlessly change Slicer's shared environment for
-    every other extension.
+    Only macOS: torch 2.2 is the last release with a macOS wheel, and against NumPy 2 it
+    imports with just a warning and then fails at the first array conversion with "Numpy is
+    not available". Slicer's own PyTorch extension applies the same constraint during its
+    install. Not done on other platforms, where a current torch supports NumPy 2 and
+    downgrading would change Slicer's shared environment for every other extension for
+    no reason.
     """
     import sys
-    if sys.platform != "darwin":
-        return False
-    if _numpy_major() < 2:
-        return True
-    pip_fn("numpy<2")
-    return True
+    return sys.platform == "darwin"
 
 
 def _pytorch_utils_logic():
@@ -181,31 +174,28 @@ def install_packages(missing: dict, pip_fn=None, torch_fn=None) -> bool:
             )
             return False
 
-    errors = []
+    # One pip invocation for everything. Installing package by package lets pip resolve each
+    # one in isolation, so a later package can pull in a dependency that breaks an earlier
+    # one: scikit-image drags in tifffile, whose current release requires numpy>=2.1, which
+    # replaced the numpy 1.x that the macOS torch build needs. Handing pip the whole set at
+    # once lets it pick versions that fit together — including older tifffile and opencv
+    # releases — instead of us chasing each transitive dependency by hand.
+    requirements = list(missing.get("general", []))
+    if _numpy_must_stay_v1() and (requirements or _numpy_major() >= 2):
+        requirements.append(NUMPY_TORCH_SPEC)
 
-    # Settle numpy before the remaining packages, so their own numpy requirements are
-    # resolved against the version torch can actually work with.
-    numpy_is_v1 = False
-    try:
-        numpy_is_v1 = _constrain_numpy_for_torch(pip_fn)
-    except Exception as exc:
-        logging.exception("Failed to constrain numpy: %s", exc)
-        errors.append(f"numpy: {exc}")
-
-    for pkg in missing.get("general", []):
-        spec = OPENCV_NUMPY1_SPEC if (pkg == OPENCV_PACKAGE and numpy_is_v1) else pkg
-        slicer.util.showStatusMessage(f"ZebrafishEmbryoAnalyzer: installing {spec}…")
-        try:
-            pip_fn(spec)
-        except Exception as exc:
-            logging.exception("Failed to install %s: %s", spec, exc)
-            errors.append(f"{spec}: {exc}")
-
-    if errors:
-        slicer.util.errorDisplay(
-            "Some packages could not be installed:\n" + "\n".join(f"  • {e}" for e in errors)
+    if requirements:
+        slicer.util.showStatusMessage(
+            f"ZebrafishEmbryoAnalyzer: installing {len(requirements)} Python packages…"
         )
-        return False
+        try:
+            pip_fn(" ".join(requirements))
+        except Exception as exc:
+            logging.exception("Failed to install Python packages: %s", exc)
+            slicer.util.errorDisplay(
+                f"The required Python packages could not be installed:\n\n{exc}"
+            )
+            return False
 
     slicer.util.showStatusMessage(
         "ZebrafishEmbryoAnalyzer: dependencies installed — restart required."

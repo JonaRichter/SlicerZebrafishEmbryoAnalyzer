@@ -102,34 +102,32 @@ def test_install_packages_never_pip_installs_torch(monkeypatch):
                         pip_fn=pip_fn, torch_fn=torch_fn)
 
     torch_fn.assert_called_once()
-    pip_args = [c.args[0] for c in pip_fn.call_args_list]
-    assert pip_args == ["timm"]
-    assert not any("torch" in a for a in pip_args)
+    pip_fn.assert_called_once_with("timm")
+    assert "torch" not in pip_fn.call_args.args[0]
 
 
-def test_install_packages_installs_each_general_package(monkeypatch):
+def test_install_packages_uses_a_single_pip_invocation(monkeypatch):
+    """All packages go into one pip call so the resolver sees the whole set at once.
+
+    Installing them one by one lets a later package pull in a dependency that breaks an
+    earlier one — scikit-image drags in tifffile, which requires numpy>=2.1.
+    """
     di, _ = _reload_with_slicer(monkeypatch)
     pip_fn = MagicMock()
-    di.install_packages({"torch": [], "general": ["timm", "openpyxl"]},
+    di.install_packages({"torch": [], "general": ["timm", "scikit-image", "openpyxl"]},
                         pip_fn=pip_fn, torch_fn=MagicMock())
-    assert [c.args[0] for c in pip_fn.call_args_list] == ["timm", "openpyxl"]
+    pip_fn.assert_called_once_with("timm scikit-image openpyxl")
 
 
-def test_install_packages_continues_after_single_failure(monkeypatch):
-    """One failing package must not abort the rest; the error is surfaced."""
+def test_install_packages_reports_failure_of_the_batch(monkeypatch):
     di, mock_slicer = _reload_with_slicer(monkeypatch)
+    pip_fn = MagicMock(side_effect=RuntimeError("simulated failure"))
 
-    def pip_side_effect(pkg):
-        if pkg == "timm":
-            raise RuntimeError("simulated failure")
+    assert di.install_packages({"torch": [], "general": ["timm", "openpyxl"]},
+                               pip_fn=pip_fn, torch_fn=MagicMock()) is False
 
-    pip_fn = MagicMock(side_effect=pip_side_effect)
-    di.install_packages({"torch": [], "general": ["timm", "openpyxl"]},
-                        pip_fn=pip_fn, torch_fn=MagicMock())
-
-    assert [c.args[0] for c in pip_fn.call_args_list] == ["timm", "openpyxl"]
     mock_slicer.util.errorDisplay.assert_called_once()
-    assert "timm" in mock_slicer.util.errorDisplay.call_args.args[0]
+    assert "simulated failure" in mock_slicer.util.errorDisplay.call_args.args[0]
 
 
 def test_install_packages_aborts_remaining_when_torch_fails(monkeypatch):
@@ -169,7 +167,7 @@ def test_install_packages_proceeds_after_torch_ok(monkeypatch):
 
     assert di.install_packages({"torch": ["torch"], "general": ["timm"]},
                                pip_fn=pip_fn, torch_fn=MagicMock(return_value="ok")) is True
-    assert [c.args[0] for c in pip_fn.call_args_list] == ["timm"]
+    pip_fn.assert_called_once_with("timm")
 
 
 def test_install_packages_defaults_to_slicer_pip_install(monkeypatch):
@@ -257,51 +255,57 @@ def test_numpy_major_does_not_import_numpy(monkeypatch):
 
 
 def test_numpy_not_constrained_off_macos(monkeypatch):
-    """On Linux and Windows a current torch supports NumPy 2 — downgrading there would
+    """On Linux and Windows a current torch supports NumPy 2 — capping it there would
     change Slicer's shared environment for every other extension for no reason."""
     di, _ = _reload_with_slicer(monkeypatch, platform="linux", numpy_major=2)
     pip_fn = MagicMock()
-    assert di._constrain_numpy_for_torch(pip_fn) is False
-    pip_fn.assert_not_called()
+
+    di.install_packages({"torch": [], "general": ["scikit-image"]},
+                        pip_fn=pip_fn, torch_fn=MagicMock(return_value="ok"))
+
+    pip_fn.assert_called_once_with("scikit-image")
 
 
-def test_numpy_constrained_on_macos_when_numpy2(monkeypatch):
+def test_numpy_capped_in_the_same_invocation_on_macos(monkeypatch):
+    """The cap must travel in the same pip call as the packages, so the resolver picks
+    versions of their transitive dependencies that fit numpy 1."""
     di, _ = _reload_with_slicer(monkeypatch, platform="darwin", numpy_major=2)
     pip_fn = MagicMock()
-    assert di._constrain_numpy_for_torch(pip_fn) is True
+
+    di.install_packages({"torch": [], "general": ["scikit-image", "opencv-python-headless"]},
+                        pip_fn=pip_fn, torch_fn=MagicMock(return_value="ok"))
+
+    pip_fn.assert_called_once_with("scikit-image opencv-python-headless numpy<2")
+
+
+def test_numpy_capped_on_macos_even_with_nothing_else_to_install(monkeypatch):
+    """A numpy that has drifted back above 2 must still be corrected."""
+    di, _ = _reload_with_slicer(monkeypatch, platform="darwin", numpy_major=2)
+    pip_fn = MagicMock()
+
+    di.install_packages({"torch": [], "general": []},
+                        pip_fn=pip_fn, torch_fn=MagicMock(return_value="ok"))
+
     pip_fn.assert_called_once_with("numpy<2")
 
 
-def test_numpy_constraint_is_noop_on_macos_when_already_numpy1(monkeypatch):
+def test_nothing_installed_when_nothing_missing_and_numpy_is_fine(monkeypatch):
     di, _ = _reload_with_slicer(monkeypatch, platform="darwin", numpy_major=1)
     pip_fn = MagicMock()
-    assert di._constrain_numpy_for_torch(pip_fn) is True
+
+    di.install_packages({"torch": [], "general": []},
+                        pip_fn=pip_fn, torch_fn=MagicMock(return_value="ok"))
+
     pip_fn.assert_not_called()
 
 
-def test_opencv_pinned_to_numpy1_release_on_macos(monkeypatch):
-    """opencv-python-headless >= 4.12 requires numpy>=2, which cannot coexist with the
-    torch build available on macOS."""
-    di, _ = _reload_with_slicer(monkeypatch, platform="darwin", numpy_major=2)
-    pip_fn = MagicMock()
-
-    di.install_packages({"torch": [], "general": ["opencv-python-headless", "timm"]},
-                        pip_fn=pip_fn, torch_fn=MagicMock(return_value="ok"))
-
-    calls = [c.args[0] for c in pip_fn.call_args_list]
-    assert calls == ["numpy<2", "opencv-python-headless<4.12", "timm"]
-
-
-def test_opencv_unpinned_off_macos(monkeypatch):
-    di, _ = _reload_with_slicer(monkeypatch, platform="linux", numpy_major=2)
-    pip_fn = MagicMock()
-
-    di.install_packages({"torch": [], "general": ["opencv-python-headless", "timm"]},
-                        pip_fn=pip_fn, torch_fn=MagicMock(return_value="ok"))
-
-    calls = [c.args[0] for c in pip_fn.call_args_list]
-    assert calls == ["opencv-python-headless", "timm"]
-    assert not any("numpy" in c for c in calls)
+def test_no_hand_pinned_transitive_dependencies_remain():
+    """Pinning individual transitive packages does not scale — opencv was the first case,
+    tifffile the second. The cap plus a single resolver pass replaces that approach."""
+    import ZebrafishEmbryoAnalyzerLib.dependency_installer as di
+    src = open(di.__file__).read()
+    assert "opencv-python-headless<" not in src
+    assert not hasattr(di, "OPENCV_NUMPY1_SPEC")
 
 
 def test_install_pytorch_extension_skips_when_already_installed(monkeypatch):
