@@ -161,6 +161,55 @@ def test_confirmation_uses_the_standard_dialog_with_package_details(monkeypatch)
         assert "torch" in detail
 
 
+def test_restart_uses_the_standard_dialog():
+    """Both reference extensions confirm the restart with slicer.util.confirmOkCancelDisplay
+    and then call slicer.util.restart(); no hand-built dialog."""
+    with _stub_slicer_env():
+        cls = _widget_class()
+        w = object.__new__(cls)
+        w._status_log = None
+        slicer = sys.modules["slicer"]
+        slicer.util.confirmOkCancelDisplay.return_value = True
+
+        cls._show_restart_dialog(w)
+
+        slicer.util.confirmOkCancelDisplay.assert_called_once()
+        slicer.util.restart.assert_called_once()
+
+
+def test_declining_the_restart_refreshes_status_instead():
+    with _stub_slicer_env():
+        cls = _widget_class()
+        w = object.__new__(cls)
+        w._status_log = None
+        w.refresh_dependency_status = MagicMock()
+        slicer = sys.modules["slicer"]
+        slicer.util.confirmOkCancelDisplay.return_value = False
+
+        cls._show_restart_dialog(w)
+
+        slicer.util.restart.assert_not_called()
+        w.refresh_dependency_status.assert_called_once()
+
+
+def test_add_log_tolerates_missing_panel():
+    """Logic-side callbacks must not have to know how far construction has progressed."""
+    with _stub_slicer_env():
+        cls = _widget_class()
+        w = object.__new__(cls)
+        cls.add_log(w, "anything")      # no _status_log attribute at all
+        w._status_log = None
+        cls.add_log(w, "anything")
+        cls.clear_log(w)
+
+
+def test_no_custom_restart_dialog_remains():
+    from pathlib import Path
+    src = Path("ZebrafishEmbryoAnalyzer/ZebrafishEmbryoAnalyzerLib/widget.py").read_text()
+    assert "Restart Required" not in src
+    assert "Restart Now" not in src
+
+
 def test_no_custom_setup_dialog_remains():
     """The hand-built setup dialog and its model checkboxes are gone; models download
     on demand at the point they are first needed."""
