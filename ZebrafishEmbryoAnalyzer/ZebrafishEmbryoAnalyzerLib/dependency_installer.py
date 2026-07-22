@@ -68,16 +68,24 @@ def get_missing_packages(purpose: str = "analysis") -> dict:
     }
 
 
-def _numpy_major() -> int:
-    """Installed numpy major version, or 0 if it cannot be determined.
+def _numpy_version() -> str:
+    """Installed numpy version as reported by package metadata, or "" if unknown.
 
-    Reads package metadata instead of importing numpy on purpose: once numpy has been
-    imported it can no longer be replaced without restarting Slicer, which would defeat
-    the constraint applied right after the torch install.
+    Reads metadata instead of importing numpy on purpose: once numpy has been imported
+    it can no longer be replaced without restarting Slicer, which would defeat the
+    constraint applied alongside the torch install.
     """
     import importlib.metadata
     try:
-        return int(importlib.metadata.version("numpy").split(".")[0])
+        return importlib.metadata.version("numpy")
+    except Exception:
+        return ""
+
+
+def _numpy_major() -> int:
+    """Installed numpy major version, or 0 if it cannot be determined."""
+    try:
+        return int(_numpy_version().split(".")[0])
     except Exception:
         return 0
 
@@ -140,7 +148,7 @@ def _install_torch() -> str:
     return "ok"
 
 
-def install_packages(missing: dict, pip_fn=None, torch_fn=None) -> bool:
+def install_packages(missing: dict, pip_fn=None, torch_fn=None) -> str:
     """
     Install missing packages. Only called from an explicit user action.
 
@@ -148,14 +156,20 @@ def install_packages(missing: dict, pip_fn=None, torch_fn=None) -> bool:
     pip_fn:   injectable for testing (default: slicer.util.pip_install)
     torch_fn: injectable for testing (default: _install_torch)
 
-    Returns True only when every requested package was installed and a plain restart is
-    all that remains. Returns False when the caller must not continue: testing mode, a
-    failed install, or the PyTorch extension having just been installed, since its own
-    restart has to happen before torch itself can follow.
+    Returns one of:
+      "skipped"  nothing was done (testing mode)
+      "failed"   the install did not succeed; the user has been told
+      "restart"  installed, but Slicer must restart before the packages can be used
+      "ready"    installed and usable immediately — the caller may just continue
+
+    "ready" is the common case: a freshly pip-installed package that this session never
+    imported is importable straight away. A restart is only needed when something already
+    held in memory was replaced, which in practice means numpy — installing torch on macOS
+    downgrades it.
     """
     import slicer
     if slicer.app.testingEnabled():
-        return False
+        return "skipped"
 
     import logging
 
@@ -180,15 +194,15 @@ def install_packages(missing: dict, pip_fn=None, torch_fn=None) -> bool:
                 f"PyTorch could not be installed:\n\n{exc}\n\n"
                 "No further packages were installed."
             )
-            return False
+            return "failed"
 
         if outcome == "restart":
             slicer.util.infoDisplay(
                 "The PyTorch extension has been installed.\n\n"
                 "Restart Slicer and open this module again to install the remaining "
-                "packages. Models you want can be selected again then."
+                "packages."
             )
-            return False
+            return "restart"
 
     # One pip invocation for everything. Installing package by package lets pip resolve each
     # one in isolation, so a later package can pull in a dependency that breaks an earlier
@@ -199,6 +213,8 @@ def install_packages(missing: dict, pip_fn=None, torch_fn=None) -> bool:
     requirements = list(missing.get("general", []))
     if _numpy_must_stay_v1() and (requirements or _numpy_major() >= 2):
         requirements.append(NUMPY_TORCH_SPEC)
+
+    numpy_before = _numpy_version()
 
     if requirements:
         slicer.util.showStatusMessage(
@@ -211,10 +227,16 @@ def install_packages(missing: dict, pip_fn=None, torch_fn=None) -> bool:
             slicer.util.errorDisplay(
                 f"The required Python packages could not be installed:\n\n{exc}"
             )
-            return False
+            return "failed"
 
-    slicer.util.showStatusMessage(
-        "ZebrafishEmbryoAnalyzer: dependencies installed — restart required."
-    )
+    # numpy is the one package Slicer has already imported by the time we get here, so a
+    # changed version is what actually forces a restart. Everything else was missing a
+    # moment ago and can therefore be imported straight away.
+    if _numpy_version() != numpy_before:
+        slicer.util.showStatusMessage(
+            "ZebrafishEmbryoAnalyzer: dependencies installed — restart required."
+        )
+        return "restart"
 
-    return True
+    slicer.util.showStatusMessage("ZebrafishEmbryoAnalyzer: dependencies installed.")
+    return "ready"

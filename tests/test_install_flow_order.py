@@ -5,10 +5,10 @@ Verifies:
   - opening the module never triggers an install (no call site in enter())
   - nothing missing → the caller proceeds
   - user declines → the caller does not proceed and nothing is installed
-  - install succeeds → restart dialog, and the caller still does not proceed,
-    because the new packages only become importable after a restart
+  - install needing no restart → the caller carries on in the same session
+  - install replacing something already imported → restart dialog, caller stops
   - a failed install is reported and does not proceed
-  - the confirmation uses Slicer's standard dialog, not a hand-built QDialog
+  - the confirmation and the restart use Slicer's standard dialogs
 
 Pure Python — no Slicer, Qt, or torch required.
 """
@@ -42,6 +42,7 @@ def _widget_class():
 def _shell(cls):
     w = object.__new__(cls)
     w._show_restart_dialog = MagicMock()
+    w.refresh_dependency_status = MagicMock()
     return w
 
 
@@ -56,15 +57,16 @@ def test_show_restart_dialog_takes_no_parameters():
     )
 
 
-def test_module_entry_does_not_check_dependencies():
-    """Opening the module must not ask the user to install anything — browsing the
-    results of an existing scene needs none of the packages."""
+def test_module_entry_notifies_but_never_installs():
+    """Opening the module refreshes the in-panel notice so the user learns about a
+    pending install early, but must not open a dialog or install anything."""
     from pathlib import Path
     src = Path("ZebrafishEmbryoAnalyzer/ZebrafishEmbryoAnalyzer.py").read_text()
     enter_body = src.split("def enter(self)")[1].split("def exit(self)")[0]
-    # Strip comments — enter() explains in prose why it does not call this.
+    # Strip comments — enter() explains in prose why it does not call the installer.
     code = "\n".join(line.split("#")[0] for line in enter_body.splitlines())
     assert "ensure_dependencies(" not in code
+    assert "refresh_dependency_status(" in code
     assert "prompt_install_if_missing" not in src
 
 
@@ -100,9 +102,9 @@ def test_declining_stops_the_caller(monkeypatch):
         w._show_restart_dialog.assert_not_called()
 
 
-def test_successful_install_shows_restart_and_still_stops_the_caller(monkeypatch):
-    """Installed packages only become importable after a restart, so the action that
-    triggered the install must not continue in this session."""
+def test_install_that_needs_no_restart_lets_the_caller_continue(monkeypatch):
+    """A freshly installed package that this session never imported is usable straight
+    away, so the action that triggered the install should simply carry on."""
     with _stub_slicer_env():
         cls = _widget_class()
         w = _shell(cls)
@@ -113,7 +115,26 @@ def test_successful_install_shows_restart_and_still_stops_the_caller(monkeypatch
         import ZebrafishEmbryoAnalyzerLib.dependency_installer as di
         monkeypatch.setattr(di, "get_missing_packages",
                             lambda purpose="analysis": {"torch": [], "general": ["timm"]})
-        monkeypatch.setattr(di, "install_packages", MagicMock(return_value=True))
+        monkeypatch.setattr(di, "install_packages", MagicMock(return_value="ready"))
+
+        assert cls.ensure_dependencies(w, "analysis") is True
+        w._show_restart_dialog.assert_not_called()
+
+
+def test_install_that_needs_a_restart_stops_the_caller(monkeypatch):
+    """Only when something already held in memory was replaced — numpy in practice —
+    must the action stop and the restart be offered."""
+    with _stub_slicer_env():
+        cls = _widget_class()
+        w = _shell(cls)
+        slicer = sys.modules["slicer"]
+        slicer.app.testingEnabled.return_value = False
+        slicer.util.confirmOkCancelDisplay.return_value = True
+
+        import ZebrafishEmbryoAnalyzerLib.dependency_installer as di
+        monkeypatch.setattr(di, "get_missing_packages",
+                            lambda purpose="analysis": {"torch": [], "general": ["timm"]})
+        monkeypatch.setattr(di, "install_packages", MagicMock(return_value="restart"))
 
         assert cls.ensure_dependencies(w, "analysis") is False
         w._show_restart_dialog.assert_called_once_with()

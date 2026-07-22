@@ -122,7 +122,7 @@ def test_install_packages_skipped_in_testing_mode(monkeypatch):
     di, _ = _reload_with_slicer(monkeypatch, testing_enabled=True)
     pip_fn, torch_fn = MagicMock(), MagicMock()
     assert di.install_packages({"torch": ["torch"], "general": ["timm"]},
-                               pip_fn=pip_fn, torch_fn=torch_fn) is False
+                               pip_fn=pip_fn, torch_fn=torch_fn) == "skipped"
     pip_fn.assert_not_called()
     torch_fn.assert_not_called()
 
@@ -154,12 +154,33 @@ def test_install_packages_uses_a_single_pip_invocation(monkeypatch):
     pip_fn.assert_called_once_with("timm scikit-image openpyxl")
 
 
+def test_install_reports_ready_when_numpy_was_not_replaced(monkeypatch):
+    """The common case: nothing already held in memory changed, so the caller can just
+    carry on without restarting Slicer."""
+    di, _ = _reload_with_slicer(monkeypatch, platform="linux")
+    monkeypatch.setattr(di, "_numpy_version", lambda: "2.4.6")
+
+    assert di.install_packages({"torch": [], "general": ["timm"]},
+                               pip_fn=MagicMock(), torch_fn=MagicMock()) == "ready"
+
+
+def test_install_reports_restart_when_numpy_version_changed(monkeypatch):
+    """Installing torch on macOS downgrades numpy, which Slicer has already imported —
+    that is the case where a restart is genuinely unavoidable."""
+    di, _ = _reload_with_slicer(monkeypatch, platform="darwin")
+    versions = iter(["2.4.6", "1.26.4"])
+    monkeypatch.setattr(di, "_numpy_version", lambda: next(versions))
+
+    assert di.install_packages({"torch": [], "general": ["scikit-image"]},
+                               pip_fn=MagicMock(), torch_fn=MagicMock()) == "restart"
+
+
 def test_install_packages_reports_failure_of_the_batch(monkeypatch):
     di, mock_slicer = _reload_with_slicer(monkeypatch)
     pip_fn = MagicMock(side_effect=RuntimeError("simulated failure"))
 
     assert di.install_packages({"torch": [], "general": ["timm", "openpyxl"]},
-                               pip_fn=pip_fn, torch_fn=MagicMock()) is False
+                               pip_fn=pip_fn, torch_fn=MagicMock()) == "failed"
 
     mock_slicer.util.errorDisplay.assert_called_once()
     assert "simulated failure" in mock_slicer.util.errorDisplay.call_args.args[0]
@@ -173,7 +194,7 @@ def test_install_packages_aborts_remaining_when_torch_fails(monkeypatch):
     torch_fn = MagicMock(side_effect=RuntimeError("no extension server"))
 
     assert di.install_packages({"torch": ["torch"], "general": ["segmentation_models_pytorch"]},
-                               pip_fn=pip_fn, torch_fn=torch_fn) is False
+                               pip_fn=pip_fn, torch_fn=torch_fn) == "failed"
 
     pip_fn.assert_not_called()
     mock_slicer.util.errorDisplay.assert_called_once()
@@ -187,7 +208,7 @@ def test_install_packages_aborts_remaining_when_extension_needs_restart(monkeypa
     pip_fn = MagicMock()
 
     assert di.install_packages({"torch": ["torch"], "general": ["segmentation_models_pytorch"]},
-                               pip_fn=pip_fn, torch_fn=MagicMock(return_value="restart")) is False
+                               pip_fn=pip_fn, torch_fn=MagicMock(return_value="restart")) == "restart"
 
     pip_fn.assert_not_called()
     mock_slicer.util.errorDisplay.assert_not_called()
@@ -201,7 +222,7 @@ def test_install_packages_proceeds_after_torch_ok(monkeypatch):
     pip_fn = MagicMock()
 
     assert di.install_packages({"torch": ["torch"], "general": ["timm"]},
-                               pip_fn=pip_fn, torch_fn=MagicMock(return_value="ok")) is True
+                               pip_fn=pip_fn, torch_fn=MagicMock(return_value="ok")) == "ready"
     pip_fn.assert_called_once_with("timm")
 
 
@@ -283,8 +304,8 @@ def test_numpy_major_does_not_import_numpy(monkeypatch):
     replaced without restarting Slicer."""
     import ZebrafishEmbryoAnalyzerLib.dependency_installer as di
     src = open(di.__file__).read()
-    body = src.split("def _numpy_major")[1].split("def ")[0]
-    assert "import numpy" not in body
+    body = src.split("def _numpy_version")[1].split("def ")[0]
+    assert "import numpy" not in body.replace("importlib", "")
     assert "importlib.metadata" in body
     assert di._numpy_major() >= 1  # still returns something usable
 
