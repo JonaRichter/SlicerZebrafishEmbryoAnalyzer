@@ -41,14 +41,30 @@ def _is_importable(name: str) -> bool:
     return importlib.util.find_spec(import_name) is not None
 
 
-def get_missing_packages() -> dict:
+# What each user action actually needs. Exporting a result table should not pull in a
+# two-gigabyte torch install, and viewing results needs nothing at all.
+# None means "everything", including torch.
+PACKAGES_FOR_PURPOSE = {
+    "analysis": None,
+    "scalebar": ["opencv-python-headless", "pytesseract"],
+    "excel":    ["openpyxl"],
+}
+
+
+def get_missing_packages(purpose: str = "analysis") -> dict:
     """
-    Return {"torch": [...], "general": [...]}.
+    Return {"torch": [...], "general": [...]} for the given purpose.
+    Unknown purposes fall back to the full set.
     Pure Python — no slicer/qt import. Safe at any call site.
     """
+    wanted = PACKAGES_FOR_PURPOSE.get(purpose, None)
+    torch_packages   = TORCH_PACKAGES if wanted is None else []
+    general_packages = REQUIRED_PACKAGES if wanted is None else [
+        p for p in REQUIRED_PACKAGES if p in wanted
+    ]
     return {
-        "torch":   [p for p in TORCH_PACKAGES    if not _is_importable(p)],
-        "general": [p for p in REQUIRED_PACKAGES if not _is_importable(p)],
+        "torch":   [p for p in torch_packages   if not _is_importable(p)],
+        "general": [p for p in general_packages if not _is_importable(p)],
     }
 
 

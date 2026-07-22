@@ -1,11 +1,14 @@
 """
-Tests for prompt_install_if_missing() flow order.
+Tests for ensure_dependencies() — the on-demand dependency install flow.
 
 Verifies:
-  - install → _show_restart_dialog() when no models selected
-  - install → _start_initial_model_download() when models selected
-  - _show_restart_dialog takes no parameters
-  - _start_initial_model_download._finished calls _show_restart_dialog()
+  - opening the module never triggers an install (no call site in enter())
+  - nothing missing → the caller proceeds
+  - user declines → the caller does not proceed and nothing is installed
+  - install succeeds → restart dialog, and the caller still does not proceed,
+    because the new packages only become importable after a restart
+  - a failed install is reported and does not proceed
+  - the confirmation uses Slicer's standard dialog, not a hand-built QDialog
 
 Pure Python — no Slicer, Qt, or torch required.
 """
@@ -31,87 +34,138 @@ def _stub_slicer_env():
         sys.modules.update(saved)
 
 
+def _widget_class():
+    from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
+    return ZebrafishEmbryoAnalyzerMainWidget
+
+
+def _shell(cls):
+    w = object.__new__(cls)
+    w._show_restart_dialog = MagicMock()
+    return w
+
+
 def test_show_restart_dialog_takes_no_parameters():
     """_show_restart_dialog must accept zero extra arguments beyond self."""
     import inspect
     with _stub_slicer_env():
-        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
-        sig = inspect.signature(ZebrafishEmbryoAnalyzerMainWidget._show_restart_dialog)
+        sig = inspect.signature(_widget_class()._show_restart_dialog)
         params = [p for p in sig.parameters if p != "self"]
     assert params == [], (
         f"_show_restart_dialog should have no parameters beyond self; got {params}"
     )
 
 
-def test_prompt_install_calls_download_when_entries_selected():
-    """After install, _start_initial_model_download is called when entries selected."""
+def test_module_entry_does_not_check_dependencies():
+    """Opening the module must not ask the user to install anything — browsing the
+    results of an existing scene needs none of the packages."""
+    from pathlib import Path
+    src = Path("ZebrafishEmbryoAnalyzer/ZebrafishEmbryoAnalyzer.py").read_text()
+    enter_body = src.split("def enter(self)")[1].split("def exit(self)")[0]
+    # Strip comments — enter() explains in prose why it does not call this.
+    code = "\n".join(line.split("#")[0] for line in enter_body.splitlines())
+    assert "ensure_dependencies(" not in code
+    assert "prompt_install_if_missing" not in src
+
+
+def test_proceeds_when_nothing_missing(monkeypatch):
     with _stub_slicer_env():
-        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget as ZebrafishEmbryoAnalyzerWidget
+        cls = _widget_class()
+        w = _shell(cls)
+        import ZebrafishEmbryoAnalyzerLib.dependency_installer as di
+        monkeypatch.setattr(di, "get_missing_packages",
+                            lambda purpose="analysis": {"torch": [], "general": []})
+        sys.modules["slicer"].app.testingEnabled.return_value = False
 
-        widget = MagicMock(spec=ZebrafishEmbryoAnalyzerWidget)
-        selected_entries = [{"id": "seg_v1", "filename": "seg.pt"}]
-
-        # Replicate the tail branch of prompt_install_if_missing
-        if selected_entries:
-            widget._start_initial_model_download(selected_entries)
-        else:
-            widget._show_restart_dialog()
-
-    widget._start_initial_model_download.assert_called_once_with(selected_entries)
-    widget._show_restart_dialog.assert_not_called()
+        assert cls.ensure_dependencies(w, "analysis") is True
+        w._show_restart_dialog.assert_not_called()
 
 
-def test_prompt_install_calls_restart_dialog_when_no_entries():
-    """After install, _show_restart_dialog() is called when no models selected."""
+def test_declining_stops_the_caller(monkeypatch):
     with _stub_slicer_env():
-        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget as ZebrafishEmbryoAnalyzerWidget
+        cls = _widget_class()
+        w = _shell(cls)
+        slicer = sys.modules["slicer"]
+        slicer.app.testingEnabled.return_value = False
+        slicer.util.confirmOkCancelDisplay.return_value = False
 
-        widget = MagicMock(spec=ZebrafishEmbryoAnalyzerWidget)
-        selected_entries = []
+        import ZebrafishEmbryoAnalyzerLib.dependency_installer as di
+        monkeypatch.setattr(di, "get_missing_packages",
+                            lambda purpose="analysis": {"torch": [], "general": ["timm"]})
+        install = MagicMock()
+        monkeypatch.setattr(di, "install_packages", install)
 
-        if selected_entries:
-            widget._start_initial_model_download(selected_entries)
-        else:
-            widget._show_restart_dialog()
-
-    widget._show_restart_dialog.assert_called_once_with()
-    widget._start_initial_model_download.assert_not_called()
+        assert cls.ensure_dependencies(w, "analysis") is False
+        install.assert_not_called()
+        w._show_restart_dialog.assert_not_called()
 
 
-def test_finished_callback_calls_show_restart_dialog(monkeypatch):
-    """_start_initial_model_download _finished callback calls _show_restart_dialog."""
+def test_successful_install_shows_restart_and_still_stops_the_caller(monkeypatch):
+    """Installed packages only become importable after a restart, so the action that
+    triggered the install must not continue in this session."""
     with _stub_slicer_env():
-        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget as ZebrafishEmbryoAnalyzerWidget
-        import ZebrafishEmbryoAnalyzerLib.model_downloader as md_module
+        cls = _widget_class()
+        w = _shell(cls)
+        slicer = sys.modules["slicer"]
+        slicer.app.testingEnabled.return_value = False
+        slicer.util.confirmOkCancelDisplay.return_value = True
 
-        captured_finished = []
+        import ZebrafishEmbryoAnalyzerLib.dependency_installer as di
+        monkeypatch.setattr(di, "get_missing_packages",
+                            lambda purpose="analysis": {"torch": [], "general": ["timm"]})
+        monkeypatch.setattr(di, "install_packages", MagicMock(return_value=True))
 
-        def fake_start_model_download(entries, finished_cb, parent=None):
-            controller = MagicMock()
-            captured_finished.append((finished_cb, controller))
-            return controller
+        assert cls.ensure_dependencies(w, "analysis") is False
+        w._show_restart_dialog.assert_called_once_with()
 
-        monkeypatch.setattr(md_module, "start_model_download", fake_start_model_download)
 
-        widget = MagicMock(spec=ZebrafishEmbryoAnalyzerWidget)
-        widget._disposed = False
-        widget._active_downloader = None
-        widget._run_status_label = MagicMock()
-        widget._run_progress = MagicMock()
-        widget._run_stack = MagicMock()
+def test_failed_install_is_reported(monkeypatch):
+    with _stub_slicer_env():
+        cls = _widget_class()
+        w = _shell(cls)
+        slicer = sys.modules["slicer"]
+        slicer.app.testingEnabled.return_value = False
+        slicer.util.confirmOkCancelDisplay.return_value = True
 
-        entries = [{"id": "seg_v1", "filename": "seg.pt"}]
-        ZebrafishEmbryoAnalyzerWidget._start_initial_model_download(widget, entries)
+        import ZebrafishEmbryoAnalyzerLib.dependency_installer as di
+        monkeypatch.setattr(di, "get_missing_packages",
+                            lambda purpose="analysis": {"torch": [], "general": ["timm"]})
+        monkeypatch.setattr(di, "install_packages",
+                            MagicMock(side_effect=RuntimeError("boom")))
 
-        assert captured_finished, "_finished callback was never registered"
-        finished_cb, controller = captured_finished[0]
+        assert cls.ensure_dependencies(w, "analysis") is False
+        slicer.util.errorDisplay.assert_called_once()
+        w._show_restart_dialog.assert_not_called()
 
-        # Set active_downloader as the real code does
-        widget._active_downloader = controller
 
-        # Invoke _finished (success=True)
-        finished_cb(True, None, "done", controller)
+def test_confirmation_uses_the_standard_dialog_with_package_details(monkeypatch):
+    """Tier 3 asks for minimal popups and no unnecessary custom GUI — the package list
+    belongs in the standard dialog's detail area, not in a hand-built QDialog."""
+    with _stub_slicer_env():
+        cls = _widget_class()
+        w = _shell(cls)
+        slicer = sys.modules["slicer"]
+        slicer.app.testingEnabled.return_value = False
+        slicer.util.confirmOkCancelDisplay.return_value = False
 
-    # After _finished: _show_restart_dialog must be called, not refresh_dependency_status
-    widget._show_restart_dialog.assert_called_once_with()
-    widget.refresh_dependency_status.assert_not_called()
+        import ZebrafishEmbryoAnalyzerLib.dependency_installer as di
+        monkeypatch.setattr(
+            di, "get_missing_packages",
+            lambda purpose="analysis": {"torch": ["torch"], "general": ["timm"]})
+
+        cls.ensure_dependencies(w, "analysis")
+
+        slicer.util.confirmOkCancelDisplay.assert_called_once()
+        detail = slicer.util.confirmOkCancelDisplay.call_args.kwargs["detailedText"]
+        assert "timm" in detail
+        assert "torch" in detail
+
+
+def test_no_custom_setup_dialog_remains():
+    """The hand-built setup dialog and its model checkboxes are gone; models download
+    on demand at the point they are first needed."""
+    from pathlib import Path
+    src = Path("ZebrafishEmbryoAnalyzer/ZebrafishEmbryoAnalyzerLib/widget.py").read_text()
+    assert "ZebrafishEmbryoAnalyzer — Setup" not in src
+    assert "_start_initial_model_download" not in src
+    assert "_install_declined" not in src

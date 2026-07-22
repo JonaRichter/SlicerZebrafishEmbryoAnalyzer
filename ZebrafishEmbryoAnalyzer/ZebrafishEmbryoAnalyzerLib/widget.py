@@ -70,7 +70,6 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._disposed = False
         self._run_token = 0
         self._deps_ok = True
-        self._install_declined = False  # set True when user cancels the dependency dialog; reset on dispose
 
         self._saved_layout_id = None
         self._saved_central_visible = None
@@ -560,6 +559,8 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         if not self._image_paths:
             self._scale_status.setText("Load images first.")
             return
+        if not self.ensure_dependencies("scalebar"):
+            return
         result = self._logic.detect_scalebar(self._image_paths[0])
         if result.get("bar_found"):
             um_per_px = result.get("scale_um_per_px")
@@ -607,6 +608,9 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             )
 
     def _on_run(self):
+        if not self.ensure_dependencies("analysis"):
+            return
+
         self._run_token += 1
         token = self._run_token
 
@@ -894,14 +898,19 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             node.EndModify(wasModified)
 
     def _refresh_run_button(self):
-        """Enable Run button only when deps are OK and at least one image is queued."""
-        enabled = self._deps_ok and len(self._image_paths) > 0
+        """Enable Run as soon as images are queued.
+
+        Missing packages deliberately do not disable the button: they are installed when
+        the analysis starts, so blocking it here would leave no way to trigger that.
+        """
+        enabled = len(self._image_paths) > 0
         self._btn_run.setEnabled(enabled)
         if not enabled:
-            if not self._deps_ok:
-                self._btn_run.setToolTip("Install missing ML dependencies first.")
-            else:
-                self._btn_run.setToolTip("Load images before running analysis.")
+            self._btn_run.setToolTip("Load images before running analysis.")
+        elif not self._deps_ok:
+            self._btn_run.setToolTip(
+                "Missing Python packages will be installed when the analysis starts."
+            )
         else:
             self._btn_run.setToolTip("")
 
@@ -933,96 +942,50 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             return "Internal error: could not write temporary results. Check disk space."
         return "Analysis failed. Check the application log."
 
-    def prompt_install_if_missing(self):
-        """Show a startup dialog if required dependencies are absent. Guarded by testingEnabled."""
+    def ensure_dependencies(self, purpose="analysis"):
+        """Make sure the Python packages needed for ``purpose`` are installed.
+
+        Called at the start of every action that needs them — never when the module is
+        merely opened, so browsing existing results never raises an installation question.
+
+        Returns True when the caller may proceed. Returns False both when the user
+        declines and when packages were installed successfully: the newly installed
+        packages only become importable after a Slicer restart, so the current action
+        cannot continue either way.
+        """
         try:
             import slicer
             if slicer.app.testingEnabled():
-                return
+                return True
         except ImportError:
-            return
-
-        if self._install_declined:
-            return
+            return True
 
         from ZebrafishEmbryoAnalyzerLib import dependency_installer
-        missing = dependency_installer.get_missing_packages()
+        missing = dependency_installer.get_missing_packages(purpose)
         if not any(missing.values()):
-            return
+            return True
 
-        # Build package item list
         items = []
         if missing["torch"]:
             items.append("torch + torchvision (via the PyTorch extension)")
         items.extend(missing["general"])
 
-        import qt
-        from ZebrafishEmbryoAnalyzerLib.model_manifest import collect_all_model_entries, get_missing_models
-        all_entries = collect_all_model_entries()
-        missing_models = get_missing_models(all_entries)
-
-        dlg = qt.QDialog(slicer.util.mainWindow())
-        dlg.setWindowTitle("ZebrafishEmbryoAnalyzer — Setup")
-        layout = qt.QVBoxLayout(dlg)
-
-        # Packages section
-        restart_note = (
-            "\n\nInstallation requires an internet connection and takes a few minutes. "
-            "Slicer must be restarted afterwards."
-        )
+        detail = "Packages that will be installed:\n" + "\n".join(f"  • {i}" for i in items)
         if missing["torch"]:
             # PyTorchUtils only becomes importable after a restart, so torch itself
             # can only be installed on the following run.
-            restart_note += (
-                " If the PyTorch extension is not installed yet, it is installed first "
+            detail += (
+                "\n\nIf the PyTorch extension is not installed yet, it is installed first "
                 "and a second restart is required before PyTorch itself follows."
             )
-        pkg_label = qt.QLabel(
-            "The following packages are required and not yet installed:\n\n"
-            + "\n".join(f"  • {i}" for i in items)
-            + restart_note
-        )
-        pkg_label.setWordWrap(True)
-        layout.addWidget(pkg_label)
 
-        # Models section (only if uncached models exist)
-        model_checkboxes = []
-        if missing_models:
-            layout.addWidget(qt.QLabel("\nOptionally download missing models now:"))
-            for entry in missing_models:
-                size_mb = round(entry.get("size_bytes", 0) / 1_048_576)
-                label = f"{entry['label']} (~{size_mb} MB)"
-                cb = qt.QCheckBox(label)
-                cb.setChecked(False)
-                cb.setProperty("model_entry_id", entry["id"])
-                layout.addWidget(cb)
-                model_checkboxes.append((cb, entry))
-
-        selected_entries = []
-        install_confirmed = [False]
-
-        def _on_install():
-            install_confirmed[0] = True
-            selected_entries.extend(
-                entry for cb, entry in model_checkboxes if cb.isChecked()
-            )
-            dlg.accept()
-
-        def _on_cancel():
-            self._install_declined = True
-            dlg.reject()
-
-        btn_box = qt.QDialogButtonBox(dlg)
-        btn_box.addButton("Install", qt.QDialogButtonBox.AcceptRole)
-        btn_box.addButton("Cancel", qt.QDialogButtonBox.RejectRole)
-        btn_box.connect("accepted()", _on_install)
-        btn_box.connect("rejected()", _on_cancel)
-        layout.addWidget(btn_box)
-
-        dlg.exec_()
-        if not install_confirmed[0]:
-            self._install_declined = True
-            return
+        if not slicer.util.confirmOkCancelDisplay(
+            "This module requires additional Python packages. Installation needs a network "
+            "connection, takes several minutes, and Slicer has to be restarted afterwards.",
+            "Confirm Python package installation",
+            detailedText=detail,
+        ):
+            return False
 
         try:
             completed = dependency_installer.install_packages(missing)
@@ -1030,15 +993,11 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             import logging
             logging.exception("Dependency install failed: %s", exc)
             slicer.util.errorDisplay(f"Installation failed: {exc}")
-            return
+            return False
 
-        if not completed:
-            return  # user cancelled — no restart prompt
-
-        if selected_entries:
-            self._start_initial_model_download(selected_entries)
-        else:
+        if completed:
             self._show_restart_dialog()
+        return False
 
     def _show_restart_dialog(self):
         """Show restart-required dialog after package installation."""
@@ -1070,42 +1029,6 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             return
 
         self.refresh_dependency_status()
-
-    def _start_initial_model_download(self, entries):
-        """Start asynchronous download of initial model files.
-
-        Mirrors _start_model_download() but on completion only refreshes
-        dependency status — no inference is started.
-        """
-        if self._active_downloader is not None:
-            return
-
-        try:
-            self._run_status_label.setText("Downloading models…")
-            self._run_progress.setRange(0, 100)
-            self._run_progress.setValue(0)
-            self._run_progress.setFormat("")
-            self._run_stack.setCurrentIndex(1)
-
-            from ZebrafishEmbryoAnalyzerLib.model_downloader import start_model_download
-
-            def _finished(success, state, message, controller):
-                if self._disposed or controller is not self._active_downloader:
-                    return
-                self._active_downloader = None
-                self._run_stack.setCurrentIndex(0)
-                self._show_restart_dialog()
-
-            self._active_downloader = start_model_download(
-                entries,
-                _finished,
-                parent=slicer.util.mainWindow(),
-            )
-        except Exception as exc:
-            self._run_stack.setCurrentIndex(0)
-            self._active_downloader = None
-            logging.exception("ZebrafishEmbryoAnalyzer: failed to start initial model download")
-            slicer.util.errorDisplay(f"Could not start model download:\n{exc}")
 
     def _cancel_workers(self):
         """Cancel active asynchronous operations and invalidate transient state."""
@@ -1166,6 +1089,8 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         from ZebrafishEmbryoAnalyzerLib.export import export_excel
         if not self._results:
             slicer.util.warningDisplay("No results to export. Run analysis first.")
+            return
+        if not self.ensure_dependencies("excel"):
             return
         path = qt.QFileDialog.getSaveFileName(None, "Save Excel", "", "Excel (*.xlsx)")
         if path:

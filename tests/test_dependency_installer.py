@@ -50,6 +50,41 @@ def test_get_missing_packages_reports_no_numpy_pin(monkeypatch):
     assert "numpy_pin" not in get_missing_packages()
 
 
+def test_excel_export_does_not_pull_in_torch(monkeypatch):
+    """Exporting a result table must not trigger a two-gigabyte torch install."""
+    monkeypatch.setattr("ZebrafishEmbryoAnalyzerLib.dependency_installer._is_importable",
+                        lambda n: False)
+    result = get_missing_packages("excel")
+    assert result["torch"] == []
+    assert result["general"] == ["openpyxl"]
+
+
+def test_scalebar_needs_only_vision_packages(monkeypatch):
+    monkeypatch.setattr("ZebrafishEmbryoAnalyzerLib.dependency_installer._is_importable",
+                        lambda n: False)
+    result = get_missing_packages("scalebar")
+    assert result["torch"] == []
+    assert set(result["general"]) == {"opencv-python-headless", "pytesseract"}
+
+
+def test_analysis_needs_everything(monkeypatch):
+    monkeypatch.setattr("ZebrafishEmbryoAnalyzerLib.dependency_installer._is_importable",
+                        lambda n: False)
+    import ZebrafishEmbryoAnalyzerLib.dependency_installer as di
+    result = get_missing_packages("analysis")
+    assert result["torch"] == di.TORCH_PACKAGES
+    assert result["general"] == di.REQUIRED_PACKAGES
+
+
+def test_unknown_purpose_falls_back_to_everything(monkeypatch):
+    """A typo in a call site must not silently skip the install."""
+    monkeypatch.setattr("ZebrafishEmbryoAnalyzerLib.dependency_installer._is_importable",
+                        lambda n: False)
+    import ZebrafishEmbryoAnalyzerLib.dependency_installer as di
+    assert get_missing_packages("typo") == get_missing_packages("analysis")
+    assert get_missing_packages("typo")["torch"] == di.TORCH_PACKAGES
+
+
 def test_get_missing_packages_imports_no_slicer():
     """Must stay pure Python so it is safe to call at any site, including setup()."""
     import ZebrafishEmbryoAnalyzerLib.dependency_installer as di

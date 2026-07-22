@@ -107,7 +107,9 @@ class ZebrafishEmbryoAnalyzerWidget(ScriptedLoadableModuleWidget, VTKObservation
             self.initializeParameterNode()
         if self._main is not None:
             self._main.apply_shell_layout()
-            self._main.prompt_install_if_missing()
+            # No dependency check here on purpose. Opening the module must not ask the user
+            # to install anything — browsing results of an existing scene needs none of the
+            # packages. Each action that does need them calls ensure_dependencies() itself.
 
     def exit(self):
         if self._main is not None:
