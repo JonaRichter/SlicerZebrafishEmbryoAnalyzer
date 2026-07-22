@@ -99,7 +99,10 @@ def install_packages(missing: dict, pip_fn=None, torch_fn=None) -> bool:
     pip_fn:   injectable for testing (default: slicer.util.pip_install)
     torch_fn: injectable for testing (default: _install_torch)
 
-    Returns True when the install ran, False when it was skipped in testing mode.
+    Returns True only when every requested package was installed and a plain restart is
+    all that remains. Returns False when the caller must not continue: testing mode, a
+    failed install, or the PyTorch extension having just been installed, since its own
+    restart has to happen before torch itself can follow.
     """
     import slicer
     if slicer.app.testingEnabled():
@@ -112,17 +115,33 @@ def install_packages(missing: dict, pip_fn=None, torch_fn=None) -> bool:
     if torch_fn is None:
         torch_fn = _install_torch
 
-    errors = []
-    torch_needs_restart = False
-
+    # Torch must be settled before anything else is installed. Several of the remaining
+    # packages (segmentation_models_pytorch above all) declare torch as a dependency, so
+    # pip would happily resolve and install its own torch build if we got here first —
+    # bypassing the PyTorch extension and the platform-specific constraints it applies.
+    # On macOS that produced a torch compiled against NumPy 1.x sitting next to NumPy 2:
+    # it imports, then fails at the first array conversion with "Numpy is not available".
     if missing.get("torch"):
         slicer.util.showStatusMessage("ZebrafishEmbryoAnalyzer: installing PyTorch…")
         try:
-            torch_needs_restart = torch_fn() == "restart"
+            outcome = torch_fn()
         except Exception as exc:
             logging.exception("Failed to install PyTorch: %s", exc)
-            errors.append(f"PyTorch: {exc}")
+            slicer.util.errorDisplay(
+                f"PyTorch could not be installed:\n\n{exc}\n\n"
+                "No further packages were installed."
+            )
+            return False
 
+        if outcome == "restart":
+            slicer.util.infoDisplay(
+                "The PyTorch extension has been installed.\n\n"
+                "Restart Slicer and open this module again to install the remaining "
+                "packages. Models you want can be selected again then."
+            )
+            return False
+
+    errors = []
     for pkg in missing.get("general", []):
         slicer.util.showStatusMessage(f"ZebrafishEmbryoAnalyzer: installing {pkg}…")
         try:
@@ -135,14 +154,10 @@ def install_packages(missing: dict, pip_fn=None, torch_fn=None) -> bool:
         slicer.util.errorDisplay(
             "Some packages could not be installed:\n" + "\n".join(f"  • {e}" for e in errors)
         )
-    elif torch_needs_restart:
-        slicer.util.showStatusMessage(
-            "ZebrafishEmbryoAnalyzer: PyTorch extension installed — restart Slicer, "
-            "then reopen this module to install PyTorch itself."
-        )
-    else:
-        slicer.util.showStatusMessage(
-            "ZebrafishEmbryoAnalyzer: dependencies installed — restart required."
-        )
+        return False
+
+    slicer.util.showStatusMessage(
+        "ZebrafishEmbryoAnalyzer: dependencies installed — restart required."
+    )
 
     return True

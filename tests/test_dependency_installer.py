@@ -126,25 +126,44 @@ def test_install_packages_continues_after_single_failure(monkeypatch):
     assert "timm" in mock_slicer.util.errorDisplay.call_args.args[0]
 
 
-def test_install_packages_reports_torch_failure(monkeypatch):
+def test_install_packages_aborts_remaining_when_torch_fails(monkeypatch):
+    """A failed torch install must stop the run — otherwise pip resolves torch as a
+    transitive dependency of the remaining packages and bypasses the PyTorch extension."""
     di, mock_slicer = _reload_with_slicer(monkeypatch)
+    pip_fn = MagicMock()
     torch_fn = MagicMock(side_effect=RuntimeError("no extension server"))
-    di.install_packages({"torch": ["torch"], "general": []},
-                        pip_fn=MagicMock(), torch_fn=torch_fn)
+
+    assert di.install_packages({"torch": ["torch"], "general": ["segmentation_models_pytorch"]},
+                               pip_fn=pip_fn, torch_fn=torch_fn) is False
+
+    pip_fn.assert_not_called()
     mock_slicer.util.errorDisplay.assert_called_once()
     assert "PyTorch" in mock_slicer.util.errorDisplay.call_args.args[0]
 
 
-def test_install_packages_signals_second_restart(monkeypatch):
-    """When the PyTorch extension had to be installed first, the user is told a
-    second restart is needed before torch itself follows."""
+def test_install_packages_aborts_remaining_when_extension_needs_restart(monkeypatch):
+    """After installing the PyTorch extension, torch itself is not available until Slicer
+    restarts. Installing the remaining packages now would let pip pull its own torch."""
     di, mock_slicer = _reload_with_slicer(monkeypatch)
-    di.install_packages({"torch": ["torch"], "general": []},
-                        pip_fn=MagicMock(), torch_fn=MagicMock(return_value="restart"))
+    pip_fn = MagicMock()
 
+    assert di.install_packages({"torch": ["torch"], "general": ["segmentation_models_pytorch"]},
+                               pip_fn=pip_fn, torch_fn=MagicMock(return_value="restart")) is False
+
+    pip_fn.assert_not_called()
     mock_slicer.util.errorDisplay.assert_not_called()
-    messages = " ".join(str(c) for c in mock_slicer.util.showStatusMessage.call_args_list)
-    assert "restart" in messages.lower()
+    mock_slicer.util.infoDisplay.assert_called_once()
+    assert "estart" in mock_slicer.util.infoDisplay.call_args.args[0]
+
+
+def test_install_packages_proceeds_after_torch_ok(monkeypatch):
+    """Only once torch is actually installed may the remaining packages follow."""
+    di, _ = _reload_with_slicer(monkeypatch)
+    pip_fn = MagicMock()
+
+    assert di.install_packages({"torch": ["torch"], "general": ["timm"]},
+                               pip_fn=pip_fn, torch_fn=MagicMock(return_value="ok")) is True
+    assert [c.args[0] for c in pip_fn.call_args_list] == ["timm"]
 
 
 def test_install_packages_defaults_to_slicer_pip_install(monkeypatch):
