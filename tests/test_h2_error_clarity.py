@@ -83,7 +83,6 @@ def test_set_queue_empty_disables_run_button(widget_module):
     w._deps_ok = True
     w._image_paths = ["/tmp/fish.png"]  # start with images
     w._btn_run = MagicMock()
-    w._queue_list = MagicMock()
     w._results = []
     w._excluded = set()
     w._detail = MagicMock()
@@ -107,7 +106,6 @@ def test_set_queue_with_images_enables_run_button(widget_module):
     w._deps_ok = True
     w._image_paths = []
     w._btn_run = MagicMock()
-    w._queue_list = MagicMock()
     w._results = []
     w._excluded = set()
     w._detail = MagicMock()
@@ -139,7 +137,6 @@ def test_set_queue_enables_button_regardless_of_deps(widget_module):
     w._deps_ok = False
     w._image_paths = []
     w._btn_run = MagicMock()
-    w._queue_list = MagicMock()
     w._results = []
     w._excluded = set()
     w._detail = MagicMock()

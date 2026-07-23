@@ -243,40 +243,11 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         _load_row.addWidget(self._btn_folder)
         _load_row.addWidget(self._btn_files)
         in_layout.addLayout(_load_row)
-        in_layout.addWidget(qt.QLabel("Queue:"))
-        self._queue_list = qt.QListWidget()
-        self._queue_list.setMaximumHeight(120)
-        in_layout.addWidget(self._queue_list)
         in_layout.addStretch()
-
-        analysis_box = ctk.ctkCollapsibleButton()
-        analysis_box.text = "Analysis"
-        vbox.addWidget(analysis_box)
-        analysis_box.setSizePolicy(qt.QSizePolicy.Preferred, qt.QSizePolicy.Maximum)
-        an_layout = qt.QVBoxLayout(analysis_box)
-
-        self._chk_length    = qt.QCheckBox("Body length");        self._chk_length.setChecked(True)
-        self._chk_curvature = qt.QCheckBox("Curvature class");    self._chk_curvature.setChecked(True)
-        self._chk_ratio     = qt.QCheckBox("Length/straight ratio"); self._chk_ratio.setChecked(True)
-        self._chk_eyes      = qt.QCheckBox("Eye segmentation");   self._chk_eyes.setChecked(False)
-        self._chk_hitl      = qt.QCheckBox("Confidence threshold"); self._chk_hitl.setChecked(False)
-
-        for chk in (self._chk_length, self._chk_curvature, self._chk_ratio,
-                    self._chk_eyes, self._chk_hitl):
-            an_layout.addWidget(chk)
-
-        self._threshold_slider = ctk.ctkSliderWidget()
-        self._threshold_slider.minimum    = 0.0
-        self._threshold_slider.maximum    = 1.0
-        self._threshold_slider.singleStep = 0.01
-        self._threshold_slider.value      = 0.85
-        self._threshold_slider.decimals   = 2
-        an_layout.addWidget(self._threshold_slider)
-        an_layout.addStretch()
 
         model_box = ctk.ctkCollapsibleButton()
         model_box.text      = "Model"
-        model_box.collapsed = True
+        model_box.collapsed = False
         vbox.addWidget(model_box)
         m_layout = qt.QFormLayout(model_box)
 
@@ -323,6 +294,34 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._um_per_px.suffix     = " µm/px"
         direct.addRow("µm per pixel:", self._um_per_px)
         sc_layout.addLayout(direct)
+
+        analysis_box = ctk.ctkCollapsibleButton()
+        analysis_box.text = "Analysis"
+        vbox.addWidget(analysis_box)
+        analysis_box.setSizePolicy(qt.QSizePolicy.Preferred, qt.QSizePolicy.Maximum)
+        an_layout = qt.QVBoxLayout(analysis_box)
+
+        self._chk_length    = qt.QCheckBox("Body length");        self._chk_length.setChecked(True)
+        self._chk_curvature = qt.QCheckBox("Curvature class");    self._chk_curvature.setChecked(True)
+        self._chk_ratio     = qt.QCheckBox("Length/straight ratio"); self._chk_ratio.setChecked(True)
+        self._chk_eyes      = qt.QCheckBox("Eye segmentation");   self._chk_eyes.setChecked(False)
+        self._chk_hitl      = qt.QCheckBox("Confidence threshold"); self._chk_hitl.setChecked(False)
+
+        for chk in (self._chk_length, self._chk_curvature, self._chk_ratio,
+                    self._chk_eyes):
+            an_layout.addWidget(chk)
+        # Confidence threshold hidden from UI (issue #79); widget still
+        # created above and stays wired into settings/parameter-node sync.
+        # an_layout.addWidget(self._chk_hitl)
+
+        self._threshold_slider = ctk.ctkSliderWidget()
+        self._threshold_slider.minimum    = 0.0
+        self._threshold_slider.maximum    = 1.0
+        self._threshold_slider.singleStep = 0.01
+        self._threshold_slider.value      = 0.85
+        self._threshold_slider.decimals   = 2
+        # an_layout.addWidget(self._threshold_slider)
+        an_layout.addStretch()
 
         vbox.addStretch(1)  # push run + export to bottom
 
@@ -483,11 +482,9 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 pass
         import os
         self._image_paths = paths
-        self._queue_list.clear()
 
         stubs = []
         for p in paths:
-            self._queue_list.addItem(os.path.basename(p))
             stubs.append({"filename": os.path.basename(p), "original": None,
                           "mask": None, "error": None, "length": None})
 
@@ -1138,7 +1135,6 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._image_paths = []
         self._excluded = set()
         self._detail.reset()
-        self._queue_list.clear()
         self._gallery.populate([])
         self._results_tab.populate([], set())
         self._run_stack.setCurrentIndex(0)
