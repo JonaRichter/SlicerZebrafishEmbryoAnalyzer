@@ -365,7 +365,6 @@ def test_reset_for_scene_close_clears_results_and_paths():
         w._results     = [{"filename": "a.png"}, {"filename": "b.png"}]
         w._image_paths = ["/a.png", "/b.png"]
         w._excluded    = {"b.png"}
-        w._queue_list  = MagicMock()
         w._detail      = MagicMock()
         w._gallery     = MagicMock()
         w._results_tab = MagicMock()
@@ -396,7 +395,6 @@ def test_reset_for_scene_close_calls_detail_reset_and_clears_gallery():
         w._results     = [{"filename": "a.png"}]
         w._image_paths = ["/a.png"]
         w._excluded    = set()
-        w._queue_list  = MagicMock()
         w._detail      = MagicMock()
         w._gallery     = MagicMock()
         w._results_tab = MagicMock()

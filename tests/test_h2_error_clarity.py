@@ -3,7 +3,7 @@ Tests for H2: Clarify analysis progress and errors.
 
 Covers:
 - Run button disabled when no images loaded (_set_queue + _refresh_run_button)
-- Run button re-enabled when images are added (only when deps OK)
+- Run button re-enabled when images are added, regardless of dependency state
 - Error categorization by exit_code on InferenceController
 - Traceback suppression: raw tracebacks go to log, not UI
 - InferenceController.exit_code stored on _on_finished
@@ -60,11 +60,21 @@ def test_refresh_run_button_enabled_when_images_and_deps_ok(widget_module):
     w._btn_run.setEnabled.assert_called_with(True)
 
 
-def test_refresh_run_button_disabled_when_deps_missing(widget_module):
+def test_refresh_run_button_enabled_even_when_deps_missing(widget_module):
+    """Missing packages must not disable Run — they are installed when it is pressed,
+    so disabling the button would leave no way to trigger the installation."""
     w = _make_widget(widget_module, deps_ok=False)
     w._image_paths = ["/tmp/fish.png"]
     w._refresh_run_button()
-    w._btn_run.setEnabled.assert_called_with(False)
+    w._btn_run.setEnabled.assert_called_with(True)
+
+
+def test_run_button_tooltip_announces_pending_install(widget_module):
+    w = _make_widget(widget_module, deps_ok=False)
+    w._image_paths = ["/tmp/fish.png"]
+    w._refresh_run_button()
+    tooltip = w._btn_run.setToolTip.call_args.args[0]
+    assert "install" in tooltip.lower()
 
 
 def test_set_queue_empty_disables_run_button(widget_module):
@@ -73,7 +83,6 @@ def test_set_queue_empty_disables_run_button(widget_module):
     w._deps_ok = True
     w._image_paths = ["/tmp/fish.png"]  # start with images
     w._btn_run = MagicMock()
-    w._queue_list = MagicMock()
     w._results = []
     w._excluded = set()
     w._detail = MagicMock()
@@ -97,7 +106,6 @@ def test_set_queue_with_images_enables_run_button(widget_module):
     w._deps_ok = True
     w._image_paths = []
     w._btn_run = MagicMock()
-    w._queue_list = MagicMock()
     w._results = []
     w._excluded = set()
     w._detail = MagicMock()
@@ -123,13 +131,12 @@ def test_run_button_disabled_on_construction_with_no_images(widget_module):
     w._btn_run.setEnabled.assert_called_with(False)
 
 
-def test_set_queue_does_not_enable_button_when_deps_missing(widget_module):
+def test_set_queue_enables_button_regardless_of_deps(widget_module):
     w = object.__new__(widget_module.ZebrafishEmbryoAnalyzerMainWidget)
     w._run_token = 0
     w._deps_ok = False
     w._image_paths = []
     w._btn_run = MagicMock()
-    w._queue_list = MagicMock()
     w._results = []
     w._excluded = set()
     w._detail = MagicMock()
@@ -142,8 +149,8 @@ def test_set_queue_does_not_enable_button_when_deps_missing(widget_module):
 
     w._set_queue(["/tmp/a.png"])
 
-    # deps missing → button stays disabled even with images
-    w._btn_run.setEnabled.assert_called_with(False)
+    # Images are queued, so Run is available; the packages are installed on demand.
+    w._btn_run.setEnabled.assert_called_with(True)
 
 
 # ---------------------------------------------------------------------------
