@@ -1032,6 +1032,13 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             return "Internal error: bad analysis request. Check the application log."
         if exit_code == 4:
             return "Internal error: could not write temporary results. Check disk space."
+        if exit_code == 5:
+            # Model preload failed for a reason other than "not cached" (e.g. a broken
+            # torch install) — unlike exit_code 2, retrying cannot fix this, so show the
+            # real cause instead of advice that would just repeat the same failure.
+            first_line = msg.split("\n")[0].strip() if msg else ""
+            detail = f": {first_line}" if first_line else "."
+            return f"Could not load required models{detail} This is not a missing-download issue — check the application log."
         return "Analysis failed. Check the application log."
 
     def ensure_dependencies(self, purpose="analysis"):

@@ -209,6 +209,27 @@ def test_categorize_exit4(widget_module):
     assert result == "Internal error: could not write temporary results. Check disk space."
 
 
+def test_categorize_exit5_shows_real_message(widget_module):
+    """exit_code 5 (preload failed for a reason other than "not cached") must
+    surface the real cause instead of the exit_code 2 "trigger a download" advice."""
+    w = _make_widget(widget_module)
+    ctrl = MagicMock()
+    ctrl.exit_code = 5
+    result = w._categorize_inference_error(
+        "preload_models failed: No module named 'torchgen'", ctrl
+    )
+    assert "torchgen" in result
+    assert "Run the analysis again to trigger a download" not in result
+
+
+def test_categorize_exit5_no_message_still_distinguishes_from_exit2(widget_module):
+    w = _make_widget(widget_module)
+    ctrl = MagicMock()
+    ctrl.exit_code = 5
+    result = w._categorize_inference_error("", ctrl)
+    assert "Run the analysis again to trigger a download" not in result
+
+
 def test_categorize_unknown_exit_code(widget_module):
     w = _make_widget(widget_module)
     ctrl = MagicMock()

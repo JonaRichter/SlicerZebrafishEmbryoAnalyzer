@@ -7,9 +7,11 @@ Protocol: reads request JSON, runs analyse_images, writes result JSON + npz file
 Exit codes:
   0 -- success
   1 -- analysis exception
-  2 -- model not cached
+  2 -- model not cached (genuinely missing; a download can fix this)
   3 -- bad/unreadable request
   4 -- result write failure
+  5 -- model preload failed for a reason other than "not cached" (e.g. a broken
+       torch install) -- retrying without fixing the underlying cause will not help
 """
 
 import json
@@ -19,7 +21,7 @@ from pathlib import Path
 
 
 def run_worker(request_path: str) -> int:
-    """Execute inference from request_path. Returns exit code 0-4."""
+    """Execute inference from request_path. Returns exit code 0-5."""
     # --- 1. Read and validate request ---
     try:
         with open(request_path, "r", encoding="utf-8") as fh:
@@ -46,11 +48,17 @@ def run_worker(request_path: str) -> int:
         preload_params = dict(params)
         preload_params["model_id"] = model_id
         preload_models(preload_params)
-    except ModelNotCachedError:
+    except ModelNotCachedError as exc:
+        _write_error(result_json_path, 2, str(exc))
         return 2
     except Exception as exc:
-        print(f"preload_models failed: {exc}", file=sys.stderr)
-        return 2
+        # Anything other than a genuinely missing model — e.g. a broken torch
+        # install. Exit code 2's UI advice ("run again to trigger a download")
+        # would be actively wrong here, so this gets its own code and the real
+        # message is persisted rather than only printed to stderr, which the
+        # caller does not read for this path.
+        _write_error(result_json_path, 5, f"preload_models failed: {exc}")
+        return 5
 
     # --- 4. Run analysis ---
     n = len(image_paths)
