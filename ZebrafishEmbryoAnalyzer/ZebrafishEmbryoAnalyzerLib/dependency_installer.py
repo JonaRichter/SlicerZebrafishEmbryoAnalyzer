@@ -130,6 +130,23 @@ def install_pytorch_extension() -> bool:
     return bool(manager.installExtensionFromServer(PYTORCH_EXTENSION_NAME))
 
 
+def _windows_torch_version_requirement() -> str | None:
+    """Version cap that keeps installTorch() off the torch 2.13 Windows regression.
+
+    torch 2.13 moved to PEP 639 license-file collection, which copies its entire
+    nested third-party tree (kineto/dynolog/prometheus-cpp/civetweb/duktape, ...)
+    into torch-<version>.dist-info/licenses/. The deepest resulting path fails
+    Windows installs with "WinError 206: filename or extension is too long"
+    whenever site-packages is longer than ~86 characters — close to what a
+    default Slicer install already uses. Confirmed as an upstream torch
+    regression, not something specific to this install path; a fix has been
+    proposed for the official Slicer PyTorch extension but is not merged yet.
+    Not needed on macOS/Linux, which have no such path-length limit.
+    """
+    import sys
+    return "<2.13.0" if sys.platform == "win32" else None
+
+
 def _install_torch() -> str:
     """Install torch and torchvision through the PyTorch extension.
 
@@ -147,7 +164,10 @@ def _install_torch() -> str:
             )
         return "restart"
 
-    if torch_logic.installTorch(askConfirmation=False) is None:
+    if torch_logic.installTorch(
+        askConfirmation=False,
+        torchVersionRequirement=_windows_torch_version_requirement(),
+    ) is None:
         raise RuntimeError("PyTorch could not be installed through the PyTorch extension.")
     return "ok"
 
