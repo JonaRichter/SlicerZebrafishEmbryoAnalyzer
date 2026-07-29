@@ -22,6 +22,8 @@ TABLE_SCHEMA = [
     ("EyeArea_um2",         "eye_area",     "double"),
     ("EyeDiameter_um",      "eye_diameter", "double"),
     ("EdemaArea_um2",       "edema_area",   "double"),
+    ("SwimBladderArea_um2", "swim_area",    "double"),
+    ("SwimBladderWidth_um", "swim_width",   "double"),
     ("Error",               "error",        "string"),
 ]
 
@@ -201,7 +203,7 @@ def update_image_node(image_rgb, um_per_px, node):
 
     image_rgb must be uint8, shape (H, W, 3).
     um_per_px is the original-image physical scale in micrometers per pixel.
-    result["spacing"] must NOT be used here (it is calibrated to 256x256 mask space).
+    result["spacing"] must NOT be used here (it is calibrated to the segmentation mask's pixel space, not the original image).
 
     NOTE: _on_detect_scale / show_raw_image is out of scope for E2b.
     The MRML node intentionally reflects the last gallery selection, not the
@@ -302,9 +304,9 @@ def update_segmentation_node(result, um_per_px, node, image_node=None):
     """Write body and eye masks from a result dict into an existing vtkMRMLSegmentationNode.
 
     result["original"]: uint8 ndarray shape (H_orig, W_orig, 3).
-    result["mask"]: 2-D ndarray shape (256, 256) — body mask (>0 means body).
-    result["eye_mask"]: 2-D bool ndarray shape (256, 256) or None — eye mask.
-    result["edema_mask"]: 2-D bool ndarray shape (256, 256) or None — edema mask.
+    result["mask"]: 2-D ndarray, shape matches the segmentation pipeline's target_size (currently 512x512) — body mask (>0 means body).
+    result["eye_mask"]: 2-D bool ndarray, same shape as result["mask"], or None — eye mask.
+    result["edema_mask"]: 2-D bool ndarray, same shape as result["mask"], or None — edema mask.
     um_per_px: physical scale of the original image in micrometres per pixel.
     image_node: optional vtkMRMLVectorVolumeNode — used to set reference geometry
         so Slicer can position the segmentation in slice views.
@@ -356,6 +358,13 @@ def update_segmentation_node(result, um_per_px, node, image_node=None):
         and edema_mask_2d.any()
     )
     edema_2d = resample_mask_to_original(edema_mask_2d, h_orig, w_orig) if has_edema else None
+    swim_mask_2d = result.get("swimbladder_mask")
+    has_swim = (
+        swim_mask_2d is not None
+        and hasattr(swim_mask_2d, "any")
+        and swim_mask_2d.any()
+    )
+    swim_2d = resample_mask_to_original(swim_mask_2d, h_orig, w_orig) if has_swim else None
 
     def _make_oriented_image(arr_2d):
         """Build a vtkOrientedImageData from a 2-D uint8 (0/1) array."""
@@ -395,6 +404,12 @@ def update_segmentation_node(result, um_per_px, node, image_node=None):
             edema_id = seg.AddEmptySegment("Edema", "Edema", [0.0, 0.5, 1.0])
             slicer.vtkSlicerSegmentationsModuleLogic.SetBinaryLabelmapToSegment(
                 _make_oriented_image(edema_2d), node, edema_id
+            )
+
+        if swim_2d is not None:
+            swim_id = seg.AddEmptySegment("SwimBladder", "SwimBladder", [0.6, 0.0, 0.8])
+            slicer.vtkSlicerSegmentationsModuleLogic.SetBinaryLabelmapToSegment(
+                _make_oriented_image(swim_2d), node, swim_id
             )
 
         if image_node is not None:

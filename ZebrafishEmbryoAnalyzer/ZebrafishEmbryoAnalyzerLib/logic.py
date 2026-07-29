@@ -57,14 +57,15 @@ def _install_model_cache():
 
 
 def _cached_load_unet(model_path=None, repo_id=None, filename=None, label="model",
-                       revision="main", force_download=False, encoder_name="vgg16"):
+                       revision="main", force_download=False, encoder_name="vgg16",
+                       model_type="Unet"):
     """Caching wrapper: first call loads from disk, subsequent calls return cached model."""
-    cache_key = f"_unet_{model_path or filename}_{encoder_name}"
+    cache_key = f"_unet_{model_path or filename}_{encoder_name}_{model_type}"
     if force_download or cache_key not in _MODEL_CACHE:
         _MODEL_CACHE[cache_key] = _original_load_unet(
             model_path=model_path, repo_id=repo_id, filename=filename,
             label=label, revision=revision, force_download=force_download,
-            encoder_name=encoder_name,
+            encoder_name=encoder_name, model_type=model_type,
         )
     return _MODEL_CACHE[cache_key]
 
@@ -136,6 +137,21 @@ def preload_models(params: dict) -> None:
             encoder_name=edema_entry["encoder"],
         )
 
+    if params.get("swimbladder", False):
+        swim_entry = model_set["swimbladder"]
+        swim_path = get_cached_path(swim_entry)
+        if not verify_checksum(swim_path, swim_entry["sha256"]):
+            raise ModelNotCachedError(
+                f"{swim_entry['label']} missing or corrupted at {swim_path}. "
+                "Download models first."
+            )
+        _cached_load_unet(
+            model_path=str(swim_path),
+            label="swim bladder model",
+            encoder_name=swim_entry["encoder"],
+            model_type=swim_entry.get("model_type", "Unet"),
+        )
+
 # ---------------------------------------------------------------------------
 # Result dict schema — every key must be present, missing values use None
 # ---------------------------------------------------------------------------
@@ -147,6 +163,7 @@ _RESULT_KEYS = (
     "grown",
     "eye_mask",
     "edema_mask",
+    "swimbladder_mask",
     "path_points",
     "straight_line_points",
     "length",
@@ -155,6 +172,8 @@ _RESULT_KEYS = (
     "eye_area",
     "eye_diameter",
     "edema_area",
+    "swim_area",
+    "swim_width",
     "spacing",
     "error",
 )
@@ -222,6 +241,7 @@ def analyse_images(image_paths: list, params: dict,
         tube_length_border2border,
         classification_curvature,
         compute_eye_metrics,
+        compute_tube_metrics,
     )
     from ZebrafishEmbryoAnalyzerLib.errors import ModelNotCachedError
     from ZebrafishEmbryoAnalyzerLib.model_manifest import (
@@ -231,6 +251,7 @@ def analyse_images(image_paths: list, params: dict,
     um_per_px = float(params.get("um_per_px", 22.99))
     include_eyes = params.get("eyes", False)
     include_edema = params.get("edema", False)
+    include_swimbladder = params.get("swimbladder", False)
 
     model_id = params.get("model_id", "general")
     model_set = MODEL_SETS.get(model_id, MODEL_SETS["general"])
@@ -256,6 +277,13 @@ def analyse_images(image_paths: list, params: dict,
             raise ModelNotCachedError(
                 f"{edema_entry['label']} missing or corrupted at {edema_path}. Download models first."
             )
+    if include_swimbladder:
+        swim_entry = model_set["swimbladder"]
+        swim_path = get_cached_path(swim_entry)
+        if not verify_checksum(swim_path, swim_entry["sha256"]):
+            raise ModelNotCachedError(
+                f"{swim_entry['label']} missing or corrupted at {swim_path}. Download models first."
+            )
     if params.get("curvature", True):
         curv_entry = MODELS["curvature"]
         curv_manifest_path = get_cached_path(curv_entry)
@@ -280,6 +308,7 @@ def analyse_images(image_paths: list, params: dict,
     _seg_kwargs = dict(
         include_eyes=include_eyes,
         include_edema=include_edema,
+        include_swimbladder=include_swimbladder,
         body_model_path=str(body_path),
         body_encoder_name=body_entry["encoder"],
     )
@@ -288,6 +317,10 @@ def analyse_images(image_paths: list, params: dict,
     if include_edema:
         _seg_kwargs["edema_model_path"] = str(edema_path)
         _seg_kwargs["edema_encoder_name"] = edema_entry["encoder"]
+    if include_swimbladder:
+        _seg_kwargs["swimbladder_model_path"] = str(swim_path)
+        _seg_kwargs["swimbladder_encoder_name"] = swim_entry["encoder"]
+        _seg_kwargs["swimbladder_model_type"] = swim_entry.get("model_type", "Unet")
 
     n = len(image_paths)
     results = []
@@ -304,27 +337,21 @@ def analyse_images(image_paths: list, params: dict,
                 shutil.copy2(image_path, os.path.join(_tmp, os.path.basename(image_path)))
                 seg_result = segmentation_pipeline(_tmp, **_seg_kwargs)
 
-            # Return arity depends on which optional masks were requested — a plain
-            # length check can't disambiguate an eyes-only 4-tuple from an
-            # edema-only one, so branch on the flags this call actually passed.
-            if include_eyes and include_edema:
-                originals_bgr, masks, growns, eyes_list, edema_list = seg_result
-            elif include_eyes:
-                originals_bgr, masks, growns, eyes_list = seg_result
-                edema_list = [None]
-            elif include_edema:
-                originals_bgr, masks, growns, edema_list = seg_result
-                eyes_list = [None]
-            else:
-                originals_bgr, masks, growns = seg_result
-                eyes_list = [None]
-                edema_list = [None]
+            # seg_result is (originals, masks, growns) followed by whichever of
+            # eyes/edema/swimbladder were requested, in that fixed order — mirrors
+            # segmentation_pipeline's own conditional-append return (see seg.py).
+            originals_bgr, masks, growns = seg_result[0], seg_result[1], seg_result[2]
+            _extra = list(seg_result[3:])
+            eyes_list = _extra.pop(0) if include_eyes else [None]
+            edema_list = _extra.pop(0) if include_edema else [None]
+            swimbladder_list = _extra.pop(0) if include_swimbladder else [None]
 
             orig_bgr = originals_bgr[0] if originals_bgr else None
             mask    = masks[0]      if masks      else None
             grown   = growns[0]     if growns     else None
             eye     = eyes_list[0]  if eyes_list  else None
             edema   = edema_list[0] if edema_list else None
+            swim    = swimbladder_list[0] if swimbladder_list else None
 
             if orig_bgr is None:
                 r["error"] = "Could not read image."
@@ -334,10 +361,11 @@ def analyse_images(image_paths: list, params: dict,
                 continue
 
             r["original"]   = cv2.cvtColor(orig_bgr, cv2.COLOR_BGR2RGB)
-            r["mask"]       = mask
-            r["grown"]      = grown
-            r["eye_mask"]   = eye
-            r["edema_mask"] = edema
+            r["mask"]             = mask
+            r["grown"]            = grown
+            r["eye_mask"]         = eye
+            r["edema_mask"]       = edema
+            r["swimbladder_mask"] = swim
 
             mask_bin  = (mask  > 0) if mask  is not None else None
             eye_bin   = (eye   > 0) if eye   is not None else None
@@ -402,6 +430,16 @@ def analyse_images(image_paths: list, params: dict,
                 except Exception as exc:
                     if r["error"] is None:
                         r["error"] = f"Edema metrics error: {exc}"
+
+            # ---- swim bladder metrics ----
+            if params.get("swimbladder", False) and swim is not None:
+                try:
+                    swim_metrics = compute_tube_metrics(swim, spacing=spacing)
+                    r["swim_area"] = swim_metrics["area"]
+                    r["swim_width"] = swim_metrics["width"]
+                except Exception as exc:
+                    if r["error"] is None:
+                        r["error"] = f"Swim bladder metrics error: {exc}"
 
         except Exception as exc:
             import traceback

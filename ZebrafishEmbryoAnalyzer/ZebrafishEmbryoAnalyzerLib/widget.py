@@ -20,8 +20,8 @@ from ZebrafishEmbryoAnalyzerLib.errors import AnalysisInputError, MRMLAdapterErr
 # ---------------------------------------------------------------------------
 
 _MODEL_ENTRIES = [
-    ("General Model",   "general", ("best_model_body_3400_vgg19.pth", "vgg19", None)),
-    ("Fine-tuned DESY", "desy",    ("best_model_body_finetuned.pth",  "vgg19", "best_model_eye_finetuned.pth")),
+    ("General Model",   "general", ("best_model_body_512.pth",           "vgg19", None)),
+    ("Fine-tuned DESY", "desy",    ("desy_body_512_finetuned.pth",       "vgg19", "desy_eye_512_finetuned.pth")),
 ]
 _MODEL_BY_ID  = {mid: data for _, mid, data in _MODEL_ENTRIES}
 _DEFAULT_MODEL_ID = "general"
@@ -36,6 +36,7 @@ PARAM_CURVATURE_ENABLED            = "curvatureEnabled"
 PARAM_RATIO_ENABLED                = "ratioEnabled"
 PARAM_EYES_ENABLED                 = "eyesEnabled"
 PARAM_EDEMA_ENABLED                = "edemaEnabled"
+PARAM_SWIMBLADDER_ENABLED          = "swimbladderEnabled"
 PARAM_CONFIDENCE_THRESHOLD_ENABLED = "confidenceThresholdEnabled"
 PARAM_CONFIDENCE_THRESHOLD         = "confidenceThreshold"
 PARAM_UM_PER_PX                    = "micrometersPerPixel"
@@ -47,6 +48,7 @@ PARAM_DEFAULTS = {
     PARAM_RATIO_ENABLED:                "true",
     PARAM_EYES_ENABLED:                 "false",
     PARAM_EDEMA_ENABLED:                "false",
+    PARAM_SWIMBLADDER_ENABLED:          "false",
     PARAM_CONFIDENCE_THRESHOLD_ENABLED: "false",
     PARAM_CONFIDENCE_THRESHOLD:         "0.85",
     PARAM_UM_PER_PX:                    "22.99",
@@ -308,10 +310,11 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._chk_ratio     = qt.QCheckBox("Length/straight ratio"); self._chk_ratio.setChecked(True)
         self._chk_eyes      = qt.QCheckBox("Eye segmentation");   self._chk_eyes.setChecked(False)
         self._chk_edema     = qt.QCheckBox("Edema segmentation"); self._chk_edema.setChecked(False)
+        self._chk_swimbladder = qt.QCheckBox("Swim bladder segmentation"); self._chk_swimbladder.setChecked(False)
         self._chk_hitl      = qt.QCheckBox("Confidence threshold"); self._chk_hitl.setChecked(False)
 
         for chk in (self._chk_length, self._chk_curvature, self._chk_ratio,
-                    self._chk_eyes, self._chk_edema):
+                    self._chk_eyes, self._chk_edema, self._chk_swimbladder):
             an_layout.addWidget(chk)
         # Confidence threshold hidden from UI (issue #79); widget still
         # created above and stays wired into settings/parameter-node sync.
@@ -440,6 +443,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             self._chk_ratio.toggled,
             self._chk_eyes.toggled,
             self._chk_edema.toggled,
+            self._chk_swimbladder.toggled,
             self._chk_hitl.toggled,
         ):
             _signal.connect(self._notify_settings_changed)
@@ -611,6 +615,8 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             required["eye"] = model_set["eye"]
         if self._chk_edema.isChecked() and "edema" in model_set:
             required["edema"] = model_set["edema"]
+        if self._chk_swimbladder.isChecked() and "swimbladder" in model_set:
+            required["swimbladder"] = model_set["swimbladder"]
         return required
 
     def _missing_required_models(self, model_id):
@@ -723,6 +729,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 "ratio":     self._chk_ratio.isChecked(),
                 "eyes":      self._chk_eyes.isChecked(),
                 "edema":     self._chk_edema.isChecked(),
+                "swimbladder": self._chk_swimbladder.isChecked(),
                 "hitl":      self._chk_hitl.isChecked(),
                 "threshold": self._threshold_slider.value,
                 "um_per_px": self._um_per_px.value,
@@ -962,6 +969,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             self._chk_ratio.setChecked(_b(PARAM_RATIO_ENABLED, True))
             self._chk_eyes.setChecked(_b(PARAM_EYES_ENABLED, False))
             self._chk_edema.setChecked(_b(PARAM_EDEMA_ENABLED, False))
+            self._chk_swimbladder.setChecked(_b(PARAM_SWIMBLADDER_ENABLED, False))
             self._chk_hitl.setChecked(_b(PARAM_CONFIDENCE_THRESHOLD_ENABLED, False))
             self._threshold_slider.value = _f_clamp(PARAM_CONFIDENCE_THRESHOLD, 0.0, 1.0, 0.85)
             self._um_per_px.value = _f_clamp(PARAM_UM_PER_PX, 0.001, 9999.0, 22.99)
@@ -994,6 +1002,8 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                               "true" if self._chk_eyes.isChecked() else "false")
             node.SetParameter(PARAM_EDEMA_ENABLED,
                               "true" if self._chk_edema.isChecked() else "false")
+            node.SetParameter(PARAM_SWIMBLADDER_ENABLED,
+                              "true" if self._chk_swimbladder.isChecked() else "false")
             node.SetParameter(PARAM_CONFIDENCE_THRESHOLD_ENABLED,
                               "true" if self._chk_hitl.isChecked() else "false")
             node.SetParameter(PARAM_CONFIDENCE_THRESHOLD,

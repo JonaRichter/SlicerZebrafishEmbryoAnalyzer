@@ -109,6 +109,28 @@ def test_model_set_edema_desy_only():
     assert "edema" not in MODEL_SETS["general"]
 
 
+def test_model_set_swimbladder_available_on_both_presets():
+    """Design decision (#72): unlike edema, the webapp offers swim bladder on both
+    the General and DESY presets — so it's wired into both MODEL_SETS, mirroring
+    the existing "eye" role rather than the DESY-only "edema" one."""
+    assert "swimbladder" in MODEL_SETS["general"]
+    assert "swimbladder" in MODEL_SETS["desy"]
+
+
+def test_swimbladder_entries_use_fpn_model_type():
+    """Swim bladder uses FPN (segmentation_models_pytorch), not Unet like every
+    other segmentation role — seg.py's _load_unet_model must branch on this."""
+    assert MODELS["general_swimbladder"]["model_type"] == "FPN"
+    assert MODELS["desy_swimbladder"]["model_type"] == "FPN"
+
+
+def test_swimbladder_entries_distinct_general_vs_desy():
+    general = MODELS["general_swimbladder"]
+    desy = MODELS["desy_swimbladder"]
+    assert general["filename"] != desy["filename"]
+    assert general["sha256"] != desy["sha256"]
+
+
 # ---------------------------------------------------------------------------
 # AC3: get_cached_path returns consistent Path objects
 # ---------------------------------------------------------------------------

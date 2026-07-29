@@ -33,12 +33,14 @@ def _make_checkbox(checked=False):
     return chk
 
 
-def _make_widget(eyes_checked=False, curvature_checked=True, edema_checked=False):
+def _make_widget(eyes_checked=False, curvature_checked=True, edema_checked=False,
+                  swimbladder_checked=False):
     from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
 
     widget = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
     widget._chk_eyes = _make_checkbox(checked=eyes_checked)
     widget._chk_edema = _make_checkbox(checked=edema_checked)
+    widget._chk_swimbladder = _make_checkbox(checked=swimbladder_checked)
     widget._chk_curvature = _make_checkbox(checked=curvature_checked)
     return widget
 
@@ -137,6 +139,31 @@ def test_edema_unchecked_desy_model_not_required():
         widget = _make_widget(edema_checked=False)
         required = widget._required_model_entries("desy")
         assert "edema" not in required
+        assert "body" in required
+
+
+def test_swimbladder_checked_general_model_required():
+    """Unlike edema, swim bladder is offered on both presets."""
+    with _stub_slicer_env():
+        widget = _make_widget(swimbladder_checked=True)
+        required = widget._required_model_entries("general")
+        assert "swimbladder" in required
+        assert "body" in required
+
+
+def test_swimbladder_checked_desy_model_required():
+    with _stub_slicer_env():
+        widget = _make_widget(swimbladder_checked=True)
+        required = widget._required_model_entries("desy")
+        assert "swimbladder" in required
+        assert "body" in required
+
+
+def test_swimbladder_unchecked_not_required():
+    with _stub_slicer_env():
+        widget = _make_widget(swimbladder_checked=False)
+        required = widget._required_model_entries("general")
+        assert "swimbladder" not in required
         assert "body" in required
 
 

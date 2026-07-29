@@ -157,3 +157,65 @@ def test_tube_length_returns_tuple():
     assert len(result) == 2
     assert isinstance(result[0], float)
     assert isinstance(result[1], float)
+
+
+# ---------------------------------------------------------------------------
+# compute_tube_metrics (#72 — swim bladder area/length/width)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def rect_mask():
+    """A 10x40 axis-aligned rectangle: short side (width) ~ 10, long side (length) ~ 40.
+    cv2.minAreaRect measures between pixel centers, so an N-pixel-wide block reports
+    ~(N-1); a 10px block keeps that discretization error under 15% relative."""
+    mask = np.zeros((60, 60), dtype=np.uint8)
+    mask[10:20, 5:45] = 1
+    return mask
+
+
+def test_compute_tube_metrics_none_mask_returns_zeros():
+    from ZebrafishEmbryoAnalyzerCore.length import compute_tube_metrics
+    out = compute_tube_metrics(None)
+    assert out == {"area": 0.0, "length": 0.0, "width": 0.0,
+                    "length_line": None, "width_line": None}
+
+
+def test_compute_tube_metrics_empty_mask_returns_zeros():
+    from ZebrafishEmbryoAnalyzerCore.length import compute_tube_metrics
+    empty = np.zeros((60, 60), dtype=np.uint8)
+    out = compute_tube_metrics(empty)
+    assert out["area"] == 0.0
+    assert out["length"] == 0.0
+    assert out["width"] == 0.0
+    assert out["length_line"] is None
+    assert out["width_line"] is None
+
+
+def test_compute_tube_metrics_rectangle_area_length_width(rect_mask):
+    from ZebrafishEmbryoAnalyzerCore.length import compute_tube_metrics
+    out = compute_tube_metrics(rect_mask, spacing=(1.0, 1.0))
+    assert out["area"] == pytest.approx(10 * 40, rel=0.05)
+    assert out["length"] == pytest.approx(40, rel=0.05)
+    assert out["width"] == pytest.approx(10, rel=0.15)
+    assert out["length"] > out["width"]
+    assert out["length_line"] is not None
+    assert out["width_line"] is not None
+
+
+def test_compute_tube_metrics_spacing_scales_area_and_length(rect_mask):
+    from ZebrafishEmbryoAnalyzerCore.length import compute_tube_metrics
+    r1 = compute_tube_metrics(rect_mask, spacing=(1.0, 1.0))
+    r2 = compute_tube_metrics(rect_mask, spacing=(2.0, 2.0))
+    assert r2["area"] == pytest.approx(r1["area"] * 4, rel=0.05)
+    assert r2["length"] == pytest.approx(r1["length"] * 2, rel=0.05)
+    assert r2["width"] == pytest.approx(r1["width"] * 2, rel=0.15)
+
+
+def test_compute_tube_metrics_picks_largest_connected_component():
+    """A stray, smaller blob elsewhere in the mask must be ignored."""
+    from ZebrafishEmbryoAnalyzerCore.length import compute_tube_metrics
+    mask = np.zeros((60, 60), dtype=np.uint8)
+    mask[10:20, 5:45] = 1   # 10x40 — the real swim bladder
+    mask[50:52, 50:52] = 1  # 2x2 stray noise blob, disconnected
+    out = compute_tube_metrics(mask, spacing=(1.0, 1.0))
+    assert out["area"] == pytest.approx(10 * 40, rel=0.05)

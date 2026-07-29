@@ -80,7 +80,7 @@ def run_worker(request_path: str) -> int:
         _write_error(result_json_path, 4, f"Cannot create arrays dir: {exc}")
         return 4
 
-    _ARRAY_KEYS = ("mask", "grown", "eye_mask", "edema_mask", "path_points", "straight_line_points")
+    _ARRAY_KEYS = ("mask", "grown", "eye_mask", "edema_mask", "swimbladder_mask", "path_points", "straight_line_points")
 
     serializable_results = []
     for i, r in enumerate(results):
@@ -121,6 +121,8 @@ def run_worker(request_path: str) -> int:
             "eye_area_um2": r.get("eye_area"),
             "eye_diameter_um": r.get("eye_diameter"),
             "edema_area_um2": r.get("edema_area"),
+            "swim_area_um2": r.get("swim_area"),
+            "swim_width_um": r.get("swim_width"),
             "spacing": r.get("spacing"),
             "error": r.get("error"),
             "arrays_npz": npz_path,

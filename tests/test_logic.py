@@ -97,6 +97,68 @@ def test_analyse_images_computes_edema_area(tmp_path, synthetic_fish_image, mock
     assert results[0]["edema_area"] > 0
 
 
+def test_analyse_images_computes_swim_bladder_area_and_width(tmp_path, synthetic_fish_image, mock_model_paths):
+    """With swim bladder requested, the returned result carries the mask and
+    non-zero area/width computed via compute_tube_metrics (min-area rect)."""
+    import cv2
+    img_path = str(tmp_path / "fish.png")
+    cv2.imwrite(img_path, synthetic_fish_image)
+
+    dummy_mask = np.zeros((256, 256), dtype=np.uint8)
+    dummy_grown = dummy_mask.copy()
+    dummy_swim = np.zeros((256, 256), dtype=np.uint8)
+    dummy_swim[100:110, 50:150] = 255  # 10x100 rectangle
+
+    with patch("ZebrafishEmbryoAnalyzerCore.seg.segmentation_pipeline") as mock_pipeline, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.load_model") as mock_load:
+
+        mock_pipeline.return_value = (
+            [synthetic_fish_image[:, :, ::-1]],
+            [dummy_mask],
+            [dummy_grown],
+            [dummy_swim],
+        )
+        mock_load.return_value = MagicMock()
+
+        from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
+        results = analyse_images(
+            [img_path],
+            {"length": False, "curvature": False, "ratio": False,
+             "eyes": False, "swimbladder": True, "hitl": False, "threshold": 0.85,
+             "um_per_px": 22.99, "model_id": "general"},
+        )
+
+    assert len(results) == 1
+    assert results[0]["swimbladder_mask"] is not None
+    assert results[0]["swim_area"] is not None
+    assert results[0]["swim_area"] > 0
+    assert results[0]["swim_width"] is not None
+    assert results[0]["swim_width"] > 0
+
+
+def test_analyse_images_raises_model_not_cached_when_swimbladder_missing(tmp_path, synthetic_fish_image):
+    """A missing swim bladder model file must raise ModelNotCachedError."""
+    import cv2
+    from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
+    from ZebrafishEmbryoAnalyzerLib.errors import ModelNotCachedError
+
+    img_path = str(tmp_path / "fish.png")
+    cv2.imwrite(img_path, synthetic_fish_image)
+
+    def fake_get_cached_path(entry):
+        return tmp_path / entry["filename"]
+
+    with patch("ZebrafishEmbryoAnalyzerLib.model_manifest.get_cached_path",
+               side_effect=fake_get_cached_path):
+        with pytest.raises(ModelNotCachedError):
+            analyse_images(
+                [img_path],
+                {"length": False, "curvature": False, "ratio": False,
+                 "eyes": False, "swimbladder": True, "hitl": False, "threshold": 0.85,
+                 "um_per_px": 22.99, "model_id": "general"},
+            )
+
+
 def test_analyse_images_raises_model_not_cached_when_edema_missing(tmp_path, synthetic_fish_image):
     """A missing edema model file must raise ModelNotCachedError, not silently proceed."""
     import cv2

@@ -217,6 +217,53 @@ def test_segmentation_pipeline_include_edema_only_returns_four_tuple(tmp_path):
     assert len(edema) == 1
 
 
+def test_segmentation_pipeline_include_swimbladder_uses_fpn(tmp_path):
+    """include_swimbladder=True must construct an FPN model, not Unet — swim bladder
+    is a different segmentation_models_pytorch architecture, not a Unet variant."""
+    import cv2
+
+    dummy_img = np.zeros((64, 64, 3), dtype=np.uint8)
+    cv2.imwrite(str(tmp_path / "fish.png"), dummy_img)
+
+    body_model_path = str(tmp_path / "body_model.pth")
+    swim_model_path = str(tmp_path / "swim_model.pth")
+    (tmp_path / "body_model.pth").write_bytes(b"dummy")
+    (tmp_path / "swim_model.pth").write_bytes(b"dummy")
+
+    dummy_model = _make_dummy_model()
+    pil_mask = Image.fromarray(np.zeros((256, 256), dtype=np.uint8))
+    confidence = np.zeros((256, 256), dtype=np.uint8)
+
+    mock_torch = MagicMock()
+    mock_torch.load.return_value = {}
+    mock_torch.no_grad.return_value.__enter__ = lambda s: s
+    mock_torch.no_grad.return_value.__exit__ = MagicMock(return_value=False)
+    mock_torch.tensor.return_value = MagicMock()
+
+    with patch.dict(sys.modules, {"torch": mock_torch}), \
+         patch("segmentation_models_pytorch.Unet") as mock_unet, \
+         patch("segmentation_models_pytorch.FPN") as mock_fpn, \
+         patch("ZebrafishEmbryoAnalyzerCore.seg.segment_fish") as mock_seg:
+
+        mock_unet.return_value = dummy_model
+        mock_fpn.return_value = dummy_model
+        mock_seg.return_value = (pil_mask, confidence)
+
+        from ZebrafishEmbryoAnalyzerCore.seg import segmentation_pipeline
+        result = segmentation_pipeline(
+            folder_path=str(tmp_path),
+            include_swimbladder=True,
+            body_model_path=body_model_path,
+            swimbladder_model_path=swim_model_path,
+        )
+
+    assert len(result) == 4
+    originals, masks, growns, swimbladder = result
+    assert len(swimbladder) == 1
+    mock_fpn.assert_called_once()
+    mock_unet.assert_called_once()  # body model still uses Unet
+
+
 def test_segmentation_pipeline_model_load_failure_raises(tmp_path):
     """RuntimeError is raised when the body model cannot be loaded."""
     import cv2
