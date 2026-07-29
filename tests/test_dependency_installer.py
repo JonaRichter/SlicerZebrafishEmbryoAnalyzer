@@ -283,13 +283,15 @@ def test_install_torch_raises_when_extension_unavailable(monkeypatch):
 
 
 def test_install_torch_uses_pytorch_utils_when_available(monkeypatch):
-    di, _ = _reload_with_slicer(monkeypatch)
+    di, _ = _reload_with_slicer(monkeypatch, platform="linux")
     torch_logic = MagicMock()
     torch_logic.installTorch.return_value = object()
     monkeypatch.setattr(di, "_pytorch_utils_logic", lambda: torch_logic)
 
     assert di._install_torch() == "ok"
-    torch_logic.installTorch.assert_called_once_with(askConfirmation=False)
+    torch_logic.installTorch.assert_called_once_with(
+        askConfirmation=False, torchVersionRequirement=None
+    )
 
 
 def test_install_torch_raises_when_pytorch_utils_fails(monkeypatch):
@@ -300,6 +302,38 @@ def test_install_torch_raises_when_pytorch_utils_fails(monkeypatch):
 
     with pytest.raises(RuntimeError, match="PyTorch"):
         di._install_torch()
+
+
+def test_install_torch_pins_below_2_13_on_windows(monkeypatch):
+    """torch 2.13 fails on Windows with WinError 206 (PEP 639 license-file paths
+    exceeding MAX_PATH) whenever site-packages is longer than ~86 characters — close
+    to what a default Slicer install already uses. Pinning below it sidesteps the
+    trigger entirely instead of relying on a shorter install path."""
+    di, _ = _reload_with_slicer(monkeypatch, platform="win32")
+    torch_logic = MagicMock()
+    torch_logic.installTorch.return_value = object()
+    monkeypatch.setattr(di, "_pytorch_utils_logic", lambda: torch_logic)
+
+    assert di._install_torch() == "ok"
+    torch_logic.installTorch.assert_called_once_with(
+        askConfirmation=False, torchVersionRequirement="<2.13.0"
+    )
+
+
+def test_install_torch_no_version_cap_on_macos_or_linux(monkeypatch):
+    """The torch 2.13 long-path failure is Windows-specific (MAX_PATH); macOS and
+    Linux have no such limit, so an unnecessary pin would just hold back an
+    otherwise-fine current release for no reason."""
+    for platform in ("darwin", "linux"):
+        di, _ = _reload_with_slicer(monkeypatch, platform=platform)
+        torch_logic = MagicMock()
+        torch_logic.installTorch.return_value = object()
+        monkeypatch.setattr(di, "_pytorch_utils_logic", lambda: torch_logic)
+
+        di._install_torch()
+        torch_logic.installTorch.assert_called_once_with(
+            askConfirmation=False, torchVersionRequirement=None
+        )
 
 
 def test_pytorch_utils_logic_returns_none_without_extension(monkeypatch):
