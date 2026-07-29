@@ -4,6 +4,8 @@ import sys
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 @contextmanager
 def _stub_slicer_env(testing_enabled=False, user_accepts=False):
@@ -116,45 +118,31 @@ def test_eyes_checked_eye_model_required():
         assert "curvature" in required
 
 
-def test_edema_checked_but_general_model_has_no_edema_entry_not_required():
-    """The webapp's General preset has no edema model — checking the box must not
-    gate the Run button on a model that does not exist for this preset."""
+@pytest.mark.parametrize("model_id", ["fast", "general", "desy"])
+def test_edema_checked_requires_edema_on_every_preset(model_id):
+    """Every preset ships an edema model (fast/general share the pipeline default,
+    DESY has its own), so checking the box must require one regardless of preset."""
     with _stub_slicer_env():
         widget = _make_widget(edema_checked=True)
-        required = widget._required_model_entries("general")
-        assert "edema" not in required
-        assert "body" in required
-
-
-def test_edema_checked_desy_model_required():
-    with _stub_slicer_env():
-        widget = _make_widget(edema_checked=True)
-        required = widget._required_model_entries("desy")
+        required = widget._required_model_entries(model_id)
         assert "edema" in required
         assert "body" in required
 
 
-def test_edema_unchecked_desy_model_not_required():
+@pytest.mark.parametrize("model_id", ["fast", "general", "desy"])
+def test_edema_unchecked_not_required(model_id):
     with _stub_slicer_env():
         widget = _make_widget(edema_checked=False)
-        required = widget._required_model_entries("desy")
+        required = widget._required_model_entries(model_id)
         assert "edema" not in required
         assert "body" in required
 
 
-def test_swimbladder_checked_general_model_required():
-    """Unlike edema, swim bladder is offered on both presets."""
+@pytest.mark.parametrize("model_id", ["fast", "general", "desy"])
+def test_swimbladder_checked_required_on_every_preset(model_id):
     with _stub_slicer_env():
         widget = _make_widget(swimbladder_checked=True)
-        required = widget._required_model_entries("general")
-        assert "swimbladder" in required
-        assert "body" in required
-
-
-def test_swimbladder_checked_desy_model_required():
-    with _stub_slicer_env():
-        widget = _make_widget(swimbladder_checked=True)
-        required = widget._required_model_entries("desy")
+        required = widget._required_model_entries(model_id)
         assert "swimbladder" in required
         assert "body" in required
 
@@ -167,16 +155,17 @@ def test_swimbladder_unchecked_not_required():
         assert "body" in required
 
 
-def test_fast_preset_ignores_checked_eyes_edema_swimbladder():
-    """The Fast & Easy preset has none of these models — even if the checkboxes
-    are (stale-)checked, _required_model_entries must not require them."""
+def test_fast_preset_requires_its_own_256px_entries():
+    """Fast & Easy supports every optional segmentation too — but must resolve to
+    the 256px weights, not the 512px ones (that mix-up would silently feed a
+    512px-trained net 256px input)."""
     with _stub_slicer_env():
         widget = _make_widget(eyes_checked=True, edema_checked=True, swimbladder_checked=True)
         required = widget._required_model_entries("fast")
-        assert "eye" not in required
-        assert "edema" not in required
-        assert "swimbladder" not in required
-        assert "body" in required
+        assert required["body"]["id"] == "fast_body"
+        assert required["eye"]["id"] == "fast_eye"
+        assert required["swimbladder"]["id"] == "fast_swimbladder"
+        assert required["edema"]["id"] == "default_edema"
         assert "curvature" in required
 
 

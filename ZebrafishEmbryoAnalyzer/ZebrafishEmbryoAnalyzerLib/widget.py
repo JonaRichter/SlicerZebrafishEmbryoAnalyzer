@@ -321,23 +321,6 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         # created above and stays wired into settings/parameter-node sync.
         # an_layout.addWidget(self._chk_hitl)
 
-        # Edema is only offered by the DESY-finetuned model set (webapp parity: the
-        # General/"Complex & Slower" preset has no edema model) — disabled with an
-        # explanation rather than hidden, so the option is discoverable.
-        self._edema_hint = qt.QLabel("Edema segmentation requires the DESY model.")
-        self._edema_hint.setStyleSheet("color: #888; font-size: 11px;")
-        self._edema_hint.setWordWrap(True)
-        an_layout.addWidget(self._edema_hint)
-
-        # Fast & Easy trades eye/edema/swim bladder support for speed (256px vs
-        # 512px — see MODEL_TARGET_SIZE in model_manifest.py).
-        self._fast_preset_hint = qt.QLabel(
-            "Fast & Easy has no eye, edema, or swim bladder support."
-        )
-        self._fast_preset_hint.setStyleSheet("color: #888; font-size: 11px;")
-        self._fast_preset_hint.setWordWrap(True)
-        an_layout.addWidget(self._fast_preset_hint)
-
         self._threshold_slider = ctk.ctkSliderWidget()
         self._threshold_slider.minimum    = 0.0
         self._threshold_slider.maximum    = 1.0
@@ -460,8 +443,6 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._threshold_slider.valueChanged.connect(self._notify_settings_changed)
         self._um_per_px.valueChanged.connect(self._notify_settings_changed)
         self._model_combo.currentIndexChanged.connect(self._notify_settings_changed)
-        self._model_combo.currentIndexChanged.connect(self._update_optional_segmentation_availability)
-        self._update_optional_segmentation_availability()
 
     def _on_load_folder(self):
         if self._cancel_load_if_running():
@@ -597,36 +578,6 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             return False
         self._load_cancelled = True
         return True
-
-    def _update_optional_segmentation_availability(self):
-        """Enable/uncheck Eye, Edema, and Swim Bladder based on what the selected
-        model set actually offers — the webapp's three presets don't all support
-        the same optional segmentations (Fast & Easy: none; General: eye + swim
-        bladder; DESY: all three). Uncheck rather than just disable when
-        unavailable, so a stale checked state from a previous model selection can
-        never reach an analysis request.
-        """
-        from ZebrafishEmbryoAnalyzerLib.model_manifest import MODEL_SETS
-        model_id = self._model_combo.currentData or _DEFAULT_MODEL_ID
-        model_set = MODEL_SETS.get(model_id, MODEL_SETS[_DEFAULT_MODEL_ID])
-
-        eyes_available = "eye" in model_set
-        if not eyes_available:
-            self._chk_eyes.setChecked(False)
-        self._chk_eyes.setEnabled(eyes_available)
-
-        edema_available = "edema" in model_set
-        if not edema_available:
-            self._chk_edema.setChecked(False)
-        self._chk_edema.setEnabled(edema_available)
-        self._edema_hint.setVisible(not edema_available)
-
-        swim_available = "swimbladder" in model_set
-        if not swim_available:
-            self._chk_swimbladder.setChecked(False)
-        self._chk_swimbladder.setEnabled(swim_available)
-
-        self._fast_preset_hint.setVisible(model_id == "fast")
 
     def _required_model_entries(self, model_id):
         """Return the model entries required by the current settings."""
@@ -1003,10 +954,6 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 if self._model_combo.itemData(i) == model_id:
                     self._model_combo.setCurrentIndex(i)
                     break
-            # setCurrentIndex above may not fire currentIndexChanged if the index was
-            # already correct (e.g. re-applying the same node) — re-derive explicitly
-            # so a stale checked-but-unavailable Edema state can never survive a reload.
-            self._update_optional_segmentation_availability()
         finally:
             self._updatingGUIFromParameterNode = False
 

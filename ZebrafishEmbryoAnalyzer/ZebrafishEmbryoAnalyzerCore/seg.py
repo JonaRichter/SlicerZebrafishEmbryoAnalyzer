@@ -69,18 +69,18 @@ def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model"
 
 def segmentation_pipeline(
     folder_path=None,
-    target_size=(512, 512),
+    target_size=(256, 256),
     file_list=None,
     include_eyes=False,
     body_model_path=None,
     body_repo_id="markdanielarndt/Zebrafish_Segmentation",
-    body_model_filename="best_model_body_512.pth",
+    body_model_filename="best_model_body_3400_vgg19.pth",
     body_encoder_name="vgg19",
     body_revision="main",
     body_force_download=False,
     eye_model_path=None,
     eye_repo_id="markdanielarndt/Zebrafish_Segmentation",
-    eye_model_filename="best_model_eye_512.pth",
+    eye_model_filename="best_model_eye_3400.pth",
     eye_encoder_name="vgg16",
     include_edema=False,
     edema_model_path=None,
@@ -90,9 +90,9 @@ def segmentation_pipeline(
     include_swimbladder=False,
     swimbladder_model_path=None,
     swimbladder_repo_id="markdanielarndt/Zebrafish_Segmentation",
-    swimbladder_model_filename="best_model_swimmbladder_512_09072026.pth",
-    swimbladder_encoder_name="vgg19",
-    swimbladder_model_type="FPN",
+    swimbladder_model_filename="best_model_swimmbladder_256_09072026.pth",
+    swimbladder_encoder_name="vgg16",
+    swimbladder_model_type="Unet",
 ):
     """
     Perform body segmentation on all images in the specified folder or file list.

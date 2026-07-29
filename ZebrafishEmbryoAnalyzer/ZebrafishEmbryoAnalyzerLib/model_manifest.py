@@ -40,10 +40,13 @@ _CACHE_DIR = _default_cache_dir()
 # ---------------------------------------------------------------------------
 
 MODELS: dict = {
-    # The webapp offers three presets, not two: "Fast & Easy" (256px, body only,
-    # no eye/edema/swim bladder — this entry), "Complex & Slower" (512px, see
-    # general_body below), and "Fine-tuned DESY" (512px). Body-only — the webapp's
-    # own Fast & Easy preset has no eye model either (eye_hf_filename=None).
+    # Mirrors the webapp's three presets (SEG_MODEL_OPTIONS in its app.py):
+    # "Fast & Easy" (256px), "Complex & Slower" (512px — our "general"), and
+    # "Fine-tuned DESY" (512px). Every preset supports every optional
+    # segmentation; the presets differ only in weights and input resolution.
+    # In the webapp a `None` filename in that table means "use the pipeline
+    # default", not "unavailable" — those defaults are the 256px files, which is
+    # why Fast & Easy resolves to fast_eye/default_edema/fast_swimbladder below.
     "fast_body": {
         "id": "fast_body",
         "repo_id": "markdanielarndt/Zebrafish_Segmentation",
@@ -53,6 +56,33 @@ MODELS: dict = {
         "encoder": "vgg19",
         "sha256": "624e9ef0ab447aee7b95a058596c048f033a8255bc850f3a238b5606ea71ae65",
         "size_bytes": 116_289_435,
+        "license": "LICENSE_PENDING",
+        "preprocessing_compat": "v1",
+    },
+    "fast_eye": {
+        "id": "fast_eye",
+        "repo_id": "markdanielarndt/Zebrafish_Segmentation",
+        "filename": "best_model_eye_3400.pth",
+        "revision": "237d21d6d7538fc5b661bf43b70f378f945991ee",
+        "label": "Eye segmentation model (256px, Fast & Easy)",
+        "encoder": "vgg16",
+        "sha256": "026b799fef133ddc44237d9f70f52694b0a02708d84a20b1f5e718a414250a2e",
+        "size_bytes": 95_048_239,
+        "license": "LICENSE_PENDING",
+        "preprocessing_compat": "v1",
+    },
+    # Unet + vgg16 here, unlike the 512px swim bladder models (FPN + vgg19) —
+    # this is the webapp's own pipeline default, not an oversight.
+    "fast_swimbladder": {
+        "id": "fast_swimbladder",
+        "repo_id": "markdanielarndt/Zebrafish_Segmentation",
+        "filename": "best_model_swimmbladder_256_09072026.pth",
+        "revision": "237d21d6d7538fc5b661bf43b70f378f945991ee",
+        "label": "Swim bladder segmentation model (256px, Fast & Easy)",
+        "encoder": "vgg16",
+        "model_type": "Unet",
+        "sha256": "656dcefd46f5d1e53605f9d5a68a23a0fd6203b3daa16e61ac11ffbdeb5cd27b",
+        "size_bytes": 95_049_151,
         "license": "LICENSE_PENDING",
         "preprocessing_compat": "v1",
     },
@@ -80,12 +110,14 @@ MODELS: dict = {
         "license": "LICENSE_PENDING",
         "preprocessing_compat": "v1",
     },
-    # Not yet wired into any MODEL_SET; kept for future edema analysis support.
-    "general_edema": {
-        "id": "general_edema",
+    # Shared by Fast & Easy and Complex & Slower — the webapp names no edema file
+    # for either preset, so both fall through to this pipeline default. Only DESY
+    # ships its own (desy_edema). Unprefixed-by-preset id, same as curvature.
+    "default_edema": {
+        "id": "default_edema",
         "repo_id": "markdanielarndt/Zebrafish_Segmentation",
         "filename": "best_model_edema_3400_focal.pth",
-        "revision": "673bc5d60e786a8413ecefbcc1701e1ec6ed6ae1",
+        "revision": "237d21d6d7538fc5b661bf43b70f378f945991ee",
         "label": "Edema segmentation model",
         "encoder": "vgg19",
         "sha256": "3622392fc8a65d9de1f49554770422cf3661deee8381a4fbbd62c48d01c6dfaf",
@@ -93,9 +125,8 @@ MODELS: dict = {
         "license": "LICENSE_PENDING",
         "preprocessing_compat": "v1",
     },
-    # Swim bladder uses FPN (segmentation_models_pytorch), not Unet like the other
-    # segmentation roles — see model_type below, consumed by seg.py's _load_unet_model.
-    # Offered under both presets (unlike edema, which is DESY-only in the webapp).
+    # FPN (segmentation_models_pytorch), not Unet like the other segmentation
+    # roles — see model_type, consumed by seg.py's _load_unet_model.
     "general_swimbladder": {
         "id": "general_swimbladder",
         "repo_id": "markdanielarndt/Zebrafish_Segmentation",
@@ -145,8 +176,7 @@ MODELS: dict = {
         "license": "LICENSE_PENDING",
         "preprocessing_compat": "v1",
     },
-    # DESY-only — the webapp's General preset has no edema model. Distinct from
-    # the unused general_edema entry above (different filename, different revision).
+    # The only preset-specific edema model; the other two share default_edema.
     "desy_edema": {
         "id": "desy_edema",
         "repo_id": "markdanielarndt/Zebrafish_Segmentation",
@@ -179,18 +209,21 @@ MODELS: dict = {
 # ---------------------------------------------------------------------------
 
 MODEL_SETS: dict = {
-    # No "eye"/"edema"/"swimbladder" keys — the webapp's Fast & Easy preset offers
-    # none of those (body + curvature only). widget.py disables and unchecks those
-    # checkboxes when this preset is selected, mirroring the existing DESY-only
-    # edema gating.
+    # Every preset carries every role — the webapp gates none of the optional
+    # segmentations by preset, it only swaps the weights (and, for Fast & Easy,
+    # the swim bladder architecture; see fast_swimbladder's model_type).
     "fast": {
         "body": MODELS["fast_body"],
+        "eye": MODELS["fast_eye"],
         "curvature": MODELS["curvature"],
+        "edema": MODELS["default_edema"],
+        "swimbladder": MODELS["fast_swimbladder"],
     },
     "general": {
         "body": MODELS["general_body"],
         "eye": MODELS["general_eye"],
         "curvature": MODELS["curvature"],
+        "edema": MODELS["default_edema"],
         "swimbladder": MODELS["general_swimbladder"],
     },
     "desy": {
