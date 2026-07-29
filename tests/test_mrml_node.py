@@ -446,7 +446,7 @@ def test_populate_table_node_columns_and_names(monkeypatch):
 
     rows = [{"Filename": "a.png", "Length_um": 1.0, "CurvatureClass": "1",
               "LengthStraightRatio": 1.05, "EyeArea_um2": math.nan,
-              "EyeDiameter_um": math.nan, "Error": ""}]
+              "EyeDiameter_um": math.nan, "EdemaArea_um2": math.nan, "Error": ""}]
     node = _FakeTableNode()
     mrml_mod.populate_table_node(rows, node)
 
@@ -475,7 +475,7 @@ def test_populate_table_node_applies_atomically(monkeypatch):
 
     rows = [{"Filename": "a.png", "Length_um": 1.0, "CurvatureClass": "1",
               "LengthStraightRatio": 1.05, "EyeArea_um2": math.nan,
-              "EyeDiameter_um": math.nan, "Error": ""}]
+              "EyeDiameter_um": math.nan, "EdemaArea_um2": math.nan, "Error": ""}]
     node = _TrackingNode()
     mrml_mod.populate_table_node(rows, node)
 
@@ -501,7 +501,7 @@ def test_populate_table_node_existing_table_preserved_on_failure(monkeypatch):
 
     rows = [{"Filename": "a.png", "Length_um": 1.0, "CurvatureClass": "1",
               "LengthStraightRatio": 1.05, "EyeArea_um2": math.nan,
-              "EyeDiameter_um": math.nan, "Error": ""}]
+              "EyeDiameter_um": math.nan, "EdemaArea_um2": math.nan, "Error": ""}]
 
     with pytest.raises(Exception):
         mrml_mod.populate_table_node(rows, node)
@@ -555,7 +555,7 @@ def test_update_results_table_calls_mrml_functions():
             import slicer
             result = logic.update_results_table([
                 {"filename": "a.png", "length": 1.0, "curvature": 1, "ratio": 1.0,
-                 "eye_area": None, "eye_diameter": None, "error": None}
+                 "eye_area": None, "eye_diameter": None, "edema_area": None, "error": None}
             ])
 
         assert mock_build.called, "build_vtk_table not called"

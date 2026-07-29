@@ -35,6 +35,7 @@ PARAM_LENGTH_ENABLED               = "lengthEnabled"
 PARAM_CURVATURE_ENABLED            = "curvatureEnabled"
 PARAM_RATIO_ENABLED                = "ratioEnabled"
 PARAM_EYES_ENABLED                 = "eyesEnabled"
+PARAM_EDEMA_ENABLED                = "edemaEnabled"
 PARAM_CONFIDENCE_THRESHOLD_ENABLED = "confidenceThresholdEnabled"
 PARAM_CONFIDENCE_THRESHOLD         = "confidenceThreshold"
 PARAM_UM_PER_PX                    = "micrometersPerPixel"
@@ -45,6 +46,7 @@ PARAM_DEFAULTS = {
     PARAM_CURVATURE_ENABLED:            "true",
     PARAM_RATIO_ENABLED:                "true",
     PARAM_EYES_ENABLED:                 "false",
+    PARAM_EDEMA_ENABLED:                "false",
     PARAM_CONFIDENCE_THRESHOLD_ENABLED: "false",
     PARAM_CONFIDENCE_THRESHOLD:         "0.85",
     PARAM_UM_PER_PX:                    "22.99",
@@ -305,14 +307,23 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._chk_curvature = qt.QCheckBox("Curvature class");    self._chk_curvature.setChecked(True)
         self._chk_ratio     = qt.QCheckBox("Length/straight ratio"); self._chk_ratio.setChecked(True)
         self._chk_eyes      = qt.QCheckBox("Eye segmentation");   self._chk_eyes.setChecked(False)
+        self._chk_edema     = qt.QCheckBox("Edema segmentation"); self._chk_edema.setChecked(False)
         self._chk_hitl      = qt.QCheckBox("Confidence threshold"); self._chk_hitl.setChecked(False)
 
         for chk in (self._chk_length, self._chk_curvature, self._chk_ratio,
-                    self._chk_eyes):
+                    self._chk_eyes, self._chk_edema):
             an_layout.addWidget(chk)
         # Confidence threshold hidden from UI (issue #79); widget still
         # created above and stays wired into settings/parameter-node sync.
         # an_layout.addWidget(self._chk_hitl)
+
+        # Edema is only offered by the DESY-finetuned model set (webapp parity: the
+        # General/"Complex & Slower" preset has no edema model) — disabled with an
+        # explanation rather than hidden, so the option is discoverable.
+        self._edema_hint = qt.QLabel("Edema segmentation requires the DESY model.")
+        self._edema_hint.setStyleSheet("color: #888; font-size: 11px;")
+        self._edema_hint.setWordWrap(True)
+        an_layout.addWidget(self._edema_hint)
 
         self._threshold_slider = ctk.ctkSliderWidget()
         self._threshold_slider.minimum    = 0.0
@@ -428,12 +439,15 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             self._chk_curvature.toggled,
             self._chk_ratio.toggled,
             self._chk_eyes.toggled,
+            self._chk_edema.toggled,
             self._chk_hitl.toggled,
         ):
             _signal.connect(self._notify_settings_changed)
         self._threshold_slider.valueChanged.connect(self._notify_settings_changed)
         self._um_per_px.valueChanged.connect(self._notify_settings_changed)
         self._model_combo.currentIndexChanged.connect(self._notify_settings_changed)
+        self._model_combo.currentIndexChanged.connect(self._update_edema_availability)
+        self._update_edema_availability()
 
     def _on_load_folder(self):
         if self._cancel_load_if_running():
@@ -570,6 +584,22 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._load_cancelled = True
         return True
 
+    def _update_edema_availability(self):
+        """Enable Edema only for a model set that actually has an edema model.
+
+        The webapp's General preset has no edema model — only DESY does. Uncheck
+        rather than just disable when unavailable, so a stale checked state from
+        a previous model selection can never reach an analysis request.
+        """
+        from ZebrafishEmbryoAnalyzerLib.model_manifest import MODEL_SETS
+        model_id = self._model_combo.currentData or _DEFAULT_MODEL_ID
+        model_set = MODEL_SETS.get(model_id, MODEL_SETS[_DEFAULT_MODEL_ID])
+        available = "edema" in model_set
+        if not available:
+            self._chk_edema.setChecked(False)
+        self._chk_edema.setEnabled(available)
+        self._edema_hint.setVisible(not available)
+
     def _required_model_entries(self, model_id):
         """Return the model entries required by the current settings."""
         from ZebrafishEmbryoAnalyzerLib.model_manifest import MODEL_SETS
@@ -579,6 +609,8 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             required["curvature"] = model_set["curvature"]
         if self._chk_eyes.isChecked() and "eye" in model_set:
             required["eye"] = model_set["eye"]
+        if self._chk_edema.isChecked() and "edema" in model_set:
+            required["edema"] = model_set["edema"]
         return required
 
     def _missing_required_models(self, model_id):
@@ -690,6 +722,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 "curvature": self._chk_curvature.isChecked(),
                 "ratio":     self._chk_ratio.isChecked(),
                 "eyes":      self._chk_eyes.isChecked(),
+                "edema":     self._chk_edema.isChecked(),
                 "hitl":      self._chk_hitl.isChecked(),
                 "threshold": self._threshold_slider.value,
                 "um_per_px": self._um_per_px.value,
@@ -928,6 +961,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             self._chk_curvature.setChecked(_b(PARAM_CURVATURE_ENABLED, True))
             self._chk_ratio.setChecked(_b(PARAM_RATIO_ENABLED, True))
             self._chk_eyes.setChecked(_b(PARAM_EYES_ENABLED, False))
+            self._chk_edema.setChecked(_b(PARAM_EDEMA_ENABLED, False))
             self._chk_hitl.setChecked(_b(PARAM_CONFIDENCE_THRESHOLD_ENABLED, False))
             self._threshold_slider.value = _f_clamp(PARAM_CONFIDENCE_THRESHOLD, 0.0, 1.0, 0.85)
             self._um_per_px.value = _f_clamp(PARAM_UM_PER_PX, 0.001, 9999.0, 22.99)
@@ -937,6 +971,10 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 if self._model_combo.itemData(i) == model_id:
                     self._model_combo.setCurrentIndex(i)
                     break
+            # setCurrentIndex above may not fire currentIndexChanged if the index was
+            # already correct (e.g. re-applying the same node) — re-derive explicitly
+            # so a stale checked-but-unavailable Edema state can never survive a reload.
+            self._update_edema_availability()
         finally:
             self._updatingGUIFromParameterNode = False
 
@@ -954,6 +992,8 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                               "true" if self._chk_ratio.isChecked() else "false")
             node.SetParameter(PARAM_EYES_ENABLED,
                               "true" if self._chk_eyes.isChecked() else "false")
+            node.SetParameter(PARAM_EDEMA_ENABLED,
+                              "true" if self._chk_edema.isChecked() else "false")
             node.SetParameter(PARAM_CONFIDENCE_THRESHOLD_ENABLED,
                               "true" if self._chk_hitl.isChecked() else "false")
             node.SetParameter(PARAM_CONFIDENCE_THRESHOLD,

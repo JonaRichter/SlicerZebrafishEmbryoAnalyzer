@@ -86,9 +86,27 @@ def test_model_sets_has_general_and_desy():
 def test_model_set_has_all_roles(variant):
     required_roles = {"body", "eye", "curvature"}
     assert required_roles.issubset(set(MODEL_SETS[variant].keys()))
-    # edema is intentionally excluded from MODEL_SETS to avoid gating the Run
-    # button on a model that is not yet used (include_edema defaults to False).
-    assert "edema" not in MODEL_SETS[variant]
+
+
+def test_desy_edema_distinct_from_unused_general_edema():
+    """desy_edema must be a genuinely different file/revision than the pre-existing,
+    still-unused general_edema entry — not the same model reused under a new id."""
+    desy = MODELS["desy_edema"]
+    general = MODELS["general_edema"]
+    assert desy["filename"] != general["filename"]
+    assert desy["revision"] != general["revision"]
+    assert desy["sha256"] != general["sha256"]
+
+
+def test_model_set_edema_desy_only():
+    """The webapp's General preset has no edema model — only DESY does.
+
+    Presence in MODEL_SETS alone does not gate the Run button: widget.py's
+    _required_model_entries() only includes "edema" when the Edema checkbox is
+    checked, mirroring the existing "eye" gating.
+    """
+    assert "edema" in MODEL_SETS["desy"]
+    assert "edema" not in MODEL_SETS["general"]
 
 
 # ---------------------------------------------------------------------------
@@ -300,11 +318,11 @@ def test_desy_reuses_curvature():
     assert MODEL_SETS["desy"]["curvature"] is MODEL_SETS["general"]["curvature"]
 
 
-def test_edema_in_models_but_not_in_model_sets():
-    """Edema model described in MODELS but excluded from MODEL_SETS (no UI control)."""
+def test_general_edema_remains_unused():
+    """general_edema stays a described-but-unwired entry — the webapp's General
+    preset has no edema model, only DESY does (see desy_edema)."""
     assert "general_edema" in MODELS
     assert "edema" not in MODEL_SETS["general"]
-    assert "edema" not in MODEL_SETS["desy"]
 
 
 # ---------------------------------------------------------------------------

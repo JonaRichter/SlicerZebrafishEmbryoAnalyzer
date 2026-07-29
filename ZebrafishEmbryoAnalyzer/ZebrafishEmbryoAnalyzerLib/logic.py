@@ -122,6 +122,20 @@ def preload_models(params: dict) -> None:
             encoder_name=eye_entry["encoder"],
         )
 
+    if params.get("edema", False):
+        edema_entry = model_set["edema"]
+        edema_path = get_cached_path(edema_entry)
+        if not verify_checksum(edema_path, edema_entry["sha256"]):
+            raise ModelNotCachedError(
+                f"{edema_entry['label']} missing or corrupted at {edema_path}. "
+                "Download models first."
+            )
+        _cached_load_unet(
+            model_path=str(edema_path),
+            label="edema model",
+            encoder_name=edema_entry["encoder"],
+        )
+
 # ---------------------------------------------------------------------------
 # Result dict schema — every key must be present, missing values use None
 # ---------------------------------------------------------------------------
@@ -132,6 +146,7 @@ _RESULT_KEYS = (
     "mask",
     "grown",
     "eye_mask",
+    "edema_mask",
     "path_points",
     "straight_line_points",
     "length",
@@ -139,6 +154,7 @@ _RESULT_KEYS = (
     "ratio",
     "eye_area",
     "eye_diameter",
+    "edema_area",
     "spacing",
     "error",
 )
@@ -183,7 +199,7 @@ def analyse_images(image_paths: list, params: dict,
         Absolute paths to input images.
     params : dict
         Keys:
-          length, curvature, ratio, eyes : bool
+          length, curvature, ratio, eyes, edema : bool
           hitl                           : bool  — use confidence threshold
           threshold                      : float 0–1
           um_per_px                      : float — physical scale (µm/pixel)
@@ -214,6 +230,7 @@ def analyse_images(image_paths: list, params: dict,
 
     um_per_px = float(params.get("um_per_px", 22.99))
     include_eyes = params.get("eyes", False)
+    include_edema = params.get("edema", False)
 
     model_id = params.get("model_id", "general")
     model_set = MODEL_SETS.get(model_id, MODEL_SETS["general"])
@@ -231,6 +248,13 @@ def analyse_images(image_paths: list, params: dict,
         if not verify_checksum(eye_path, eye_entry["sha256"]):
             raise ModelNotCachedError(
                 f"{eye_entry['label']} missing or corrupted at {eye_path}. Download models first."
+            )
+    if include_edema:
+        edema_entry = model_set["edema"]
+        edema_path = get_cached_path(edema_entry)
+        if not verify_checksum(edema_path, edema_entry["sha256"]):
+            raise ModelNotCachedError(
+                f"{edema_entry['label']} missing or corrupted at {edema_path}. Download models first."
             )
     if params.get("curvature", True):
         curv_entry = MODELS["curvature"]
@@ -255,11 +279,15 @@ def analyse_images(image_paths: list, params: dict,
     # means model weights are only read from disk once across all calls.
     _seg_kwargs = dict(
         include_eyes=include_eyes,
+        include_edema=include_edema,
         body_model_path=str(body_path),
         body_encoder_name=body_entry["encoder"],
     )
     if include_eyes:
         _seg_kwargs["eye_model_path"] = str(eye_path)
+    if include_edema:
+        _seg_kwargs["edema_model_path"] = str(edema_path)
+        _seg_kwargs["edema_encoder_name"] = edema_entry["encoder"]
 
     n = len(image_paths)
     results = []
@@ -276,16 +304,27 @@ def analyse_images(image_paths: list, params: dict,
                 shutil.copy2(image_path, os.path.join(_tmp, os.path.basename(image_path)))
                 seg_result = segmentation_pipeline(_tmp, **_seg_kwargs)
 
-            if include_eyes and len(seg_result) == 4:
+            # Return arity depends on which optional masks were requested — a plain
+            # length check can't disambiguate an eyes-only 4-tuple from an
+            # edema-only one, so branch on the flags this call actually passed.
+            if include_eyes and include_edema:
+                originals_bgr, masks, growns, eyes_list, edema_list = seg_result
+            elif include_eyes:
                 originals_bgr, masks, growns, eyes_list = seg_result
-            else:
-                originals_bgr, masks, growns = seg_result[:3]
+                edema_list = [None]
+            elif include_edema:
+                originals_bgr, masks, growns, edema_list = seg_result
                 eyes_list = [None]
+            else:
+                originals_bgr, masks, growns = seg_result
+                eyes_list = [None]
+                edema_list = [None]
 
             orig_bgr = originals_bgr[0] if originals_bgr else None
             mask    = masks[0]      if masks      else None
             grown   = growns[0]     if growns     else None
             eye     = eyes_list[0]  if eyes_list  else None
+            edema   = edema_list[0] if edema_list else None
 
             if orig_bgr is None:
                 r["error"] = "Could not read image."
@@ -294,13 +333,15 @@ def analyse_images(image_paths: list, params: dict,
                     progress_callback(_loop_i + 1, n)
                 continue
 
-            r["original"]  = cv2.cvtColor(orig_bgr, cv2.COLOR_BGR2RGB)
-            r["mask"]      = mask
-            r["grown"]     = grown
-            r["eye_mask"]  = eye
+            r["original"]   = cv2.cvtColor(orig_bgr, cv2.COLOR_BGR2RGB)
+            r["mask"]       = mask
+            r["grown"]      = grown
+            r["eye_mask"]   = eye
+            r["edema_mask"] = edema
 
-            mask_bin = (mask > 0) if mask is not None else None
-            eye_bin  = (eye  > 0) if eye  is not None else None
+            mask_bin  = (mask  > 0) if mask  is not None else None
+            eye_bin   = (eye   > 0) if eye   is not None else None
+            edema_bin = (edema > 0) if edema is not None else None
 
             h_orig, w_orig = orig_bgr.shape[:2]
             mask_h, mask_w = mask.shape[:2] if mask is not None else (256, 256)
@@ -353,6 +394,14 @@ def analyse_images(image_paths: list, params: dict,
                 except Exception as exc:
                     if r["error"] is None:
                         r["error"] = f"Eye metrics error: {exc}"
+
+            # ---- edema metrics ----
+            if params.get("edema", False) and edema_bin is not None:
+                try:
+                    r["edema_area"] = float(np.count_nonzero(edema_bin) * spacing[0] * spacing[1])
+                except Exception as exc:
+                    if r["error"] is None:
+                        r["error"] = f"Edema metrics error: {exc}"
 
         except Exception as exc:
             import traceback

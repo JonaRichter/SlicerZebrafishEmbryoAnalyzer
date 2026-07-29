@@ -200,4 +200,7 @@ def segmentation_pipeline(
     if include_eyes:
         return original_images, segmented_images, grown_images, eyes_images
 
+    if include_edema:
+        return original_images, segmented_images, grown_images, edema_images
+
     return original_images, segmented_images, grown_images

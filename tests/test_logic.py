@@ -60,6 +60,66 @@ def test_analyse_images_returns_one_result_per_image(tmp_path, synthetic_fish_im
     assert results[0]["length"] == pytest.approx(1200.0)
 
 
+def test_analyse_images_computes_edema_area(tmp_path, synthetic_fish_image, mock_model_paths):
+    """With edema requested on the DESY model, the returned result carries the mask
+    and a non-zero physical area computed from it."""
+    import cv2
+    img_path = str(tmp_path / "fish.png")
+    cv2.imwrite(img_path, synthetic_fish_image)
+
+    dummy_mask = np.zeros((256, 256), dtype=np.uint8)
+    dummy_grown = dummy_mask.copy()
+    dummy_edema = np.zeros((256, 256), dtype=np.uint8)
+    dummy_edema[10:20, 10:20] = 255  # 100 px^2 of edema
+
+    with patch("ZebrafishEmbryoAnalyzerCore.seg.segmentation_pipeline") as mock_pipeline, \
+         patch("ZebrafishEmbryoAnalyzerCore.length.load_model") as mock_load:
+
+        mock_pipeline.return_value = (
+            [synthetic_fish_image[:, :, ::-1]],
+            [dummy_mask],
+            [dummy_grown],
+            [dummy_edema],
+        )
+        mock_load.return_value = MagicMock()
+
+        from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
+        results = analyse_images(
+            [img_path],
+            {"length": False, "curvature": False, "ratio": False,
+             "eyes": False, "edema": True, "hitl": False, "threshold": 0.85,
+             "um_per_px": 22.99, "model_id": "desy"},
+        )
+
+    assert len(results) == 1
+    assert results[0]["edema_mask"] is not None
+    assert results[0]["edema_area"] is not None
+    assert results[0]["edema_area"] > 0
+
+
+def test_analyse_images_raises_model_not_cached_when_edema_missing(tmp_path, synthetic_fish_image):
+    """A missing edema model file must raise ModelNotCachedError, not silently proceed."""
+    import cv2
+    from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
+    from ZebrafishEmbryoAnalyzerLib.errors import ModelNotCachedError
+
+    img_path = str(tmp_path / "fish.png")
+    cv2.imwrite(img_path, synthetic_fish_image)
+
+    def fake_get_cached_path(entry):
+        return tmp_path / entry["filename"]
+
+    with patch("ZebrafishEmbryoAnalyzerLib.model_manifest.get_cached_path",
+               side_effect=fake_get_cached_path):
+        with pytest.raises(ModelNotCachedError):
+            analyse_images(
+                [img_path],
+                {"length": False, "curvature": False, "ratio": False,
+                 "eyes": False, "edema": True, "hitl": False, "threshold": 0.85,
+                 "um_per_px": 22.99, "model_id": "desy"},
+            )
+
+
 def test_analyse_images_error_per_image_does_not_crash(tmp_path, synthetic_fish_image, mock_model_paths):
     import cv2
     p1 = str(tmp_path / "good.png")

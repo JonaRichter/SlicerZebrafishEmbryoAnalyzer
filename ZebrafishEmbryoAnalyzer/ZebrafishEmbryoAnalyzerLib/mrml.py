@@ -21,6 +21,7 @@ TABLE_SCHEMA = [
     ("LengthStraightRatio", "ratio",        "double"),
     ("EyeArea_um2",         "eye_area",     "double"),
     ("EyeDiameter_um",      "eye_diameter", "double"),
+    ("EdemaArea_um2",       "edema_area",   "double"),
     ("Error",               "error",        "string"),
 ]
 
@@ -303,6 +304,7 @@ def update_segmentation_node(result, um_per_px, node, image_node=None):
     result["original"]: uint8 ndarray shape (H_orig, W_orig, 3).
     result["mask"]: 2-D ndarray shape (256, 256) — body mask (>0 means body).
     result["eye_mask"]: 2-D bool ndarray shape (256, 256) or None — eye mask.
+    result["edema_mask"]: 2-D bool ndarray shape (256, 256) or None — edema mask.
     um_per_px: physical scale of the original image in micrometres per pixel.
     image_node: optional vtkMRMLVectorVolumeNode — used to set reference geometry
         so Slicer can position the segmentation in slice views.
@@ -319,6 +321,7 @@ def update_segmentation_node(result, um_per_px, node, image_node=None):
       8. node.GetSegmentation().RemoveAllSegments()
       9. Add "Body" segment (green) — always.
       10. Add "Eye" segment (red) — only when eye_mask is not None and eye_mask.any().
+      10b. Add "Edema" segment (blue) — only when edema_mask is not None and edema_mask.any().
       11. Populate each segment via SetBinaryLabelmapToSegment.
       12. Set reference image geometry from image_node if provided.
     """
@@ -338,6 +341,7 @@ def update_segmentation_node(result, um_per_px, node, image_node=None):
 
     mask_2d = result.get("mask")
     eye_mask_2d = result.get("eye_mask")
+    edema_mask_2d = result.get("edema_mask")
 
     body_2d = resample_mask_to_original(mask_2d, h_orig, w_orig) if mask_2d is not None else None
     has_eye = (
@@ -346,6 +350,12 @@ def update_segmentation_node(result, um_per_px, node, image_node=None):
         and eye_mask_2d.any()
     )
     eye_2d = resample_mask_to_original(eye_mask_2d, h_orig, w_orig) if has_eye else None
+    has_edema = (
+        edema_mask_2d is not None
+        and hasattr(edema_mask_2d, "any")
+        and edema_mask_2d.any()
+    )
+    edema_2d = resample_mask_to_original(edema_mask_2d, h_orig, w_orig) if has_edema else None
 
     def _make_oriented_image(arr_2d):
         """Build a vtkOrientedImageData from a 2-D uint8 (0/1) array."""
@@ -379,6 +389,12 @@ def update_segmentation_node(result, um_per_px, node, image_node=None):
             eye_id = seg.AddEmptySegment("Eye", "Eye", [1.0, 0.0, 0.0])
             slicer.vtkSlicerSegmentationsModuleLogic.SetBinaryLabelmapToSegment(
                 _make_oriented_image(eye_2d), node, eye_id
+            )
+
+        if edema_2d is not None:
+            edema_id = seg.AddEmptySegment("Edema", "Edema", [0.0, 0.5, 1.0])
+            slicer.vtkSlicerSegmentationsModuleLogic.SetBinaryLabelmapToSegment(
+                _make_oriented_image(edema_2d), node, edema_id
             )
 
         if image_node is not None:

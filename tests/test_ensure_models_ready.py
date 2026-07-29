@@ -33,11 +33,12 @@ def _make_checkbox(checked=False):
     return chk
 
 
-def _make_widget(eyes_checked=False, curvature_checked=True):
+def _make_widget(eyes_checked=False, curvature_checked=True, edema_checked=False):
     from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
 
     widget = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
     widget._chk_eyes = _make_checkbox(checked=eyes_checked)
+    widget._chk_edema = _make_checkbox(checked=edema_checked)
     widget._chk_curvature = _make_checkbox(checked=curvature_checked)
     return widget
 
@@ -111,6 +112,32 @@ def test_eyes_checked_eye_model_required():
         assert "eye" in required
         assert "body" in required
         assert "curvature" in required
+
+
+def test_edema_checked_but_general_model_has_no_edema_entry_not_required():
+    """The webapp's General preset has no edema model — checking the box must not
+    gate the Run button on a model that does not exist for this preset."""
+    with _stub_slicer_env():
+        widget = _make_widget(edema_checked=True)
+        required = widget._required_model_entries("general")
+        assert "edema" not in required
+        assert "body" in required
+
+
+def test_edema_checked_desy_model_required():
+    with _stub_slicer_env():
+        widget = _make_widget(edema_checked=True)
+        required = widget._required_model_entries("desy")
+        assert "edema" in required
+        assert "body" in required
+
+
+def test_edema_unchecked_desy_model_not_required():
+    with _stub_slicer_env():
+        widget = _make_widget(edema_checked=False)
+        required = widget._required_model_entries("desy")
+        assert "edema" not in required
+        assert "body" in required
 
 
 def test_curvature_unchecked_not_required():

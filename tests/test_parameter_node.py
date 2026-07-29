@@ -198,6 +198,7 @@ def test_param_defaults_match_ui_defaults():
         assert PARAM_DEFAULTS.get("curvatureEnabled")            == "true",  PARAM_DEFAULTS
         assert PARAM_DEFAULTS.get("ratioEnabled")                == "true",  PARAM_DEFAULTS
         assert PARAM_DEFAULTS.get("eyesEnabled")                 == "false", PARAM_DEFAULTS
+        assert PARAM_DEFAULTS.get("edemaEnabled")                == "false", PARAM_DEFAULTS
         assert PARAM_DEFAULTS.get("confidenceThresholdEnabled")  == "false", PARAM_DEFAULTS
         assert PARAM_DEFAULTS.get("confidenceThreshold")         == "0.85",  PARAM_DEFAULTS
         assert PARAM_DEFAULTS.get("micrometersPerPixel")         == "22.99", PARAM_DEFAULTS
@@ -208,14 +209,14 @@ def test_param_defaults_match_ui_defaults():
     assert "OK" in r.stdout
 
 
-def test_param_defaults_has_exactly_eight_keys():
-    """PARAM_DEFAULTS must have exactly the eight expected keys — no extras."""
+def test_param_defaults_has_exactly_nine_keys():
+    """PARAM_DEFAULTS must have exactly the nine expected keys — no extras."""
     r = _run(_MAIN_WIDGET_STUB, """
         from ZebrafishEmbryoAnalyzerLib.widget import PARAM_DEFAULTS
 
         expected = {
             "lengthEnabled", "curvatureEnabled", "ratioEnabled",
-            "eyesEnabled", "confidenceThresholdEnabled",
+            "eyesEnabled", "edemaEnabled", "confidenceThresholdEnabled",
             "confidenceThreshold", "micrometersPerPixel", "selectedModelId",
         }
         assert set(PARAM_DEFAULTS.keys()) == expected, (
@@ -254,6 +255,8 @@ def test_update_gui_applies_bool_and_float_values():
         w._chk_curvature = MagicMock()
         w._chk_ratio     = MagicMock()
         w._chk_eyes      = MagicMock()
+        w._chk_edema     = MagicMock()
+        w._edema_hint    = MagicMock()
         w._chk_hitl      = MagicMock()
         w._threshold_slider = MagicMock()
         w._um_per_px     = MagicMock()
@@ -293,6 +296,8 @@ def test_update_gui_unknown_model_id_falls_back_to_first():
         w._chk_curvature = MagicMock()
         w._chk_ratio     = MagicMock()
         w._chk_eyes      = MagicMock()
+        w._chk_edema     = MagicMock()
+        w._edema_hint    = MagicMock()
         w._chk_hitl      = MagicMock()
         w._threshold_slider = MagicMock()
         w._um_per_px     = MagicMock()
@@ -324,6 +329,8 @@ def test_update_gui_missing_params_use_defaults():
         w._chk_curvature = MagicMock()
         w._chk_ratio     = MagicMock()
         w._chk_eyes      = MagicMock()
+        w._chk_edema     = MagicMock()
+        w._edema_hint    = MagicMock()
         w._chk_hitl      = MagicMock()
         w._threshold_slider = MagicMock()
         w._um_per_px     = MagicMock()
@@ -378,6 +385,7 @@ def test_update_node_from_gui_writes_all_params():
         w._chk_curvature = MagicMock(); w._chk_curvature.isChecked.return_value = True
         w._chk_ratio     = MagicMock(); w._chk_ratio.isChecked.return_value     = False
         w._chk_eyes      = MagicMock(); w._chk_eyes.isChecked.return_value      = True
+        w._chk_edema     = MagicMock(); w._chk_edema.isChecked.return_value     = False
         w._chk_hitl      = MagicMock(); w._chk_hitl.isChecked.return_value      = True
         w._threshold_slider = MagicMock(); w._threshold_slider.value = 0.6
         w._um_per_px     = MagicMock(); w._um_per_px.value = 10.0
@@ -413,6 +421,7 @@ def test_update_node_from_gui_invalid_model_id_falls_back():
         w._chk_curvature = MagicMock(); w._chk_curvature.isChecked.return_value = True
         w._chk_ratio     = MagicMock(); w._chk_ratio.isChecked.return_value     = True
         w._chk_eyes      = MagicMock(); w._chk_eyes.isChecked.return_value      = False
+        w._chk_edema     = MagicMock(); w._chk_edema.isChecked.return_value     = False
         w._chk_hitl      = MagicMock(); w._chk_hitl.isChecked.return_value      = False
         w._threshold_slider = MagicMock(); w._threshold_slider.value = 0.85
         w._um_per_px     = MagicMock(); w._um_per_px.value = 22.99
@@ -484,6 +493,7 @@ def test_round_trip_preserves_all_values():
         w._chk_curvature = MagicMock(); w._chk_curvature.isChecked.return_value = True
         w._chk_ratio     = MagicMock(); w._chk_ratio.isChecked.return_value     = True
         w._chk_eyes      = MagicMock(); w._chk_eyes.isChecked.return_value      = True
+        w._chk_edema     = MagicMock(); w._chk_edema.isChecked.return_value     = False
         w._chk_hitl      = MagicMock(); w._chk_hitl.isChecked.return_value      = False
         w._threshold_slider = MagicMock(); w._threshold_slider.value = 0.42
         w._um_per_px     = MagicMock(); w._um_per_px.value = 5.1234
@@ -498,6 +508,8 @@ def test_round_trip_preserves_all_values():
         w2._chk_curvature = MagicMock()
         w2._chk_ratio     = MagicMock()
         w2._chk_eyes      = MagicMock()
+        w2._chk_edema     = MagicMock()
+        w2._edema_hint    = MagicMock()
         w2._chk_hitl      = MagicMock()
         w2._threshold_slider = MagicMock()
         w2._um_per_px     = MagicMock()
@@ -980,6 +992,8 @@ def test_update_gui_invalid_bool_string_falls_back():
         w._chk_curvature = MagicMock()
         w._chk_ratio     = MagicMock()
         w._chk_eyes      = MagicMock()
+        w._chk_edema     = MagicMock()
+        w._edema_hint    = MagicMock()
         w._chk_hitl      = MagicMock()
         w._threshold_slider = MagicMock()
         w._um_per_px     = MagicMock()
@@ -1022,6 +1036,8 @@ def test_update_gui_nan_and_infinity_fall_back():
             w._chk_curvature = MagicMock()
             w._chk_ratio     = MagicMock()
             w._chk_eyes      = MagicMock()
+            w._chk_edema     = MagicMock()
+            w._edema_hint    = MagicMock()
             w._chk_hitl      = MagicMock()
             w._threshold_slider = MagicMock()
             w._um_per_px     = MagicMock()
@@ -1061,6 +1077,8 @@ def test_update_gui_out_of_range_numeric_falls_back():
         w._chk_curvature = MagicMock()
         w._chk_ratio     = MagicMock()
         w._chk_eyes      = MagicMock()
+        w._chk_edema     = MagicMock()
+        w._edema_hint    = MagicMock()
         w._chk_hitl      = MagicMock()
         w._threshold_slider = MagicMock()
         w._um_per_px     = MagicMock()
@@ -1099,6 +1117,8 @@ def test_update_gui_non_numeric_string_no_exception():
         w._chk_curvature = MagicMock()
         w._chk_ratio     = MagicMock()
         w._chk_eyes      = MagicMock()
+        w._chk_edema     = MagicMock()
+        w._edema_hint    = MagicMock()
         w._chk_hitl      = MagicMock()
         w._threshold_slider = MagicMock()
         w._um_per_px     = MagicMock()
@@ -1152,6 +1172,7 @@ def test_update_node_from_gui_end_modify_called_on_exception():
         w._chk_curvature = MagicMock(); w._chk_curvature.isChecked.return_value = True
         w._chk_ratio     = MagicMock(); w._chk_ratio.isChecked.return_value     = True
         w._chk_eyes      = MagicMock(); w._chk_eyes.isChecked.return_value      = False
+        w._chk_edema     = MagicMock(); w._chk_edema.isChecked.return_value     = False
         w._chk_hitl      = MagicMock(); w._chk_hitl.isChecked.return_value      = False
         w._threshold_slider = MagicMock(); w._threshold_slider.value = 0.85
         w._um_per_px     = MagicMock(); w._um_per_px.value = 22.99
@@ -1287,6 +1308,8 @@ def test_update_gui_after_reset_applies_node_um_per_px():
         w._chk_curvature = MagicMock()
         w._chk_ratio     = MagicMock()
         w._chk_eyes      = MagicMock()
+        w._chk_edema     = MagicMock()
+        w._edema_hint    = MagicMock()
         w._chk_hitl      = MagicMock()
         w._threshold_slider = MagicMock()
         w._model_combo   = MagicMock()

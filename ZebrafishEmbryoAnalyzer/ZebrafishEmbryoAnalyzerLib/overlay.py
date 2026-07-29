@@ -13,8 +13,10 @@ _MASK_COLOR   = (0,   200, 255)  # yellow
 _EYE_COLOR    = (0,   0,   200)  # red
 _PATH_COLOR   = (200, 200, 0  )  # cyan
 _STRAIGHT_CLR = (200, 0,   200)  # magenta
+_EDEMA_COLOR  = (255, 100, 0  )  # blue
 _MASK_ALPHA   = 0.35
 _EYE_ALPHA    = 0.45
+_EDEMA_ALPHA  = 0.45
 
 
 def _blend_mask(base_bgr: np.ndarray, mask: np.ndarray, color_bgr: tuple, alpha: float) -> np.ndarray:
@@ -60,6 +62,11 @@ def make_full_overlay(result: dict) -> np.ndarray:
     if eye_mask is not None:
         em = cv2.resize(eye_mask.astype(np.uint8), (w_base, h_base), interpolation=cv2.INTER_NEAREST)
         base = _blend_mask(base, em, _EYE_COLOR, _EYE_ALPHA)
+
+    edema_mask = result.get("edema_mask")
+    if edema_mask is not None:
+        dm = cv2.resize(edema_mask.astype(np.uint8), (w_base, h_base), interpolation=cv2.INTER_NEAREST)
+        base = _blend_mask(base, dm, _EDEMA_COLOR, _EDEMA_ALPHA)
 
     path_pts = result.get("path_points")
     if path_pts is not None and len(path_pts) >= 2:

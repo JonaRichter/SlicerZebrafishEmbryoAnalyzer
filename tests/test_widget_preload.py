@@ -111,8 +111,9 @@ def test_run_analysis_starts_download_before_analysis_when_models_missing(widget
     w._chk_curvature = MagicMock()
     w._chk_ratio = MagicMock()
     w._chk_eyes = MagicMock()
+    w._chk_edema = MagicMock()
     w._chk_hitl = MagicMock()
-    for chk in (w._chk_length, w._chk_curvature, w._chk_ratio, w._chk_eyes, w._chk_hitl):
+    for chk in (w._chk_length, w._chk_curvature, w._chk_ratio, w._chk_eyes, w._chk_edema, w._chk_hitl):
         chk.isChecked.return_value = True
     w._threshold_slider = MagicMock()
     w._threshold_slider.value = 0.85
@@ -140,8 +141,9 @@ def test_run_analysis_starts_inference_when_models_cached(widget_module):
     w._chk_curvature = MagicMock()
     w._chk_ratio = MagicMock()
     w._chk_eyes = MagicMock()
+    w._chk_edema = MagicMock()
     w._chk_hitl = MagicMock()
-    for chk in (w._chk_length, w._chk_curvature, w._chk_ratio, w._chk_eyes, w._chk_hitl):
+    for chk in (w._chk_length, w._chk_curvature, w._chk_ratio, w._chk_eyes, w._chk_edema, w._chk_hitl):
         chk.isChecked.return_value = True
     w._threshold_slider = MagicMock()
     w._threshold_slider.value = 0.85
