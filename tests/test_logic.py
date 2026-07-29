@@ -91,17 +91,38 @@ def test_analyse_images_error_per_image_does_not_crash(tmp_path, synthetic_fish_
 
 
 def test_models_to_download_all_cached(tmp_path):
+    """Files present and matching their pinned checksum count as cached."""
     from ZebrafishEmbryoAnalyzerLib.model_manifest import get_missing_models, MODEL_SETS
-    model_set = MODEL_SETS["general"]
+    import hashlib
+    data = b"\x00"
+    digest = hashlib.sha256(data).hexdigest()
+    model_set = {role: {**entry, "sha256": digest} for role, entry in MODEL_SETS["general"].items()}
     for entry in model_set.values():
         f = tmp_path / entry["filename"]
-        f.write_bytes(b"\x00")
+        f.write_bytes(data)
     with patch(
         "ZebrafishEmbryoAnalyzerLib.model_manifest.get_cached_path",
         side_effect=lambda entry: tmp_path / entry["filename"],
     ):
         result = get_missing_models(model_set)
     assert result == []
+
+
+def test_models_to_download_corrupted_counts_as_missing(tmp_path):
+    """A present, non-empty file whose content does not match the pinned checksum
+    (e.g. a truncated/interrupted download) must count as missing, not cached —
+    otherwise it looks available until torch.load() fails deep inside analysis."""
+    from ZebrafishEmbryoAnalyzerLib.model_manifest import get_missing_models, MODEL_SETS
+    model_set = MODEL_SETS["general"]
+    for entry in model_set.values():
+        f = tmp_path / entry["filename"]
+        f.write_bytes(b"truncated download, wrong content")  # real sha256 won't match
+    with patch(
+        "ZebrafishEmbryoAnalyzerLib.model_manifest.get_cached_path",
+        side_effect=lambda entry: tmp_path / entry["filename"],
+    ):
+        result = get_missing_models(model_set)
+    assert len(result) == len(model_set)
 
 
 def test_models_to_download_missing(tmp_path):
@@ -150,6 +171,60 @@ def test_preload_models_raises_model_not_cached_when_body_missing(tmp_path):
 
     def fake_get_cached_path(entry):
         return tmp_path / entry["filename"]
+
+    logic._install_model_cache()
+    saved_cache = dict(logic._MODEL_CACHE)
+    logic._MODEL_CACHE.clear()
+    try:
+        with patch("ZebrafishEmbryoAnalyzerLib.model_manifest.get_cached_path",
+                   side_effect=fake_get_cached_path):
+            with patch("ZebrafishEmbryoAnalyzerCore.length.load_model"):
+                with pytest.raises(ModelNotCachedError):
+                    logic.preload_models(
+                        {"curvature": False, "eyes": False}
+                    )
+    finally:
+        logic._MODEL_CACHE.clear()
+        logic._MODEL_CACHE.update(saved_cache)
+
+
+def test_analyse_images_raises_model_not_cached_when_body_corrupted(tmp_path, synthetic_fish_image):
+    """A present but checksum-mismatched body model file (truncated/interrupted
+    download) must raise ModelNotCachedError, the same as a genuinely missing file —
+    this is the real-world failure mode: torch.load() otherwise fails deep inside
+    analysis with a cryptic pickle error instead of the normal download-prompt flow."""
+    import cv2
+    from ZebrafishEmbryoAnalyzerLib.logic import analyse_images
+    from ZebrafishEmbryoAnalyzerLib.errors import ModelNotCachedError
+
+    img_path = str(tmp_path / "fish.png")
+    cv2.imwrite(img_path, synthetic_fish_image)
+
+    def fake_get_cached_path(entry):
+        p = tmp_path / entry["filename"]
+        p.write_bytes(b"truncated download, wrong content")
+        return p
+
+    with patch("ZebrafishEmbryoAnalyzerLib.model_manifest.get_cached_path",
+               side_effect=fake_get_cached_path):
+        with pytest.raises(ModelNotCachedError):
+            analyse_images(
+                [img_path],
+                {"length": True, "curvature": False, "ratio": False,
+                 "eyes": False, "hitl": False, "threshold": 0.85, "um_per_px": 22.99},
+            )
+
+
+def test_preload_models_raises_model_not_cached_when_body_corrupted(tmp_path):
+    """Same as the missing-file case above, but for a present, checksum-mismatched
+    file — must not be treated as usable."""
+    from ZebrafishEmbryoAnalyzerLib import logic
+    from ZebrafishEmbryoAnalyzerLib.errors import ModelNotCachedError
+
+    def fake_get_cached_path(entry):
+        p = tmp_path / entry["filename"]
+        p.write_bytes(b"truncated download, wrong content")
+        return p
 
     logic._install_model_cache()
     saved_cache = dict(logic._MODEL_CACHE)

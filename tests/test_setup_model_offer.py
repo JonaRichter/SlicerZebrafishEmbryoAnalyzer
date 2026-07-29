@@ -40,10 +40,15 @@ def test_collect_all_entries_covers_all_sets():
 
 
 def test_missing_excludes_cached(tmp_path):
-    """get_missing_models() excludes entries whose cache path exists with content."""
+    """get_missing_models() excludes entries whose cache path exists and matches
+    its pinned checksum."""
+    import hashlib
     import ZebrafishEmbryoAnalyzerLib.model_manifest as mm
 
-    all_entries = collect_all_model_entries()
+    data = b"dummy weights"
+    digest = hashlib.sha256(data).hexdigest()
+    all_entries = {eid: {**entry, "sha256": digest}
+                   for eid, entry in collect_all_model_entries().items()}
     # Pick two entries to mark as cached
     entry_ids = list(all_entries.keys())
     cached_ids = set(entry_ids[:2])
@@ -54,7 +59,7 @@ def test_missing_excludes_cached(tmp_path):
         for eid in cached_ids:
             entry = all_entries[eid]
             p = tmp_path / entry["filename"]
-            p.write_bytes(b"dummy weights")
+            p.write_bytes(data)
 
         missing = get_missing_models(all_entries)
     finally:
@@ -88,17 +93,22 @@ def test_missing_includes_zero_byte_file():
 
 
 def test_missing_empty_when_all_cached(tmp_path):
-    """get_missing_models() returns [] when all paths exist with content."""
+    """get_missing_models() returns [] when all paths exist and match their
+    pinned checksum."""
+    import hashlib
     import ZebrafishEmbryoAnalyzerLib.model_manifest as mm
 
-    all_entries = collect_all_model_entries()
+    data = b"dummy weights"
+    digest = hashlib.sha256(data).hexdigest()
+    all_entries = {eid: {**entry, "sha256": digest}
+                   for eid, entry in collect_all_model_entries().items()}
 
     orig = mm._CACHE_DIR
     mm._CACHE_DIR = tmp_path
     try:
         for entry in all_entries.values():
             p = tmp_path / entry["filename"]
-            p.write_bytes(b"dummy weights")
+            p.write_bytes(data)
 
         missing = get_missing_models(all_entries)
     finally:

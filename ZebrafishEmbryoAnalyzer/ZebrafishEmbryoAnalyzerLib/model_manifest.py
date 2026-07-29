@@ -195,7 +195,13 @@ def collect_all_model_entries() -> dict:
 
 def get_missing_models(model_set_dict: dict) -> list:
     """
-    Return model entries whose cached path does not exist or is empty.
+    Return model entries whose cached file is missing or fails checksum verification.
+
+    A truncated or corrupted download (present on disk, non-zero size, wrong
+    content — e.g. an interrupted transfer) must be treated the same as a
+    genuinely missing file. Otherwise it looks "cached" until deserialization
+    fails deep inside analysis with a cryptic pickle error instead of the normal
+    download-prompt flow.
 
     Parameters
     ----------
@@ -205,14 +211,9 @@ def get_missing_models(model_set_dict: dict) -> list:
     Returns
     -------
     list[dict]
-        Subset of model_set_dict.values() that are not yet cached.
+        Subset of model_set_dict.values() that are not yet correctly cached.
     """
-    missing = []
-    for entry in model_set_dict.values():
-        p = get_cached_path(entry)
-        try:
-            if not p.exists() or p.stat().st_size == 0:
-                missing.append(entry)
-        except OSError:
-            missing.append(entry)
-    return missing
+    return [
+        entry for entry in model_set_dict.values()
+        if not verify_checksum(get_cached_path(entry), entry["sha256"])
+    ]
