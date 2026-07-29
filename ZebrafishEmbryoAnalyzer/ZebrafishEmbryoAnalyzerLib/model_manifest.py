@@ -110,9 +110,11 @@ MODELS: dict = {
         "license": "LICENSE_PENDING",
         "preprocessing_compat": "v1",
     },
-    # Shared by Fast & Easy and Complex & Slower — the webapp names no edema file
-    # for either preset, so both fall through to this pipeline default. Only DESY
-    # ships its own (desy_edema). Unprefixed-by-preset id, same as curvature.
+    # The only non-DESY edema model, and it is 256px-era: the repo has no 512px
+    # general counterpart. The webapp falls back to it for its 512px preset too
+    # (no edema filename named there -> pipeline default), feeding a 256px-trained
+    # net 512px input. We deliberately do not follow that one step — see the
+    # "edema" comment in MODEL_SETS below.
     "default_edema": {
         "id": "default_edema",
         "repo_id": "markdanielarndt/Zebrafish_Segmentation",
@@ -209,9 +211,11 @@ MODELS: dict = {
 # ---------------------------------------------------------------------------
 
 MODEL_SETS: dict = {
-    # Every preset carries every role — the webapp gates none of the optional
-    # segmentations by preset, it only swaps the weights (and, for Fast & Easy,
-    # the swim bladder architecture; see fast_swimbladder's model_type).
+    # A preset offers "edema" only where a resolution-matched model exists:
+    # fast pairs the 256px default with 256px input, desy has its own 512px
+    # model. "general" runs at 512px but no 512px general edema model exists, so
+    # the role is omitted rather than silently running a 256px-trained net at
+    # 512px the way the webapp does. widget.py greys the checkbox out there.
     "fast": {
         "body": MODELS["fast_body"],
         "eye": MODELS["fast_eye"],
@@ -223,7 +227,6 @@ MODEL_SETS: dict = {
         "body": MODELS["general_body"],
         "eye": MODELS["general_eye"],
         "curvature": MODELS["curvature"],
-        "edema": MODELS["default_edema"],
         "swimbladder": MODELS["general_swimbladder"],
     },
     "desy": {

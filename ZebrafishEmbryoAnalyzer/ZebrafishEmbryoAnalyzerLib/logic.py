@@ -16,6 +16,15 @@ import tempfile
 
 _ML_PACKAGES = ("torch", "cv2", "segmentation_models_pytorch", "timm")
 
+# Only reachable through an inconsistent request — the widget greys the Edema
+# checkbox out for presets without a resolution-matched edema model. Raising
+# beats skipping silently, which would report a successful run with the edema
+# column quietly empty.
+_EDEMA_UNAVAILABLE = (
+    "Edema segmentation is not available for the {model_id!r} model. "
+    "Use the Fast & Easy or Fine-tuned DESY model instead."
+)
+
 
 def dependency_status() -> dict:
     """Return availability of optional ML/vision dependencies.
@@ -78,13 +87,17 @@ def preload_models(params: dict) -> None:
     """
     _install_model_cache()
     from ZebrafishEmbryoAnalyzerCore.length import load_model
-    from ZebrafishEmbryoAnalyzerLib.errors import ModelNotCachedError
+    from ZebrafishEmbryoAnalyzerLib.errors import AnalysisInputError, ModelNotCachedError
     from ZebrafishEmbryoAnalyzerLib.model_manifest import (
         MODEL_SETS, get_cached_path, MODELS, verify_checksum,
     )
 
     model_id = params.get("model_id", "general")
     model_set = MODEL_SETS.get(model_id, MODEL_SETS["general"])
+    # Validate the request before touching the filesystem, so an impossible ask
+    # is reported as such rather than as a missing download.
+    if params.get("edema", False) and "edema" not in model_set:
+        raise AnalysisInputError(_EDEMA_UNAVAILABLE.format(model_id=model_id))
 
     if params.get("curvature", True) and "curvature" not in _MODEL_CACHE:
         curvature_entry = MODELS["curvature"]
@@ -243,7 +256,7 @@ def analyse_images(image_paths: list, params: dict,
         compute_eye_metrics,
         compute_tube_metrics,
     )
-    from ZebrafishEmbryoAnalyzerLib.errors import ModelNotCachedError
+    from ZebrafishEmbryoAnalyzerLib.errors import AnalysisInputError, ModelNotCachedError
     from ZebrafishEmbryoAnalyzerLib.model_manifest import (
         MODEL_SETS, MODEL_TARGET_SIZE, get_cached_path, MODELS, verify_checksum,
     )
@@ -256,6 +269,10 @@ def analyse_images(image_paths: list, params: dict,
     model_id = params.get("model_id", "general")
     model_set = MODEL_SETS.get(model_id, MODEL_SETS["general"])
     target_size = MODEL_TARGET_SIZE.get(model_id, MODEL_TARGET_SIZE["general"])
+    # Validate the request before touching the filesystem, so an impossible ask
+    # is reported as such rather than as a missing download.
+    if include_edema and "edema" not in model_set:
+        raise AnalysisInputError(_EDEMA_UNAVAILABLE.format(model_id=model_id))
 
     # ---- validate required model files exist and are not corrupted before starting ----
     body_entry = model_set["body"]

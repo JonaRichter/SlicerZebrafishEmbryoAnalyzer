@@ -201,6 +201,31 @@ def test_analyse_images_raises_model_not_cached_when_swimbladder_missing(tmp_pat
             )
 
 
+@pytest.mark.parametrize("entry_point", ["analyse_images", "preload_models"])
+def test_edema_on_preset_without_edema_model_raises_clearly(tmp_path, synthetic_fish_image, entry_point):
+    """A request asking for edema under a preset that has none must fail with an
+    actionable message, not a bare KeyError and not a silently-empty column.
+
+    Only reachable through an inconsistent request (the widget greys the box
+    out), but a scene saved before the role was withdrawn is exactly that."""
+    import cv2
+    from ZebrafishEmbryoAnalyzerLib import logic
+    from ZebrafishEmbryoAnalyzerLib.errors import AnalysisInputError
+
+    img_path = str(tmp_path / "fish.png")
+    cv2.imwrite(img_path, synthetic_fish_image)
+
+    params = {"length": False, "curvature": False, "ratio": False,
+              "eyes": False, "edema": True, "hitl": False, "threshold": 0.85,
+              "um_per_px": 22.99, "model_id": "general"}
+
+    with pytest.raises(AnalysisInputError, match="not available"):
+        if entry_point == "analyse_images":
+            logic.analyse_images([img_path], params)
+        else:
+            logic.preload_models(params)
+
+
 def test_analyse_images_raises_model_not_cached_when_edema_missing(tmp_path, synthetic_fish_image):
     """A missing edema model file must raise ModelNotCachedError, not silently proceed."""
     import cv2

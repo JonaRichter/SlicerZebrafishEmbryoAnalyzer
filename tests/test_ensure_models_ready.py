@@ -118,14 +118,23 @@ def test_eyes_checked_eye_model_required():
         assert "curvature" in required
 
 
-@pytest.mark.parametrize("model_id", ["fast", "general", "desy"])
-def test_edema_checked_requires_edema_on_every_preset(model_id):
-    """Every preset ships an edema model (fast/general share the pipeline default,
-    DESY has its own), so checking the box must require one regardless of preset."""
+@pytest.mark.parametrize("model_id", ["fast", "desy"])
+def test_edema_checked_requires_edema_where_offered(model_id):
+    """Fast and DESY each have a resolution-matched edema model."""
     with _stub_slicer_env():
         widget = _make_widget(edema_checked=True)
         required = widget._required_model_entries(model_id)
         assert "edema" in required
+        assert "body" in required
+
+
+def test_edema_checked_not_required_on_general():
+    """"general" has no edema model, so a stale checked state must not gate the
+    Run button on a download that could never satisfy it."""
+    with _stub_slicer_env():
+        widget = _make_widget(edema_checked=True)
+        required = widget._required_model_entries("general")
+        assert "edema" not in required
         assert "body" in required
 
 

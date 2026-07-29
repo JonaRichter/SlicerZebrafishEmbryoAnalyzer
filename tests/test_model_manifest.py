@@ -85,21 +85,21 @@ def test_model_sets_has_all_three_presets():
 
 
 @pytest.mark.parametrize("variant", ["fast", "general", "desy"])
-def test_model_set_has_every_role(variant):
-    """The webapp gates no optional segmentation by preset — all three offer
-    body, eye, curvature, edema and swim bladder, differing only in weights
-    (and, for Fast & Easy, input resolution + swim bladder architecture)."""
-    required_roles = {"body", "eye", "curvature", "edema", "swimbladder"}
-    assert required_roles == set(MODEL_SETS[variant].keys())
+def test_model_set_has_every_always_available_role(variant):
+    """Body, eye, curvature and swim bladder exist for every preset — the webapp
+    gates none of them, and a resolution-matched model exists for each."""
+    always = {"body", "eye", "curvature", "swimbladder"}
+    assert always.issubset(set(MODEL_SETS[variant].keys()))
 
 
-def test_edema_shared_between_fast_and_general_but_not_desy():
-    """Fast & Easy and Complex & Slower both name no edema file in the webapp's
-    preset table, so both fall through to the same pipeline default; only DESY
-    ships its own."""
+def test_edema_offered_only_where_resolution_matches():
+    """Edema is the one role without a model for every resolution: the repo has
+    a 256px default and a 512px DESY model, but no 512px general one. Rather
+    than run the 256px net at 512px the way the webapp does, "general" omits the
+    role entirely and widget.py greys the checkbox out there."""
     assert MODEL_SETS["fast"]["edema"] is MODELS["default_edema"]
-    assert MODEL_SETS["general"]["edema"] is MODELS["default_edema"]
     assert MODEL_SETS["desy"]["edema"] is MODELS["desy_edema"]
+    assert "edema" not in MODEL_SETS["general"]
 
 
 def test_desy_edema_distinct_from_default_edema():

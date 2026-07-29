@@ -325,6 +325,17 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         # created above and stays wired into settings/parameter-node sync.
         # an_layout.addWidget(self._chk_hitl)
 
+        # Shown only while the selected preset has no edema model. Disabled with
+        # an explanation rather than hidden, so the option stays discoverable and
+        # the way to reach it is stated.
+        self._edema_hint = qt.QLabel(
+            "Edema needs a model matching the preset's resolution — available "
+            "under Fast & Easy or Fine-tuned DESY."
+        )
+        self._edema_hint.setStyleSheet("color: #888; font-size: 11px;")
+        self._edema_hint.setWordWrap(True)
+        an_layout.addWidget(self._edema_hint)
+
         self._threshold_slider = ctk.ctkSliderWidget()
         self._threshold_slider.minimum    = 0.0
         self._threshold_slider.maximum    = 1.0
@@ -447,6 +458,8 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._threshold_slider.valueChanged.connect(self._notify_settings_changed)
         self._um_per_px.valueChanged.connect(self._notify_settings_changed)
         self._model_combo.currentIndexChanged.connect(self._notify_settings_changed)
+        self._model_combo.currentIndexChanged.connect(self._update_edema_availability)
+        self._update_edema_availability()
 
     def _on_load_folder(self):
         if self._cancel_load_if_running():
@@ -582,6 +595,22 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             return False
         self._load_cancelled = True
         return True
+
+    def _update_edema_availability(self):
+        """Enable Edema only for presets that ship a resolution-matched model.
+
+        Uncheck rather than merely disable when unavailable: a checked-but-hidden
+        state left over from another preset would otherwise reach the analysis
+        request and fail there instead of in the UI.
+        """
+        from ZebrafishEmbryoAnalyzerLib.model_manifest import MODEL_SETS
+        model_id = self._model_combo.currentData or _DEFAULT_MODEL_ID
+        model_set = MODEL_SETS.get(model_id, MODEL_SETS[_DEFAULT_MODEL_ID])
+        available = "edema" in model_set
+        if not available:
+            self._chk_edema.setChecked(False)
+        self._chk_edema.setEnabled(available)
+        self._edema_hint.setVisible(not available)
 
     def _required_model_entries(self, model_id):
         """Return the model entries required by the current settings."""
@@ -958,6 +987,11 @@ class ZebrafishEmbryoAnalyzerMainWidget:
                 if self._model_combo.itemData(i) == model_id:
                     self._model_combo.setCurrentIndex(i)
                     break
+            # setCurrentIndex does not fire currentIndexChanged when the index is
+            # already correct, so re-derive explicitly. Without this, a scene
+            # saved with Edema checked under a preset that has no edema model
+            # would restore that checked state.
+            self._update_edema_availability()
         finally:
             self._updatingGUIFromParameterNode = False
 
