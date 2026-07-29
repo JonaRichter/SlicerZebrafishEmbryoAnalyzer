@@ -658,12 +658,46 @@ def apply_mask(original_image, mask):
 
     return masked_image
 
+def select_torch_device(torch, probe_model=None, probe_input_shape=(1, 3, 256, 256)):
+    """Pick a usable torch device, falling back to CPU when CUDA is unusable.
+
+    torch.cuda.is_available() only confirms a CUDA runtime/driver is present,
+    not that the installed build's compiled kernels cover this GPU's compute
+    capability. On a mismatch, a real kernel launch fails with "CUDA error: no
+    kernel image is available for execution on the device".
+
+    A trivial canary op (e.g. a bare add) is not a reliable stand-in for that
+    check: observed on real hardware to succeed — after a slow one-time CUDA
+    context/JIT warmup — on a GPU where the model's own conv/batchnorm kernels
+    still failed immediately afterwards. Probing with the real model on a dummy
+    input of its expected shape exercises the same kernels the model actually
+    uses, so the failure (if any) shows up here instead of mid-analysis.
+    When probe_model is None (no model to test yet), only is_available() is
+    checked.
+    """
+    if not torch.cuda.is_available():
+        return torch.device("cpu")
+    if probe_model is None:
+        return torch.device("cuda")
+    try:
+        probe_model.to("cuda")
+        with torch.no_grad():
+            probe_model(torch.zeros(*probe_input_shape, device="cuda"))
+        return torch.device("cuda")
+    except RuntimeError:
+        probe_model.to("cpu")
+        return torch.device("cpu")
+
+
 def classification_curvature(image, mask, model, use_threshold, threshold):
     import torch
     import torch.nn.functional as F
     import torchvision.transforms as T
     import cv2  # deferred: only needed at call time
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # The model's actual device reflects whatever load_model's CUDA probe decided —
+    # recomputing availability independently here could disagree with it and feed a
+    # cuda tensor to a cpu-fallback model (or vice versa).
+    device = next(model.parameters()).device
 
     masked_image = apply_mask(image, mask)
 
@@ -714,7 +748,6 @@ def load_model(model_path: str):
     import torch.nn as nn
     import torch.nn.functional as F
     import timm
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     import logging as _logging
     _log = _logging.getLogger(__name__)
@@ -752,7 +785,9 @@ def load_model(model_path: str):
     _log.debug("Using curvature model params: %s", best_params)
 
     try:
-        state_dict = torch.load(model_path, map_location=device, weights_only=True)
+        # Always deserialize to CPU first — the final device is decided below, after
+        # the model is built, by actually probing it (see select_torch_device).
+        state_dict = torch.load(model_path, map_location=torch.device("cpu"), weights_only=True)
     except Exception as exc:
         raise RuntimeError(
             f"Failed to load curvature model from {model_path!r} with safe loading. "
@@ -786,9 +821,11 @@ def load_model(model_path: str):
             f"Curvature checkpoint at {model_path!r} is missing required keys: {missing}. "
             "The checkpoint may be incomplete or incompatible. Re-download the model."
         )
-    model = model_instance.to(device)
-    model.eval()
-    return model
+    # Decide the device by actually probing model_instance (see select_torch_device) —
+    # it moves the model to its final device itself, cuda or a cpu fallback.
+    select_torch_device(torch, probe_model=model_instance)
+    model_instance.eval()
+    return model_instance
 
 
 def plot_edges_with_curvature(mask, min_contour_length, window_size_ratio):

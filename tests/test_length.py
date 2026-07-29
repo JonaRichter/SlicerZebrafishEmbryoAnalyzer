@@ -2,6 +2,87 @@ import numpy as np
 import pytest
 
 
+class _FakeModel:
+    """Minimal nn.Module stand-in for select_torch_device's real-model probe."""
+
+    def __init__(self, cuda_functional=True):
+        self.cuda_functional = cuda_functional
+        self.device = "cpu"
+
+    def to(self, device):
+        self.device = device
+        return self
+
+    def __call__(self, x):
+        if self.device == "cuda" and not self.cuda_functional:
+            raise RuntimeError("CUDA error: no kernel image is available for execution on the device")
+        return x
+
+
+class _NoGradCtx:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _FakeTorch:
+    """Minimal torch stand-in for select_torch_device — no real torch/CUDA needed."""
+
+    def __init__(self, cuda_available):
+        self._cuda_available = cuda_available
+
+    class cuda:
+        pass
+
+    def zeros(self, *args, device=None, **kwargs):
+        return f"tensor(device={device})"
+
+    def device(self, name):
+        return f"device:{name}"
+
+    def no_grad(self):
+        return _NoGradCtx()
+
+
+def _make_fake_torch(cuda_available):
+    fake = _FakeTorch(cuda_available)
+    fake.cuda.is_available = lambda: cuda_available
+    return fake
+
+
+def test_select_torch_device_no_cuda_returns_cpu():
+    from ZebrafishEmbryoAnalyzerCore.length import select_torch_device
+    fake_torch = _make_fake_torch(cuda_available=False)
+    assert select_torch_device(fake_torch, probe_model=_FakeModel()) == "device:cpu"
+
+
+def test_select_torch_device_no_probe_model_checks_availability_only():
+    from ZebrafishEmbryoAnalyzerCore.length import select_torch_device
+    fake_torch = _make_fake_torch(cuda_available=True)
+    assert select_torch_device(fake_torch) == "device:cuda"
+
+
+def test_select_torch_device_functional_cuda_returns_cuda():
+    from ZebrafishEmbryoAnalyzerCore.length import select_torch_device
+    fake_torch = _make_fake_torch(cuda_available=True)
+    model = _FakeModel(cuda_functional=True)
+    assert select_torch_device(fake_torch, probe_model=model) == "device:cuda"
+    assert model.device == "cuda"
+
+
+def test_select_torch_device_broken_cuda_falls_back_to_cpu():
+    """CUDA reports available but a real forward pass through the model fails
+    (e.g. unsupported compute capability) — must fall back to CPU on the model
+    itself, not just report cpu while leaving the model stuck on cuda."""
+    from ZebrafishEmbryoAnalyzerCore.length import select_torch_device
+    fake_torch = _make_fake_torch(cuda_available=True)
+    model = _FakeModel(cuda_functional=False)
+    assert select_torch_device(fake_torch, probe_model=model) == "device:cpu"
+    assert model.device == "cpu"
+
+
 @pytest.fixture
 def line_mask():
     mask = np.zeros((20, 256), dtype=bool)
