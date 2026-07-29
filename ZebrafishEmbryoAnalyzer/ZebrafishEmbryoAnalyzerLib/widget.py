@@ -19,10 +19,14 @@ from ZebrafishEmbryoAnalyzerLib.errors import AnalysisInputError, MRMLAdapterErr
 # Model registry — (display_label, stable_id, (body_file, encoder, eye_file))
 # ---------------------------------------------------------------------------
 
+# Display labels are the webapp's verbatim, so users recognise the same three
+# presets in both tools. The stable ids are not: they are persisted in the
+# parameter node and travel inside saved scenes, so renaming one would silently
+# reset a reloaded scene to the default preset.
 _MODEL_ENTRIES = [
-    ("Fast & Easy (256px)", "fast",    ("best_model_body_3400_vgg19.pth",    "vgg19", None)),
-    ("General Model",       "general", ("best_model_body_512.pth",           "vgg19", None)),
-    ("Fine-tuned DESY",     "desy",    ("desy_body_512_finetuned.pth",       "vgg19", "desy_eye_512_finetuned.pth")),
+    ("Fast & Easy (256 px, ~2s/image)",     "fast",    ("best_model_body_3400_vgg19.pth", "vgg19", None)),
+    ("Complex & Slower (512 px, ~7s/image)", "general", ("best_model_body_512.pth",        "vgg19", None)),
+    ("Fine-tuned DESY",                     "desy",    ("desy_body_512_finetuned.pth",    "vgg19", "desy_eye_512_finetuned.pth")),
 ]
 _MODEL_BY_ID  = {mid: data for _, mid, data in _MODEL_ENTRIES}
 _DEFAULT_MODEL_ID = "general"
