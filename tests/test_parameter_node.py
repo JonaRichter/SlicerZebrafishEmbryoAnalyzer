@@ -260,6 +260,7 @@ def test_update_gui_applies_bool_and_float_values():
         w._chk_edema     = MagicMock()
         w._chk_swimbladder = MagicMock()
         w._edema_hint    = MagicMock()
+        w._fast_preset_hint = MagicMock()
         w._chk_hitl      = MagicMock()
         w._threshold_slider = MagicMock()
         w._um_per_px     = MagicMock()
@@ -302,6 +303,7 @@ def test_update_gui_unknown_model_id_falls_back_to_first():
         w._chk_edema     = MagicMock()
         w._chk_swimbladder = MagicMock()
         w._edema_hint    = MagicMock()
+        w._fast_preset_hint = MagicMock()
         w._chk_hitl      = MagicMock()
         w._threshold_slider = MagicMock()
         w._um_per_px     = MagicMock()
@@ -336,6 +338,7 @@ def test_update_gui_missing_params_use_defaults():
         w._chk_edema     = MagicMock()
         w._chk_swimbladder = MagicMock()
         w._edema_hint    = MagicMock()
+        w._fast_preset_hint = MagicMock()
         w._chk_hitl      = MagicMock()
         w._threshold_slider = MagicMock()
         w._um_per_px     = MagicMock()
@@ -519,6 +522,7 @@ def test_round_trip_preserves_all_values():
         w2._chk_edema     = MagicMock()
         w2._chk_swimbladder = MagicMock()
         w2._edema_hint    = MagicMock()
+        w2._fast_preset_hint = MagicMock()
         w2._chk_hitl      = MagicMock()
         w2._threshold_slider = MagicMock()
         w2._um_per_px     = MagicMock()
@@ -1004,6 +1008,7 @@ def test_update_gui_invalid_bool_string_falls_back():
         w._chk_edema     = MagicMock()
         w._chk_swimbladder = MagicMock()
         w._edema_hint    = MagicMock()
+        w._fast_preset_hint = MagicMock()
         w._chk_hitl      = MagicMock()
         w._threshold_slider = MagicMock()
         w._um_per_px     = MagicMock()
@@ -1049,6 +1054,7 @@ def test_update_gui_nan_and_infinity_fall_back():
             w._chk_edema     = MagicMock()
             w._chk_swimbladder = MagicMock()
             w._edema_hint    = MagicMock()
+            w._fast_preset_hint = MagicMock()
             w._chk_hitl      = MagicMock()
             w._threshold_slider = MagicMock()
             w._um_per_px     = MagicMock()
@@ -1091,6 +1097,7 @@ def test_update_gui_out_of_range_numeric_falls_back():
         w._chk_edema     = MagicMock()
         w._chk_swimbladder = MagicMock()
         w._edema_hint    = MagicMock()
+        w._fast_preset_hint = MagicMock()
         w._chk_hitl      = MagicMock()
         w._threshold_slider = MagicMock()
         w._um_per_px     = MagicMock()
@@ -1132,6 +1139,7 @@ def test_update_gui_non_numeric_string_no_exception():
         w._chk_edema     = MagicMock()
         w._chk_swimbladder = MagicMock()
         w._edema_hint    = MagicMock()
+        w._fast_preset_hint = MagicMock()
         w._chk_hitl      = MagicMock()
         w._threshold_slider = MagicMock()
         w._um_per_px     = MagicMock()
@@ -1225,6 +1233,77 @@ def test_model_config_contract():
         assert desy[1] == "vgg19",                        desy
         assert desy[2] == "desy_eye_512_finetuned.pth",  desy
 
+        fast = _MODEL_BY_ID["fast"]
+        assert fast[0] == "best_model_body_3400_vgg19.pth", fast
+        assert fast[1] == "vgg19",                          fast
+        assert fast[2] is None,                             fast
+
+        print("OK")
+    """)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout
+
+
+def test_fast_preset_disables_and_unchecks_optional_segmentation():
+    """Selecting Fast & Easy must disable AND uncheck Eye/Edema/Swim Bladder (not
+    just disable) so a stale checked state can never reach an analysis request,
+    and show the Fast & Easy hint."""
+    r = _run(_MAIN_WIDGET_STUB, """
+        from unittest.mock import MagicMock
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
+
+        w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
+        w._chk_eyes = MagicMock()
+        w._chk_eyes.isChecked.return_value = True
+        w._chk_edema = MagicMock()
+        w._chk_edema.isChecked.return_value = True
+        w._chk_swimbladder = MagicMock()
+        w._chk_swimbladder.isChecked.return_value = True
+        w._edema_hint = MagicMock()
+        w._fast_preset_hint = MagicMock()
+        w._model_combo = MagicMock()
+        w._model_combo.currentData = "fast"
+
+        w._update_optional_segmentation_availability()
+
+        w._chk_eyes.setChecked.assert_called_once_with(False)
+        w._chk_eyes.setEnabled.assert_called_once_with(False)
+        w._chk_edema.setChecked.assert_called_once_with(False)
+        w._chk_edema.setEnabled.assert_called_once_with(False)
+        w._chk_swimbladder.setChecked.assert_called_once_with(False)
+        w._chk_swimbladder.setEnabled.assert_called_once_with(False)
+        w._fast_preset_hint.setVisible.assert_called_once_with(True)
+        print("OK")
+    """)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout
+
+
+def test_desy_preset_enables_all_optional_segmentation():
+    """DESY offers eye/edema/swim bladder — none should be force-disabled, and the
+    Fast & Easy hint must be hidden."""
+    r = _run(_MAIN_WIDGET_STUB, """
+        from unittest.mock import MagicMock
+        from ZebrafishEmbryoAnalyzerLib.widget import ZebrafishEmbryoAnalyzerMainWidget
+
+        w = object.__new__(ZebrafishEmbryoAnalyzerMainWidget)
+        w._chk_eyes = MagicMock()
+        w._chk_edema = MagicMock()
+        w._chk_swimbladder = MagicMock()
+        w._edema_hint = MagicMock()
+        w._fast_preset_hint = MagicMock()
+        w._model_combo = MagicMock()
+        w._model_combo.currentData = "desy"
+
+        w._update_optional_segmentation_availability()
+
+        w._chk_eyes.setEnabled.assert_called_once_with(True)
+        w._chk_eyes.setChecked.assert_not_called()
+        w._chk_edema.setEnabled.assert_called_once_with(True)
+        w._chk_edema.setChecked.assert_not_called()
+        w._chk_swimbladder.setEnabled.assert_called_once_with(True)
+        w._chk_swimbladder.setChecked.assert_not_called()
+        w._fast_preset_hint.setVisible.assert_called_once_with(False)
         print("OK")
     """)
     assert r.returncode == 0, r.stderr
@@ -1325,6 +1404,7 @@ def test_update_gui_after_reset_applies_node_um_per_px():
         w._chk_edema     = MagicMock()
         w._chk_swimbladder = MagicMock()
         w._edema_hint    = MagicMock()
+        w._fast_preset_hint = MagicMock()
         w._chk_hitl      = MagicMock()
         w._threshold_slider = MagicMock()
         w._model_combo   = MagicMock()

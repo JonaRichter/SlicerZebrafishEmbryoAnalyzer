@@ -20,8 +20,9 @@ from ZebrafishEmbryoAnalyzerLib.errors import AnalysisInputError, MRMLAdapterErr
 # ---------------------------------------------------------------------------
 
 _MODEL_ENTRIES = [
-    ("General Model",   "general", ("best_model_body_512.pth",           "vgg19", None)),
-    ("Fine-tuned DESY", "desy",    ("desy_body_512_finetuned.pth",       "vgg19", "desy_eye_512_finetuned.pth")),
+    ("Fast & Easy (256px)", "fast",    ("best_model_body_3400_vgg19.pth",    "vgg19", None)),
+    ("General Model",       "general", ("best_model_body_512.pth",           "vgg19", None)),
+    ("Fine-tuned DESY",     "desy",    ("desy_body_512_finetuned.pth",       "vgg19", "desy_eye_512_finetuned.pth")),
 ]
 _MODEL_BY_ID  = {mid: data for _, mid, data in _MODEL_ENTRIES}
 _DEFAULT_MODEL_ID = "general"
@@ -328,6 +329,15 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._edema_hint.setWordWrap(True)
         an_layout.addWidget(self._edema_hint)
 
+        # Fast & Easy trades eye/edema/swim bladder support for speed (256px vs
+        # 512px — see MODEL_TARGET_SIZE in model_manifest.py).
+        self._fast_preset_hint = qt.QLabel(
+            "Fast & Easy has no eye, edema, or swim bladder support."
+        )
+        self._fast_preset_hint.setStyleSheet("color: #888; font-size: 11px;")
+        self._fast_preset_hint.setWordWrap(True)
+        an_layout.addWidget(self._fast_preset_hint)
+
         self._threshold_slider = ctk.ctkSliderWidget()
         self._threshold_slider.minimum    = 0.0
         self._threshold_slider.maximum    = 1.0
@@ -450,8 +460,8 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._threshold_slider.valueChanged.connect(self._notify_settings_changed)
         self._um_per_px.valueChanged.connect(self._notify_settings_changed)
         self._model_combo.currentIndexChanged.connect(self._notify_settings_changed)
-        self._model_combo.currentIndexChanged.connect(self._update_edema_availability)
-        self._update_edema_availability()
+        self._model_combo.currentIndexChanged.connect(self._update_optional_segmentation_availability)
+        self._update_optional_segmentation_availability()
 
     def _on_load_folder(self):
         if self._cancel_load_if_running():
@@ -588,21 +598,35 @@ class ZebrafishEmbryoAnalyzerMainWidget:
         self._load_cancelled = True
         return True
 
-    def _update_edema_availability(self):
-        """Enable Edema only for a model set that actually has an edema model.
-
-        The webapp's General preset has no edema model — only DESY does. Uncheck
-        rather than just disable when unavailable, so a stale checked state from
-        a previous model selection can never reach an analysis request.
+    def _update_optional_segmentation_availability(self):
+        """Enable/uncheck Eye, Edema, and Swim Bladder based on what the selected
+        model set actually offers — the webapp's three presets don't all support
+        the same optional segmentations (Fast & Easy: none; General: eye + swim
+        bladder; DESY: all three). Uncheck rather than just disable when
+        unavailable, so a stale checked state from a previous model selection can
+        never reach an analysis request.
         """
         from ZebrafishEmbryoAnalyzerLib.model_manifest import MODEL_SETS
         model_id = self._model_combo.currentData or _DEFAULT_MODEL_ID
         model_set = MODEL_SETS.get(model_id, MODEL_SETS[_DEFAULT_MODEL_ID])
-        available = "edema" in model_set
-        if not available:
+
+        eyes_available = "eye" in model_set
+        if not eyes_available:
+            self._chk_eyes.setChecked(False)
+        self._chk_eyes.setEnabled(eyes_available)
+
+        edema_available = "edema" in model_set
+        if not edema_available:
             self._chk_edema.setChecked(False)
-        self._chk_edema.setEnabled(available)
-        self._edema_hint.setVisible(not available)
+        self._chk_edema.setEnabled(edema_available)
+        self._edema_hint.setVisible(not edema_available)
+
+        swim_available = "swimbladder" in model_set
+        if not swim_available:
+            self._chk_swimbladder.setChecked(False)
+        self._chk_swimbladder.setEnabled(swim_available)
+
+        self._fast_preset_hint.setVisible(model_id == "fast")
 
     def _required_model_entries(self, model_id):
         """Return the model entries required by the current settings."""
@@ -982,7 +1006,7 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             # setCurrentIndex above may not fire currentIndexChanged if the index was
             # already correct (e.g. re-applying the same node) — re-derive explicitly
             # so a stale checked-but-unavailable Edema state can never survive a reload.
-            self._update_edema_availability()
+            self._update_optional_segmentation_availability()
         finally:
             self._updatingGUIFromParameterNode = False
 

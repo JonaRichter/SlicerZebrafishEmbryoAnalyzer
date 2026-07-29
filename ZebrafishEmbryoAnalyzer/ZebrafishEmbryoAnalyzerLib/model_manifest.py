@@ -40,10 +40,22 @@ _CACHE_DIR = _default_cache_dir()
 # ---------------------------------------------------------------------------
 
 MODELS: dict = {
-    # 512px checkpoints — matches the live webapp's current "Complex & Slower (512px)"
-    # preset. Superseded the older 256px best_model_body_3400_vgg19.pth /
-    # best_model_eye_3400.pth files; segmentation_pipeline's target_size default
-    # moved to (512, 512) to match (see seg.py).
+    # The webapp offers three presets, not two: "Fast & Easy" (256px, body only,
+    # no eye/edema/swim bladder — this entry), "Complex & Slower" (512px, see
+    # general_body below), and "Fine-tuned DESY" (512px). Body-only — the webapp's
+    # own Fast & Easy preset has no eye model either (eye_hf_filename=None).
+    "fast_body": {
+        "id": "fast_body",
+        "repo_id": "markdanielarndt/Zebrafish_Segmentation",
+        "filename": "best_model_body_3400_vgg19.pth",
+        "revision": "237d21d6d7538fc5b661bf43b70f378f945991ee",
+        "label": "Body segmentation model (256px, Fast & Easy)",
+        "encoder": "vgg19",
+        "sha256": "624e9ef0ab447aee7b95a058596c048f033a8255bc850f3a238b5606ea71ae65",
+        "size_bytes": 116_289_435,
+        "license": "LICENSE_PENDING",
+        "preprocessing_compat": "v1",
+    },
     "general_body": {
         "id": "general_body",
         "repo_id": "markdanielarndt/Zebrafish_Segmentation",
@@ -167,6 +179,14 @@ MODELS: dict = {
 # ---------------------------------------------------------------------------
 
 MODEL_SETS: dict = {
+    # No "eye"/"edema"/"swimbladder" keys — the webapp's Fast & Easy preset offers
+    # none of those (body + curvature only). widget.py disables and unchecks those
+    # checkboxes when this preset is selected, mirroring the existing DESY-only
+    # edema gating.
+    "fast": {
+        "body": MODELS["fast_body"],
+        "curvature": MODELS["curvature"],
+    },
     "general": {
         "body": MODELS["general_body"],
         "eye": MODELS["general_eye"],
@@ -180,6 +200,17 @@ MODEL_SETS: dict = {
         "edema": MODELS["desy_edema"],
         "swimbladder": MODELS["desy_swimbladder"],
     },
+}
+
+# Per-preset segmentation_pipeline() target_size, matching the webapp's own
+# per-preset resolution (see SEG_MODEL_OPTIONS in the webapp's app.py). Kept
+# separate from MODEL_SETS so every value there stays a model-entry dict —
+# get_missing_models()/verify_checksum() iterate MODEL_SETS[...].values()
+# expecting exactly that shape.
+MODEL_TARGET_SIZE: dict = {
+    "fast": (256, 256),
+    "general": (512, 512),
+    "desy": (512, 512),
 }
 
 

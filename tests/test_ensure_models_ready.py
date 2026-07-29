@@ -167,6 +167,19 @@ def test_swimbladder_unchecked_not_required():
         assert "body" in required
 
 
+def test_fast_preset_ignores_checked_eyes_edema_swimbladder():
+    """The Fast & Easy preset has none of these models — even if the checkboxes
+    are (stale-)checked, _required_model_entries must not require them."""
+    with _stub_slicer_env():
+        widget = _make_widget(eyes_checked=True, edema_checked=True, swimbladder_checked=True)
+        required = widget._required_model_entries("fast")
+        assert "eye" not in required
+        assert "edema" not in required
+        assert "swimbladder" not in required
+        assert "body" in required
+        assert "curvature" in required
+
+
 def test_curvature_unchecked_not_required():
     with _stub_slicer_env():
         widget = _make_widget(curvature_checked=False)

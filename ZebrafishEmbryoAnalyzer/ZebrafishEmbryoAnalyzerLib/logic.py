@@ -245,7 +245,7 @@ def analyse_images(image_paths: list, params: dict,
     )
     from ZebrafishEmbryoAnalyzerLib.errors import ModelNotCachedError
     from ZebrafishEmbryoAnalyzerLib.model_manifest import (
-        MODEL_SETS, get_cached_path, MODELS, verify_checksum,
+        MODEL_SETS, MODEL_TARGET_SIZE, get_cached_path, MODELS, verify_checksum,
     )
 
     um_per_px = float(params.get("um_per_px", 22.99))
@@ -255,6 +255,7 @@ def analyse_images(image_paths: list, params: dict,
 
     model_id = params.get("model_id", "general")
     model_set = MODEL_SETS.get(model_id, MODEL_SETS["general"])
+    target_size = MODEL_TARGET_SIZE.get(model_id, MODEL_TARGET_SIZE["general"])
 
     # ---- validate required model files exist and are not corrupted before starting ----
     body_entry = model_set["body"]
@@ -306,6 +307,7 @@ def analyse_images(image_paths: list, params: dict,
     # after each one, keeping the UI responsive. The cached _load_unet_model
     # means model weights are only read from disk once across all calls.
     _seg_kwargs = dict(
+        target_size=target_size,
         include_eyes=include_eyes,
         include_edema=include_edema,
         include_swimbladder=include_swimbladder,
@@ -372,7 +374,7 @@ def analyse_images(image_paths: list, params: dict,
             edema_bin = (edema > 0) if edema is not None else None
 
             h_orig, w_orig = orig_bgr.shape[:2]
-            mask_h, mask_w = mask.shape[:2] if mask is not None else (256, 256)
+            mask_h, mask_w = mask.shape[:2] if mask is not None else target_size
             spacing = (
                 um_per_px * h_orig / mask_h,
                 um_per_px * w_orig / mask_w,

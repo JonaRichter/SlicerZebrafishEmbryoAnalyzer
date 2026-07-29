@@ -109,6 +109,34 @@ def test_model_set_edema_desy_only():
     assert "edema" not in MODEL_SETS["general"]
 
 
+def test_fast_preset_has_only_body_and_curvature():
+    """The webapp's Fast & Easy preset has no eye/edema/swim bladder model at all
+    (not just disabled — genuinely absent from the preset)."""
+    fast = MODEL_SETS["fast"]
+    assert "body" in fast
+    assert "curvature" in fast
+    assert "eye" not in fast
+    assert "edema" not in fast
+    assert "swimbladder" not in fast
+
+
+def test_fast_body_is_distinct_from_general_body():
+    """fast_body (256px) must not be confused with general_body (512px) —
+    same underlying webapp repo, genuinely different files/resolutions."""
+    fast = MODELS["fast_body"]
+    general = MODELS["general_body"]
+    assert fast["filename"] != general["filename"]
+    assert fast["sha256"] != general["sha256"]
+
+
+def test_model_target_size_covers_every_preset():
+    from ZebrafishEmbryoAnalyzerLib.model_manifest import MODEL_TARGET_SIZE
+    assert set(MODEL_TARGET_SIZE.keys()) == set(MODEL_SETS.keys())
+    assert MODEL_TARGET_SIZE["fast"] == (256, 256)
+    assert MODEL_TARGET_SIZE["general"] == (512, 512)
+    assert MODEL_TARGET_SIZE["desy"] == (512, 512)
+
+
 def test_model_set_swimbladder_available_on_both_presets():
     """Design decision (#72): unlike edema, the webapp offers swim bladder on both
     the General and DESY presets — so it's wired into both MODEL_SETS, mirroring
