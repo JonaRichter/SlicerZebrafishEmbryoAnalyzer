@@ -31,6 +31,7 @@ _LIB_MODULES = (
     "ZebrafishEmbryoAnalyzerLib.export",
     "ZebrafishEmbryoAnalyzerLib.dependency_installer",
     "ZebrafishEmbryoAnalyzerLib.zoom_view",
+    "ZebrafishEmbryoAnalyzerLib.bug_report",
 )
 
 def _evict_lib_modules():
