@@ -1303,7 +1303,9 @@ class ZebrafishEmbryoAnalyzerMainWidget:
             slicer.util.infoDisplay(
                 "Bug report copied to clipboard and saved to:\n"
                 f"{path}\n\n"
-                "Paste it into a new issue on JonaRichter/SlicerZebrafishEmbryoAnalyzer."
+                # No repository name on purpose: the extension outlives any single
+                # fork, and README.md points users the same way.
+                "Paste it into a new issue in the extension's repository."
             )
         except Exception as e:
             logging.exception("Bug report generation failed: %s", e)
