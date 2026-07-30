@@ -22,8 +22,8 @@ _MRML_PY = os.path.join(
 # TABLE_SCHEMA contract
 # ---------------------------------------------------------------------------
 
-def test_schema_has_exactly_seven_columns():
-    assert len(TABLE_SCHEMA) == 7
+def test_schema_has_exactly_ten_columns():
+    assert len(TABLE_SCHEMA) == 10
 
 
 def test_schema_column_names_in_order():
@@ -35,6 +35,9 @@ def test_schema_column_names_in_order():
         "LengthStraightRatio",
         "EyeArea_um2",
         "EyeDiameter_um",
+        "EdemaArea_um2",
+        "SwimBladderArea_um2",
+        "SwimBladderWidth_um",
         "Error",
     ]
 

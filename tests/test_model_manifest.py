@@ -73,22 +73,78 @@ def test_model_entry_has_required_fields(model_id, entry):
 
 
 def test_models_has_all_expected_ids():
-    expected = {"general_body", "general_eye", "general_edema", "curvature", "desy_body", "desy_eye"}
+    expected = {"fast_body", "fast_eye", "fast_swimbladder",
+                "general_body", "general_eye", "general_swimbladder",
+                "default_edema", "curvature",
+                "desy_body", "desy_eye", "desy_edema", "desy_swimbladder"}
     assert expected.issubset(set(MODELS.keys()))
 
 
-def test_model_sets_has_general_and_desy():
-    assert "general" in MODEL_SETS
-    assert "desy" in MODEL_SETS
+def test_model_sets_has_all_three_presets():
+    assert set(MODEL_SETS.keys()) == {"fast", "general", "desy"}
 
 
-@pytest.mark.parametrize("variant", ["general", "desy"])
-def test_model_set_has_all_roles(variant):
-    required_roles = {"body", "eye", "curvature"}
-    assert required_roles.issubset(set(MODEL_SETS[variant].keys()))
-    # edema is intentionally excluded from MODEL_SETS to avoid gating the Run
-    # button on a model that is not yet used (include_edema defaults to False).
-    assert "edema" not in MODEL_SETS[variant]
+@pytest.mark.parametrize("variant", ["fast", "general", "desy"])
+def test_model_set_has_every_always_available_role(variant):
+    """Body, eye, curvature and swim bladder exist for every preset — the webapp
+    gates none of them, and a resolution-matched model exists for each."""
+    always = {"body", "eye", "curvature", "swimbladder"}
+    assert always.issubset(set(MODEL_SETS[variant].keys()))
+
+
+def test_edema_offered_only_where_resolution_matches():
+    """Edema is the one role without a model for every resolution: the repo has
+    a 256px default and a 512px DESY model, but no 512px general one. Rather
+    than run the 256px net at 512px the way the webapp does, "general" omits the
+    role entirely and widget.py greys the checkbox out there."""
+    assert MODEL_SETS["fast"]["edema"] is MODELS["default_edema"]
+    assert MODEL_SETS["desy"]["edema"] is MODELS["desy_edema"]
+    assert "edema" not in MODEL_SETS["general"]
+
+
+def test_desy_edema_distinct_from_default_edema():
+    """desy_edema must be a genuinely different file, not the same model under
+    a second id."""
+    desy = MODELS["desy_edema"]
+    default = MODELS["default_edema"]
+    assert desy["filename"] != default["filename"]
+    assert desy["sha256"] != default["sha256"]
+
+
+def test_fast_body_is_distinct_from_general_body():
+    """fast_body (256px) must not be confused with general_body (512px) —
+    same underlying webapp repo, genuinely different files/resolutions."""
+    fast = MODELS["fast_body"]
+    general = MODELS["general_body"]
+    assert fast["filename"] != general["filename"]
+    assert fast["sha256"] != general["sha256"]
+
+
+def test_model_target_size_covers_every_preset():
+    from ZebrafishEmbryoAnalyzerLib.model_manifest import MODEL_TARGET_SIZE
+    assert set(MODEL_TARGET_SIZE.keys()) == set(MODEL_SETS.keys())
+    assert MODEL_TARGET_SIZE["fast"] == (256, 256)
+    assert MODEL_TARGET_SIZE["general"] == (512, 512)
+    assert MODEL_TARGET_SIZE["desy"] == (512, 512)
+
+
+def test_swimbladder_model_type_differs_between_256_and_512_presets():
+    """The 512px swim bladder models are FPN + vgg19; the 256px Fast & Easy one is
+    Unet + vgg16 (the webapp's own pipeline default). seg.py's _load_unet_model
+    branches on model_type, so getting this wrong silently builds the wrong net."""
+    assert MODELS["general_swimbladder"]["model_type"] == "FPN"
+    assert MODELS["general_swimbladder"]["encoder"] == "vgg19"
+    assert MODELS["desy_swimbladder"]["model_type"] == "FPN"
+    assert MODELS["desy_swimbladder"]["encoder"] == "vgg19"
+    assert MODELS["fast_swimbladder"]["model_type"] == "Unet"
+    assert MODELS["fast_swimbladder"]["encoder"] == "vgg16"
+
+
+def test_swimbladder_entries_distinct_general_vs_desy():
+    general = MODELS["general_swimbladder"]
+    desy = MODELS["desy_swimbladder"]
+    assert general["filename"] != desy["filename"]
+    assert general["sha256"] != desy["sha256"]
 
 
 # ---------------------------------------------------------------------------
@@ -300,11 +356,13 @@ def test_desy_reuses_curvature():
     assert MODEL_SETS["desy"]["curvature"] is MODEL_SETS["general"]["curvature"]
 
 
-def test_edema_in_models_but_not_in_model_sets():
-    """Edema model described in MODELS but excluded from MODEL_SETS (no UI control)."""
-    assert "general_edema" in MODELS
-    assert "edema" not in MODEL_SETS["general"]
-    assert "edema" not in MODEL_SETS["desy"]
+def test_no_unwired_model_entries():
+    """Every MODELS entry must be reachable from some preset. An entry that is
+    described but wired nowhere previously caused it to be mistaken for dead
+    weight and mis-documented; collect_all_model_entries() also drives the
+    Settings tab's cache list, so an orphan would be invisible there."""
+    wired = {e["id"] for variant in MODEL_SETS.values() for e in variant.values()}
+    assert set(MODELS.keys()) == wired
 
 
 # ---------------------------------------------------------------------------

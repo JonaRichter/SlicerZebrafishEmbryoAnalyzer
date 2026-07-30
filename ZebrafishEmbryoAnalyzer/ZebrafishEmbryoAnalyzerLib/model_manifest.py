@@ -40,40 +40,105 @@ _CACHE_DIR = _default_cache_dir()
 # ---------------------------------------------------------------------------
 
 MODELS: dict = {
-    "general_body": {
-        "id": "general_body",
+    # Mirrors the webapp's three presets (SEG_MODEL_OPTIONS in its app.py):
+    # "Fast & Easy" (256px), "Complex & Slower" (512px — our "general"), and
+    # "Fine-tuned DESY" (512px). Every preset supports every optional
+    # segmentation; the presets differ only in weights and input resolution.
+    # In the webapp a `None` filename in that table means "use the pipeline
+    # default", not "unavailable" — those defaults are the 256px files, which is
+    # why Fast & Easy resolves to fast_eye/default_edema/fast_swimbladder below.
+    "fast_body": {
+        "id": "fast_body",
         "repo_id": "markdanielarndt/Zebrafish_Segmentation",
         "filename": "best_model_body_3400_vgg19.pth",
-        "revision": "673bc5d60e786a8413ecefbcc1701e1ec6ed6ae1",
-        "label": "Body segmentation model",
+        "revision": "237d21d6d7538fc5b661bf43b70f378f945991ee",
+        "label": "Body segmentation model (256 px, Fast & Easy)",
         "encoder": "vgg19",
         "sha256": "624e9ef0ab447aee7b95a058596c048f033a8255bc850f3a238b5606ea71ae65",
         "size_bytes": 116_289_435,
         "license": "LICENSE_PENDING",
         "preprocessing_compat": "v1",
     },
-    "general_eye": {
-        "id": "general_eye",
+    "fast_eye": {
+        "id": "fast_eye",
         "repo_id": "markdanielarndt/Zebrafish_Segmentation",
         "filename": "best_model_eye_3400.pth",
-        "revision": "673bc5d60e786a8413ecefbcc1701e1ec6ed6ae1",
-        "label": "Eye segmentation model",
+        "revision": "237d21d6d7538fc5b661bf43b70f378f945991ee",
+        "label": "Eye segmentation model (256 px, Fast & Easy)",
         "encoder": "vgg16",
         "sha256": "026b799fef133ddc44237d9f70f52694b0a02708d84a20b1f5e718a414250a2e",
         "size_bytes": 95_048_239,
         "license": "LICENSE_PENDING",
         "preprocessing_compat": "v1",
     },
-    # Not yet wired into any MODEL_SET; kept for future edema analysis support.
-    "general_edema": {
-        "id": "general_edema",
+    # Unet + vgg16 here, unlike the 512px swim bladder models (FPN + vgg19) —
+    # this is the webapp's own pipeline default, not an oversight.
+    "fast_swimbladder": {
+        "id": "fast_swimbladder",
+        "repo_id": "markdanielarndt/Zebrafish_Segmentation",
+        "filename": "best_model_swimmbladder_256_09072026.pth",
+        "revision": "237d21d6d7538fc5b661bf43b70f378f945991ee",
+        "label": "Swim bladder segmentation model (256 px, Fast & Easy)",
+        "encoder": "vgg16",
+        "model_type": "Unet",
+        "sha256": "656dcefd46f5d1e53605f9d5a68a23a0fd6203b3daa16e61ac11ffbdeb5cd27b",
+        "size_bytes": 95_049_151,
+        "license": "LICENSE_PENDING",
+        "preprocessing_compat": "v1",
+    },
+    "general_body": {
+        "id": "general_body",
+        "repo_id": "markdanielarndt/Zebrafish_Segmentation",
+        "filename": "best_model_body_512.pth",
+        "revision": "237d21d6d7538fc5b661bf43b70f378f945991ee",
+        "label": "Body segmentation model (512 px, Complex & Slower)",
+        "encoder": "vgg19",
+        "sha256": "030fd29623467a12eb5d913460fd778d8773345f98f152bbaeae1ebbbbb9ecf2",
+        "size_bytes": 116_289_323,
+        "license": "LICENSE_PENDING",
+        "preprocessing_compat": "v1",
+    },
+    "general_eye": {
+        "id": "general_eye",
+        "repo_id": "markdanielarndt/Zebrafish_Segmentation",
+        "filename": "best_model_eye_512.pth",
+        "revision": "237d21d6d7538fc5b661bf43b70f378f945991ee",
+        "label": "Eye segmentation model (512 px, Complex & Slower)",
+        "encoder": "vgg16",
+        "sha256": "9493f3ae60ecddbe1f16717b9c28b2a43491adc8b6d8d066031ae83d3b5cd383",
+        "size_bytes": 95_048_133,
+        "license": "LICENSE_PENDING",
+        "preprocessing_compat": "v1",
+    },
+    # The only non-DESY edema model, and it is 256px-era: the repo has no 512px
+    # general counterpart. The webapp falls back to it for its 512px preset too
+    # (no edema filename named there -> pipeline default), feeding a 256px-trained
+    # net 512px input. We deliberately do not follow that one step — see the
+    # "edema" comment in MODEL_SETS below.
+    "default_edema": {
+        "id": "default_edema",
         "repo_id": "markdanielarndt/Zebrafish_Segmentation",
         "filename": "best_model_edema_3400_focal.pth",
-        "revision": "673bc5d60e786a8413ecefbcc1701e1ec6ed6ae1",
+        "revision": "237d21d6d7538fc5b661bf43b70f378f945991ee",
         "label": "Edema segmentation model",
         "encoder": "vgg19",
         "sha256": "3622392fc8a65d9de1f49554770422cf3661deee8381a4fbbd62c48d01c6dfaf",
         "size_bytes": 116_290_283,
+        "license": "LICENSE_PENDING",
+        "preprocessing_compat": "v1",
+    },
+    # FPN (segmentation_models_pytorch), not Unet like the other segmentation
+    # roles — see model_type, consumed by seg.py's _load_unet_model.
+    "general_swimbladder": {
+        "id": "general_swimbladder",
+        "repo_id": "markdanielarndt/Zebrafish_Segmentation",
+        "filename": "best_model_swimmbladder_512_09072026.pth",
+        "revision": "237d21d6d7538fc5b661bf43b70f378f945991ee",
+        "label": "Swim bladder segmentation model (512 px, Complex & Slower)",
+        "encoder": "vgg19",
+        "model_type": "FPN",
+        "sha256": "d11e41c7504bbd388f29b53d2a31a731190e4b1b26f036326f4a3c104334d5ab",
+        "size_bytes": 88_459_594,
         "license": "LICENSE_PENDING",
         "preprocessing_compat": "v1",
     },
@@ -92,24 +157,50 @@ MODELS: dict = {
     "desy_body": {
         "id": "desy_body",
         "repo_id": "markdanielarndt/Zebrafish_Segmentation",
-        "filename": "best_model_body_finetuned.pth",
-        "revision": "673bc5d60e786a8413ecefbcc1701e1ec6ed6ae1",
-        "label": "DESY body segmentation model",
+        "filename": "desy_body_512_finetuned.pth",
+        "revision": "237d21d6d7538fc5b661bf43b70f378f945991ee",
+        "label": "DESY body segmentation model (512 px)",
         "encoder": "vgg19",
-        "sha256": "aff8eedbfcf682bd0fc72fb4dcf26f9fa3d3a0e4a5304cbc070fcc50e08476fc",
-        "size_bytes": 116_290_059,
+        "sha256": "5e2ee9c72fd0f3a452123bcfa9fcceedd10c5d58ba5b9e70694ccc2227d35340",
+        "size_bytes": 116_290_507,
         "license": "LICENSE_PENDING",
         "preprocessing_compat": "v1",
     },
     "desy_eye": {
         "id": "desy_eye",
         "repo_id": "markdanielarndt/Zebrafish_Segmentation",
-        "filename": "best_model_eye_finetuned.pth",
-        "revision": "673bc5d60e786a8413ecefbcc1701e1ec6ed6ae1",
-        "label": "DESY eye segmentation model",
+        "filename": "desy_eye_512_finetuned.pth",
+        "revision": "237d21d6d7538fc5b661bf43b70f378f945991ee",
+        "label": "DESY eye segmentation model (512 px)",
         "encoder": "vgg16",
-        "sha256": "fccd2da00d2ac7fbbde2dc18da51641f9e10eb905ed0a8a8fa498a8fe91c2690",
-        "size_bytes": 95_048_833,
+        "sha256": "661308b9be5ff31d386c67abfa80f9b897ed437ceca01b7c046b66704ee5fdb3",
+        "size_bytes": 95_049_257,
+        "license": "LICENSE_PENDING",
+        "preprocessing_compat": "v1",
+    },
+    # The only preset-specific edema model; the other two share default_edema.
+    "desy_edema": {
+        "id": "desy_edema",
+        "repo_id": "markdanielarndt/Zebrafish_Segmentation",
+        "filename": "desy_edema_512_finetuned.pth",
+        "revision": "237d21d6d7538fc5b661bf43b70f378f945991ee",
+        "label": "DESY edema segmentation model",
+        "encoder": "vgg19",
+        "sha256": "5c4c99299da84842bc2efa8aa42ae693b5d3bc5e30ad675b2772e4096e09728b",
+        "size_bytes": 116_289_947,
+        "license": "LICENSE_PENDING",
+        "preprocessing_compat": "v1",
+    },
+    "desy_swimbladder": {
+        "id": "desy_swimbladder",
+        "repo_id": "markdanielarndt/Zebrafish_Segmentation",
+        "filename": "desy_swimmbladder_512_finetuned.pth",
+        "revision": "237d21d6d7538fc5b661bf43b70f378f945991ee",
+        "label": "DESY swim bladder segmentation model",
+        "encoder": "vgg19",
+        "model_type": "FPN",
+        "sha256": "92a47377cf450d3fcb7ec52c7065d1e5b74e36b125460752496ff66837655d1c",
+        "size_bytes": 88_459_870,
         "license": "LICENSE_PENDING",
         "preprocessing_compat": "v1",
     },
@@ -120,16 +211,42 @@ MODELS: dict = {
 # ---------------------------------------------------------------------------
 
 MODEL_SETS: dict = {
+    # A preset offers "edema" only where a resolution-matched model exists:
+    # fast pairs the 256px default with 256px input, desy has its own 512px
+    # model. "general" runs at 512px but no 512px general edema model exists, so
+    # the role is omitted rather than silently running a 256px-trained net at
+    # 512px the way the webapp does. widget.py greys the checkbox out there.
+    "fast": {
+        "body": MODELS["fast_body"],
+        "eye": MODELS["fast_eye"],
+        "curvature": MODELS["curvature"],
+        "edema": MODELS["default_edema"],
+        "swimbladder": MODELS["fast_swimbladder"],
+    },
     "general": {
         "body": MODELS["general_body"],
         "eye": MODELS["general_eye"],
         "curvature": MODELS["curvature"],
+        "swimbladder": MODELS["general_swimbladder"],
     },
     "desy": {
         "body": MODELS["desy_body"],
         "eye": MODELS["desy_eye"],
         "curvature": MODELS["curvature"],
+        "edema": MODELS["desy_edema"],
+        "swimbladder": MODELS["desy_swimbladder"],
     },
+}
+
+# Per-preset segmentation_pipeline() target_size, matching the webapp's own
+# per-preset resolution (see SEG_MODEL_OPTIONS in the webapp's app.py). Kept
+# separate from MODEL_SETS so every value there stays a model-entry dict —
+# get_missing_models()/verify_checksum() iterate MODEL_SETS[...].values()
+# expecting exactly that shape.
+MODEL_TARGET_SIZE: dict = {
+    "fast": (256, 256),
+    "general": (512, 512),
+    "desy": (512, 512),
 }
 
 

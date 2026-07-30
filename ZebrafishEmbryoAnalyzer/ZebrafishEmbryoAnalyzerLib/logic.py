@@ -16,6 +16,15 @@ import tempfile
 
 _ML_PACKAGES = ("torch", "cv2", "segmentation_models_pytorch", "timm")
 
+# Only reachable through an inconsistent request — the widget greys the Edema
+# checkbox out for presets without a resolution-matched edema model. Raising
+# beats skipping silently, which would report a successful run with the edema
+# column quietly empty.
+_EDEMA_UNAVAILABLE = (
+    "Edema segmentation is not available for the {model_id!r} model. "
+    "Use the Fast & Easy or Fine-tuned DESY model instead."
+)
+
 
 def dependency_status() -> dict:
     """Return availability of optional ML/vision dependencies.
@@ -57,14 +66,15 @@ def _install_model_cache():
 
 
 def _cached_load_unet(model_path=None, repo_id=None, filename=None, label="model",
-                       revision="main", force_download=False, encoder_name="vgg16"):
+                       revision="main", force_download=False, encoder_name="vgg16",
+                       model_type="Unet"):
     """Caching wrapper: first call loads from disk, subsequent calls return cached model."""
-    cache_key = f"_unet_{model_path or filename}_{encoder_name}"
+    cache_key = f"_unet_{model_path or filename}_{encoder_name}_{model_type}"
     if force_download or cache_key not in _MODEL_CACHE:
         _MODEL_CACHE[cache_key] = _original_load_unet(
             model_path=model_path, repo_id=repo_id, filename=filename,
             label=label, revision=revision, force_download=force_download,
-            encoder_name=encoder_name,
+            encoder_name=encoder_name, model_type=model_type,
         )
     return _MODEL_CACHE[cache_key]
 
@@ -77,13 +87,17 @@ def preload_models(params: dict) -> None:
     """
     _install_model_cache()
     from ZebrafishEmbryoAnalyzerCore.length import load_model
-    from ZebrafishEmbryoAnalyzerLib.errors import ModelNotCachedError
+    from ZebrafishEmbryoAnalyzerLib.errors import AnalysisInputError, ModelNotCachedError
     from ZebrafishEmbryoAnalyzerLib.model_manifest import (
         MODEL_SETS, get_cached_path, MODELS, verify_checksum,
     )
 
     model_id = params.get("model_id", "general")
     model_set = MODEL_SETS.get(model_id, MODEL_SETS["general"])
+    # Validate the request before touching the filesystem, so an impossible ask
+    # is reported as such rather than as a missing download.
+    if params.get("edema", False) and "edema" not in model_set:
+        raise AnalysisInputError(_EDEMA_UNAVAILABLE.format(model_id=model_id))
 
     if params.get("curvature", True) and "curvature" not in _MODEL_CACHE:
         curvature_entry = MODELS["curvature"]
@@ -122,6 +136,35 @@ def preload_models(params: dict) -> None:
             encoder_name=eye_entry["encoder"],
         )
 
+    if params.get("edema", False):
+        edema_entry = model_set["edema"]
+        edema_path = get_cached_path(edema_entry)
+        if not verify_checksum(edema_path, edema_entry["sha256"]):
+            raise ModelNotCachedError(
+                f"{edema_entry['label']} missing or corrupted at {edema_path}. "
+                "Download models first."
+            )
+        _cached_load_unet(
+            model_path=str(edema_path),
+            label="edema model",
+            encoder_name=edema_entry["encoder"],
+        )
+
+    if params.get("swimbladder", False):
+        swim_entry = model_set["swimbladder"]
+        swim_path = get_cached_path(swim_entry)
+        if not verify_checksum(swim_path, swim_entry["sha256"]):
+            raise ModelNotCachedError(
+                f"{swim_entry['label']} missing or corrupted at {swim_path}. "
+                "Download models first."
+            )
+        _cached_load_unet(
+            model_path=str(swim_path),
+            label="swim bladder model",
+            encoder_name=swim_entry["encoder"],
+            model_type=swim_entry.get("model_type", "Unet"),
+        )
+
 # ---------------------------------------------------------------------------
 # Result dict schema — every key must be present, missing values use None
 # ---------------------------------------------------------------------------
@@ -132,6 +175,8 @@ _RESULT_KEYS = (
     "mask",
     "grown",
     "eye_mask",
+    "edema_mask",
+    "swimbladder_mask",
     "path_points",
     "straight_line_points",
     "length",
@@ -139,6 +184,9 @@ _RESULT_KEYS = (
     "ratio",
     "eye_area",
     "eye_diameter",
+    "edema_area",
+    "swim_area",
+    "swim_width",
     "spacing",
     "error",
 )
@@ -183,7 +231,7 @@ def analyse_images(image_paths: list, params: dict,
         Absolute paths to input images.
     params : dict
         Keys:
-          length, curvature, ratio, eyes : bool
+          length, curvature, ratio, eyes, edema : bool
           hitl                           : bool  — use confidence threshold
           threshold                      : float 0–1
           um_per_px                      : float — physical scale (µm/pixel)
@@ -206,17 +254,25 @@ def analyse_images(image_paths: list, params: dict,
         tube_length_border2border,
         classification_curvature,
         compute_eye_metrics,
+        compute_tube_metrics,
     )
-    from ZebrafishEmbryoAnalyzerLib.errors import ModelNotCachedError
+    from ZebrafishEmbryoAnalyzerLib.errors import AnalysisInputError, ModelNotCachedError
     from ZebrafishEmbryoAnalyzerLib.model_manifest import (
-        MODEL_SETS, get_cached_path, MODELS, verify_checksum,
+        MODEL_SETS, MODEL_TARGET_SIZE, get_cached_path, MODELS, verify_checksum,
     )
 
     um_per_px = float(params.get("um_per_px", 22.99))
     include_eyes = params.get("eyes", False)
+    include_edema = params.get("edema", False)
+    include_swimbladder = params.get("swimbladder", False)
 
     model_id = params.get("model_id", "general")
     model_set = MODEL_SETS.get(model_id, MODEL_SETS["general"])
+    target_size = MODEL_TARGET_SIZE.get(model_id, MODEL_TARGET_SIZE["general"])
+    # Validate the request before touching the filesystem, so an impossible ask
+    # is reported as such rather than as a missing download.
+    if include_edema and "edema" not in model_set:
+        raise AnalysisInputError(_EDEMA_UNAVAILABLE.format(model_id=model_id))
 
     # ---- validate required model files exist and are not corrupted before starting ----
     body_entry = model_set["body"]
@@ -231,6 +287,20 @@ def analyse_images(image_paths: list, params: dict,
         if not verify_checksum(eye_path, eye_entry["sha256"]):
             raise ModelNotCachedError(
                 f"{eye_entry['label']} missing or corrupted at {eye_path}. Download models first."
+            )
+    if include_edema:
+        edema_entry = model_set["edema"]
+        edema_path = get_cached_path(edema_entry)
+        if not verify_checksum(edema_path, edema_entry["sha256"]):
+            raise ModelNotCachedError(
+                f"{edema_entry['label']} missing or corrupted at {edema_path}. Download models first."
+            )
+    if include_swimbladder:
+        swim_entry = model_set["swimbladder"]
+        swim_path = get_cached_path(swim_entry)
+        if not verify_checksum(swim_path, swim_entry["sha256"]):
+            raise ModelNotCachedError(
+                f"{swim_entry['label']} missing or corrupted at {swim_path}. Download models first."
             )
     if params.get("curvature", True):
         curv_entry = MODELS["curvature"]
@@ -254,12 +324,22 @@ def analyse_images(image_paths: list, params: dict,
     # after each one, keeping the UI responsive. The cached _load_unet_model
     # means model weights are only read from disk once across all calls.
     _seg_kwargs = dict(
+        target_size=target_size,
         include_eyes=include_eyes,
+        include_edema=include_edema,
+        include_swimbladder=include_swimbladder,
         body_model_path=str(body_path),
         body_encoder_name=body_entry["encoder"],
     )
     if include_eyes:
         _seg_kwargs["eye_model_path"] = str(eye_path)
+    if include_edema:
+        _seg_kwargs["edema_model_path"] = str(edema_path)
+        _seg_kwargs["edema_encoder_name"] = edema_entry["encoder"]
+    if include_swimbladder:
+        _seg_kwargs["swimbladder_model_path"] = str(swim_path)
+        _seg_kwargs["swimbladder_encoder_name"] = swim_entry["encoder"]
+        _seg_kwargs["swimbladder_model_type"] = swim_entry.get("model_type", "Unet")
 
     n = len(image_paths)
     results = []
@@ -276,16 +356,21 @@ def analyse_images(image_paths: list, params: dict,
                 shutil.copy2(image_path, os.path.join(_tmp, os.path.basename(image_path)))
                 seg_result = segmentation_pipeline(_tmp, **_seg_kwargs)
 
-            if include_eyes and len(seg_result) == 4:
-                originals_bgr, masks, growns, eyes_list = seg_result
-            else:
-                originals_bgr, masks, growns = seg_result[:3]
-                eyes_list = [None]
+            # seg_result is (originals, masks, growns) followed by whichever of
+            # eyes/edema/swimbladder were requested, in that fixed order — mirrors
+            # segmentation_pipeline's own conditional-append return (see seg.py).
+            originals_bgr, masks, growns = seg_result[0], seg_result[1], seg_result[2]
+            _extra = list(seg_result[3:])
+            eyes_list = _extra.pop(0) if include_eyes else [None]
+            edema_list = _extra.pop(0) if include_edema else [None]
+            swimbladder_list = _extra.pop(0) if include_swimbladder else [None]
 
             orig_bgr = originals_bgr[0] if originals_bgr else None
             mask    = masks[0]      if masks      else None
             grown   = growns[0]     if growns     else None
             eye     = eyes_list[0]  if eyes_list  else None
+            edema   = edema_list[0] if edema_list else None
+            swim    = swimbladder_list[0] if swimbladder_list else None
 
             if orig_bgr is None:
                 r["error"] = "Could not read image."
@@ -294,16 +379,19 @@ def analyse_images(image_paths: list, params: dict,
                     progress_callback(_loop_i + 1, n)
                 continue
 
-            r["original"]  = cv2.cvtColor(orig_bgr, cv2.COLOR_BGR2RGB)
-            r["mask"]      = mask
-            r["grown"]     = grown
-            r["eye_mask"]  = eye
+            r["original"]   = cv2.cvtColor(orig_bgr, cv2.COLOR_BGR2RGB)
+            r["mask"]             = mask
+            r["grown"]            = grown
+            r["eye_mask"]         = eye
+            r["edema_mask"]       = edema
+            r["swimbladder_mask"] = swim
 
-            mask_bin = (mask > 0) if mask is not None else None
-            eye_bin  = (eye  > 0) if eye  is not None else None
+            mask_bin  = (mask  > 0) if mask  is not None else None
+            eye_bin   = (eye   > 0) if eye   is not None else None
+            edema_bin = (edema > 0) if edema is not None else None
 
             h_orig, w_orig = orig_bgr.shape[:2]
-            mask_h, mask_w = mask.shape[:2] if mask is not None else (256, 256)
+            mask_h, mask_w = mask.shape[:2] if mask is not None else target_size
             spacing = (
                 um_per_px * h_orig / mask_h,
                 um_per_px * w_orig / mask_w,
@@ -353,6 +441,24 @@ def analyse_images(image_paths: list, params: dict,
                 except Exception as exc:
                     if r["error"] is None:
                         r["error"] = f"Eye metrics error: {exc}"
+
+            # ---- edema metrics ----
+            if params.get("edema", False) and edema_bin is not None:
+                try:
+                    r["edema_area"] = float(np.count_nonzero(edema_bin) * spacing[0] * spacing[1])
+                except Exception as exc:
+                    if r["error"] is None:
+                        r["error"] = f"Edema metrics error: {exc}"
+
+            # ---- swim bladder metrics ----
+            if params.get("swimbladder", False) and swim is not None:
+                try:
+                    swim_metrics = compute_tube_metrics(swim, spacing=spacing)
+                    r["swim_area"] = swim_metrics["area"]
+                    r["swim_width"] = swim_metrics["width"]
+                except Exception as exc:
+                    if r["error"] is None:
+                        r["error"] = f"Swim bladder metrics error: {exc}"
 
         except Exception as exc:
             import traceback

@@ -12,6 +12,9 @@ HEADERS = [
     ("Length/straight ratio", "ratio"),
     ("Eye area (µm²)",        "eye_area"),
     ("Eye diameter (µm)",     "eye_diameter"),
+    ("Edema area (µm²)",      "edema_area"),
+    ("Swim Bladder Area (µm²)", "swim_area"),
+    ("Swim Bladder Width (µm)", "swim_width"),
     ("Error",                 "error"),
 ]
 

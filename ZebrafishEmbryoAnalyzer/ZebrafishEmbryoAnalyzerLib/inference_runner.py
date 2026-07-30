@@ -266,12 +266,17 @@ class InferenceController:
                 "ratio": r.get("length_straight_ratio"),
                 "eye_area": r.get("eye_area_um2"),
                 "eye_diameter": r.get("eye_diameter_um"),
+                "edema_area": r.get("edema_area_um2"),
+                "swim_area": r.get("swim_area_um2"),
+                "swim_width": r.get("swim_width_um"),
                 "spacing": r.get("spacing"),
                 "error": r.get("error"),
                 "original": None,
                 "mask": None,
                 "grown": None,
                 "eye_mask": None,
+                "edema_mask": None,
+                "swimbladder_mask": None,
                 "path_points": None,
                 "straight_line_points": None,
             }
@@ -279,7 +284,7 @@ class InferenceController:
             if npz_path and os.path.exists(npz_path):
                 try:
                     arrays = np.load(npz_path, allow_pickle=False)
-                    for k in ("mask", "grown", "eye_mask",
+                    for k in ("mask", "grown", "eye_mask", "edema_mask", "swimbladder_mask",
                               "path_points", "straight_line_points"):
                         if k in arrays:
                             ir[k] = arrays[k]

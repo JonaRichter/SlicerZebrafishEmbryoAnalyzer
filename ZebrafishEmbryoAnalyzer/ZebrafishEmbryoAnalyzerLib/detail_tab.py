@@ -351,4 +351,7 @@ def _format_metrics(r: dict) -> str:
     if r.get("curvature") is not None: parts.append(f"Class: {r['curvature']}")
     if r.get("ratio")     is not None: parts.append(f"Ratio: {r['ratio']:.3f}")
     if r.get("eye_area")  is not None: parts.append(f"Eye area: {r['eye_area']:.1f} µm²")
+    if r.get("edema_area") is not None: parts.append(f"Edema area: {r['edema_area']:.1f} µm²")
+    if r.get("swim_area") is not None: parts.append(f"Swim bladder area: {r['swim_area']:.1f} µm²")
+    if r.get("swim_width") is not None: parts.append(f"Swim bladder width: {r['swim_width']:.1f} µm")
     return "  |  ".join(parts)
