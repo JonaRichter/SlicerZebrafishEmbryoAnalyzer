@@ -29,7 +29,7 @@ def analyzer():
     """Import ZebrafishEmbryoAnalyzer.py with the Slicer API faked out.
 
     sys.modules is snapshotted and restored wholesale rather than patched entry
-    by entry: importing the module file runs _evict_lib_modules() at import time,
+    by entry: importing the module file runs _evict_reload_modules() at import time,
     which drops ZebrafishEmbryoAnalyzerLib entries that monkeypatch never recorded
     and therefore cannot put back. Leaving that eviction in place made unrelated
     tests fail depending on file order.
