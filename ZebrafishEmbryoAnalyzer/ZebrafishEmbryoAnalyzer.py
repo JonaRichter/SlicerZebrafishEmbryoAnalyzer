@@ -449,7 +449,6 @@ class ZebrafishEmbryoAnalyzerTest(ScriptedLoadableModuleTest):
         "test_no_network_during_setup",
         "test_mrml_table_node_creation",
         "test_mrml_table_node_reuse",
-        "test_results_to_rows_pure",
         "test_scene_close_cleanup",
     )
 
@@ -588,38 +587,9 @@ class ZebrafishEmbryoAnalyzerTest(ScriptedLoadableModuleTest):
                          "Both calls must return the same node.")
         self.assertEqual(node_second.GetNumberOfRows(), 2)
 
-    def test_results_to_rows_pure(self):
-        """results_to_rows() is pure Python — no Slicer dependency."""
-        import math
-        from ZebrafishEmbryoAnalyzerLib.mrml import results_to_rows, TABLE_SCHEMA
-
-        # Empty input → empty output.
-        rows = results_to_rows([])
-        self.assertEqual(rows, [])
-
-        # Single result with no errors.
-        result = {
-            "filename": "img.png",
-            "length": 1234.5,
-            "curvature": 2,
-            "ratio": 1.05,
-            "eye_area": None,
-            "eye_diameter": None,
-            "error": None,
-        }
-        rows = results_to_rows([result])
-        self.assertEqual(len(rows), 1)
-
-        row = rows[0]
-        col_names = [col for col, _, _ in TABLE_SCHEMA]
-        for col in col_names:
-            self.assertIn(col, row, f"Column {col!r} missing from row")
-
-        self.assertEqual(row["Filename"], "img.png")
-        self.assertAlmostEqual(row["Length_um"], 1234.5)
-        # None numeric field → NaN
-        self.assertTrue(math.isnan(row["EyeArea_um2"]))
-        self.assertEqual(row["Error"], "")
+    # results_to_rows() is pure Python and covered by tests/test_mrml_adapter.py and
+    # tests/test_mrml_node.py. It is deliberately not repeated here — a self-test slot
+    # costs a real Slicer instance and is reserved for behaviour that fakes cannot reach.
 
     def test_scene_close_cleanup(self):
         """Scene clear must not crash; a fresh parameter node must be obtainable after."""

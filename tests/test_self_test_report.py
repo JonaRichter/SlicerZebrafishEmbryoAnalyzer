@@ -85,8 +85,9 @@ def test_all_green_reports_full_count(analyzer, monkeypatch, capsys):
 
     case_class().runTest()
 
+    total = len(case_class.TEST_NAMES)
     assert executed == list(case_class.TEST_NAMES)
-    assert "8/8 passed" in capsys.readouterr().out
+    assert f"{total}/{total} passed" in capsys.readouterr().out
 
 
 def test_failure_is_reported_and_reraised(analyzer, monkeypatch, capsys):
@@ -97,9 +98,10 @@ def test_failure_is_reported_and_reraised(analyzer, monkeypatch, capsys):
     with pytest.raises(AssertionError, match=broken):
         case_class().runTest()
 
-    # A failure must not cut the run short — the other seven still report.
+    # A failure must not cut the run short — every other test still reports.
+    total = len(case_class.TEST_NAMES)
     assert executed == list(case_class.TEST_NAMES)
     out = capsys.readouterr().out
-    assert "7/8 passed" in out
+    assert f"{total - 1}/{total} passed" in out
     assert f"FAIL  {broken}" in out
     assert "ValueError: boom in" in out
