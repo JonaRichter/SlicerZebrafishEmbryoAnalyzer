@@ -204,22 +204,23 @@ def test_get_missing_models_all_absent(tmp_path):
 
 
 def test_get_missing_models_none_absent(tmp_path):
-    """When all files are present and non-empty, nothing is reported missing."""
+    """When all files are present and match their pinned checksum, nothing is missing."""
     import ZebrafishEmbryoAnalyzerLib.model_manifest as _mm
     from ZebrafishEmbryoAnalyzerLib.model_manifest import MODELS as _MODELS
 
+    data = b"dummy weights"
+    digest = hashlib.sha256(data).hexdigest()
     model_set = {
-        "body": _MODELS["general_body"],
-        "curvature": _MODELS["curvature"],
+        "body": {**_MODELS["general_body"], "sha256": digest},
+        "curvature": {**_MODELS["curvature"], "sha256": digest},
     }
 
     orig = _mm._CACHE_DIR
     _mm._CACHE_DIR = tmp_path
     try:
-        # Write dummy files for each entry.
         for entry in model_set.values():
             p = tmp_path / entry["filename"]
-            p.write_bytes(b"dummy weights")
+            p.write_bytes(data)
         missing = get_missing_models(model_set)
     finally:
         _mm._CACHE_DIR = orig
@@ -245,21 +246,44 @@ def test_get_missing_models_empty_file_counts_as_missing(tmp_path):
     assert len(missing) == 1
 
 
-def test_get_missing_models_partial(tmp_path):
-    """Only entries that are absent are returned."""
+def test_get_missing_models_corrupted_file_counts_as_missing(tmp_path):
+    """A present, non-empty file whose content does not match the pinned checksum
+    (e.g. a truncated/interrupted download) must count as missing — this is the
+    real-world failure mode: it otherwise looks cached until torch.load() fails
+    deep inside analysis with a cryptic pickle error."""
     import ZebrafishEmbryoAnalyzerLib.model_manifest as _mm
     from ZebrafishEmbryoAnalyzerLib.model_manifest import MODELS as _MODELS
 
+    model_set = {"body": _MODELS["general_body"]}
+    orig = _mm._CACHE_DIR
+    _mm._CACHE_DIR = tmp_path
+    try:
+        p = tmp_path / _MODELS["general_body"]["filename"]
+        p.write_bytes(b"truncated download, wrong content")  # real sha256 won't match
+        missing = get_missing_models(model_set)
+    finally:
+        _mm._CACHE_DIR = orig
+
+    assert len(missing) == 1
+
+
+def test_get_missing_models_partial(tmp_path):
+    """Only entries that are absent (or corrupted) are returned."""
+    import ZebrafishEmbryoAnalyzerLib.model_manifest as _mm
+    from ZebrafishEmbryoAnalyzerLib.model_manifest import MODELS as _MODELS
+
+    data = b"dummy weights"
+    digest = hashlib.sha256(data).hexdigest()
     model_set = {
-        "body": _MODELS["general_body"],
+        "body": {**_MODELS["general_body"], "sha256": digest},
         "curvature": _MODELS["curvature"],
     }
     orig = _mm._CACHE_DIR
     _mm._CACHE_DIR = tmp_path
     try:
-        # Write only the body file.
-        p = tmp_path / _MODELS["general_body"]["filename"]
-        p.write_bytes(b"dummy weights")
+        # Write only the body file, with matching checksum.
+        p = tmp_path / model_set["body"]["filename"]
+        p.write_bytes(data)
         missing = get_missing_models(model_set)
     finally:
         _mm._CACHE_DIR = orig

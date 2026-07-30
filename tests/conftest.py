@@ -30,7 +30,8 @@ def synthetic_fish_mask():
 
 @pytest.fixture
 def mock_model_paths(tmp_path):
-    """Patch get_cached_path so existence checks in logic.py pass without real models.
+    """Patch get_cached_path and checksum verification so the existence/integrity
+    checks in logic.py pass without real, correctly-hashed model files.
 
     Returns a dict mapping entry id -> Path so tests can inspect paths if needed.
     """
@@ -44,5 +45,7 @@ def mock_model_paths(tmp_path):
         return p
 
     with patch("ZebrafishEmbryoAnalyzerLib.model_manifest.get_cached_path",
-               side_effect=fake_get_cached_path):
+               side_effect=fake_get_cached_path), \
+         patch("ZebrafishEmbryoAnalyzerLib.model_manifest.verify_checksum",
+               return_value=True):
         yield created

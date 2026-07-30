@@ -78,7 +78,9 @@ def preload_models(params: dict) -> None:
     _install_model_cache()
     from ZebrafishEmbryoAnalyzerCore.length import load_model
     from ZebrafishEmbryoAnalyzerLib.errors import ModelNotCachedError
-    from ZebrafishEmbryoAnalyzerLib.model_manifest import MODEL_SETS, get_cached_path, MODELS
+    from ZebrafishEmbryoAnalyzerLib.model_manifest import (
+        MODEL_SETS, get_cached_path, MODELS, verify_checksum,
+    )
 
     model_id = params.get("model_id", "general")
     model_set = MODEL_SETS.get(model_id, MODEL_SETS["general"])
@@ -86,18 +88,18 @@ def preload_models(params: dict) -> None:
     if params.get("curvature", True) and "curvature" not in _MODEL_CACHE:
         curvature_entry = MODELS["curvature"]
         curvature_path = get_cached_path(curvature_entry)
-        if not curvature_path.exists():
+        if not verify_checksum(curvature_path, curvature_entry["sha256"]):
             raise ModelNotCachedError(
-                f"{curvature_entry['label']} not found at {curvature_path}. "
+                f"{curvature_entry['label']} missing or corrupted at {curvature_path}. "
                 "Download models first."
             )
         _MODEL_CACHE["curvature"] = load_model(str(curvature_path))
 
     body_entry = model_set["body"]
     body_path = get_cached_path(body_entry)
-    if not body_path.exists():
+    if not verify_checksum(body_path, body_entry["sha256"]):
         raise ModelNotCachedError(
-            f"{body_entry['label']} not found at {body_path}. "
+            f"{body_entry['label']} missing or corrupted at {body_path}. "
             "Download models first."
         )
     _cached_load_unet(
@@ -109,9 +111,9 @@ def preload_models(params: dict) -> None:
     if params.get("eyes", False):
         eye_entry = model_set["eye"]
         eye_path = get_cached_path(eye_entry)
-        if not eye_path.exists():
+        if not verify_checksum(eye_path, eye_entry["sha256"]):
             raise ModelNotCachedError(
-                f"{eye_entry['label']} not found at {eye_path}. "
+                f"{eye_entry['label']} missing or corrupted at {eye_path}. "
                 "Download models first."
             )
         _cached_load_unet(
@@ -206,7 +208,9 @@ def analyse_images(image_paths: list, params: dict,
         compute_eye_metrics,
     )
     from ZebrafishEmbryoAnalyzerLib.errors import ModelNotCachedError
-    from ZebrafishEmbryoAnalyzerLib.model_manifest import MODEL_SETS, get_cached_path, MODELS
+    from ZebrafishEmbryoAnalyzerLib.model_manifest import (
+        MODEL_SETS, get_cached_path, MODELS, verify_checksum,
+    )
 
     um_per_px = float(params.get("um_per_px", 22.99))
     include_eyes = params.get("eyes", False)
@@ -214,26 +218,26 @@ def analyse_images(image_paths: list, params: dict,
     model_id = params.get("model_id", "general")
     model_set = MODEL_SETS.get(model_id, MODEL_SETS["general"])
 
-    # ---- validate required model files exist before starting ----
+    # ---- validate required model files exist and are not corrupted before starting ----
     body_entry = model_set["body"]
     body_path = get_cached_path(body_entry)
-    if not body_path.exists():
+    if not verify_checksum(body_path, body_entry["sha256"]):
         raise ModelNotCachedError(
-            f"{body_entry['label']} not found at {body_path}. Download models first."
+            f"{body_entry['label']} missing or corrupted at {body_path}. Download models first."
         )
     if include_eyes:
         eye_entry = model_set["eye"]
         eye_path = get_cached_path(eye_entry)
-        if not eye_path.exists():
+        if not verify_checksum(eye_path, eye_entry["sha256"]):
             raise ModelNotCachedError(
-                f"{eye_entry['label']} not found at {eye_path}. Download models first."
+                f"{eye_entry['label']} missing or corrupted at {eye_path}. Download models first."
             )
     if params.get("curvature", True):
         curv_entry = MODELS["curvature"]
         curv_manifest_path = get_cached_path(curv_entry)
-        if not curv_manifest_path.exists():
+        if not verify_checksum(curv_manifest_path, curv_entry["sha256"]):
             raise ModelNotCachedError(
-                f"{curv_entry['label']} not found at {curv_manifest_path}. "
+                f"{curv_entry['label']} missing or corrupted at {curv_manifest_path}. "
                 "Download models first."
             )
 

@@ -76,7 +76,7 @@ def test_run_worker_bad_request_exits_3_invalid_json(tmp_path):
 
 
 def test_run_worker_model_not_cached_exits_2(tmp_path):
-    """ModelNotCachedError during preload → exit 2."""
+    """ModelNotCachedError during preload → exit 2, with the real message persisted."""
     from ZebrafishEmbryoAnalyzerLib.errors import ModelNotCachedError
     req_path = _write_request(tmp_path, image_paths=["/tmp/fish.png"])
 
@@ -87,6 +87,38 @@ def test_run_worker_model_not_cached_exits_2(tmp_path):
     with patch("ZebrafishEmbryoAnalyzerLib.logic.preload_models", raise_not_cached):
         code = run_worker(req_path)
     assert code == 2
+
+    result_json = tmp_path / "result.json"
+    assert result_json.exists()
+    data = json.loads(result_json.read_text())
+    assert data["status"] == "error"
+    assert data["error_code"] == 2
+    assert "not cached" in data["error_message"]
+
+
+def test_run_worker_other_preload_failure_exits_5(tmp_path):
+    """A non-ModelNotCachedError exception during preload → exit 5, not 2.
+
+    Regression for #105: exit code 2 used to catch every preload failure, so a
+    broken torch install (unrelated to caching) got the misleading "run again
+    to trigger a download" advice — and retrying could never fix it.
+    """
+    req_path = _write_request(tmp_path, image_paths=["/tmp/fish.png"])
+
+    def raise_other(params):
+        raise ModuleNotFoundError("No module named 'torchgen'")
+
+    from ZebrafishEmbryoAnalyzerLib.inference_worker import run_worker
+    with patch("ZebrafishEmbryoAnalyzerLib.logic.preload_models", raise_other):
+        code = run_worker(req_path)
+    assert code == 5
+
+    result_json = tmp_path / "result.json"
+    assert result_json.exists()
+    data = json.loads(result_json.read_text())
+    assert data["status"] == "error"
+    assert data["error_code"] == 5
+    assert "torchgen" in data["error_message"]
 
 
 def test_run_worker_analysis_exception_exits_1(tmp_path):
