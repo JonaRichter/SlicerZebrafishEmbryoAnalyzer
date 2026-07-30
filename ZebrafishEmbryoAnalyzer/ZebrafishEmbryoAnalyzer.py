@@ -1,3 +1,4 @@
+import logging
 import sys
 
 import vtk
@@ -440,37 +441,63 @@ class ZebrafishEmbryoAnalyzerTest(ScriptedLoadableModuleTest):
     no model downloads, no prompts.
     """
 
+    TEST_NAMES = (
+        "test_module_import",
+        "test_logic_instantiation",
+        "test_parameter_node_defaults",
+        "test_no_network_during_setup",
+        "test_mrml_table_node_creation",
+        "test_mrml_table_node_reuse",
+        "test_results_to_rows_pure",
+        "test_scene_close_cleanup",
+    )
+
     def setUp(self):
         slicer.mrmlScene.Clear(0)
 
     def runTest(self):
-        self.setUp()
+        # Every test runs, even after one fails, so a single broken test does not
+        # hide the state of the other seven. Failures are collected and re-raised
+        # at the end — without that, unittest would treat the swallowed exception
+        # as a pass and CTest would report the build green.
+        results = []
+        for name in self.TEST_NAMES:
+            self.setUp()
+            self.delayDisplay(name)
+            try:
+                getattr(self, name)()
+                results.append((name, None))
+            except Exception as exc:
+                results.append((name, exc))
 
-        self.delayDisplay("test_module_import", msec=100)
-        self.test_module_import()
+        failures = [(name, exc) for name, exc in results if exc is not None]
+        self._report(results, failures)
 
-        self.delayDisplay("test_logic_instantiation", msec=100)
-        self.test_logic_instantiation()
+        if failures:
+            self.fail(
+                f"{len(failures)} of {len(results)} self-tests failed: "
+                + ", ".join(name for name, _ in failures)
+            )
+        self.delayDisplay("All tests passed.")
 
-        self.delayDisplay("test_parameter_node_defaults", msec=100)
-        self.test_parameter_node_defaults()
+    def _report(self, results, failures):
+        """Print a summary that outlives the delayDisplay popups."""
+        lines = [
+            "-" * 60,
+            f"ZebrafishEmbryoAnalyzer self-test: "
+            f"{len(results) - len(failures)}/{len(results)} passed",
+        ]
+        for name, exc in results:
+            lines.append(f"  {'PASS' if exc is None else 'FAIL'}  {name}")
+            if exc is not None:
+                lines.append(f"        {type(exc).__name__}: {exc}")
+        lines.append("-" * 60)
+        report = "\n".join(lines)
 
-        self.delayDisplay("test_no_network_during_setup", msec=100)
-        self.test_no_network_during_setup()
-
-        self.delayDisplay("test_mrml_table_node_creation", msec=100)
-        self.test_mrml_table_node_creation()
-
-        self.delayDisplay("test_mrml_table_node_reuse", msec=100)
-        self.test_mrml_table_node_reuse()
-
-        self.delayDisplay("test_results_to_rows_pure", msec=100)
-        self.test_results_to_rows_pure()
-
-        self.delayDisplay("test_scene_close_cleanup", msec=100)
-        self.test_scene_close_cleanup()
-
-        self.delayDisplay("All tests passed.", msec=100)
+        # The application log and the Python console are separate sinks in Slicer,
+        # and the popups are gone the moment they close — write to both.
+        logging.info(report)
+        print(report)
 
     # ------------------------------------------------------------------
     # Individual tests
